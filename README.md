@@ -50,9 +50,18 @@ One job:
 | **Checksums** | [`SHA256SUMS`](releases/SHA256SUMS) |
 | **Release page** | [github.com/SirPrizeNZ/keen/releases](https://github.com/SirPrizeNZ/keen/releases/latest) |
 
+**Install over Wi‑Fi**
+
+1. On the TV: **Settings → Device → Developer options** → enable **USB debugging** and **Network debugging** / **Wireless debugging** (wording varies by device).  
+2. Note the TV’s IP (often under **Network & Internet** or the wireless-debugging screen).  
+3. From your computer:
+
 ```bash
+adb connect <tv-ip>:5555
 adb install -r releases/keen-0.1.14-32bit-armeabi-v7a.apk
 ```
+
+Accept the debugging prompt on the TV if it appears. Port is usually `5555`; wireless debugging may show a different port — use that if so.
 
 No dedicated arm64 package yet. The published build is the **32-bit** ARMv7 APK for classic Android TV hardware.
 
