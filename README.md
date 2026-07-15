@@ -51,7 +51,31 @@ No dedicated arm64 package yet. The published build is the 32-bit ARMv7 APK for 
 
 ---
 
-## Why Keen?
+<h2 align="center">Why Keen?</h2>
+
+<p align="center">
+  <a href="#01"><img src="https://img.shields.io/badge/01-Tiny%20by%20design-111111?style=for-the-badge" alt="01"></a>
+  &nbsp;
+  <a href="#02"><img src="https://img.shields.io/badge/02-Popup%20quarantine-111111?style=for-the-badge" alt="02"></a>
+  &nbsp;
+  <a href="#03"><img src="https://img.shields.io/badge/03-Hostile%20journey-111111?style=for-the-badge" alt="03"></a>
+  &nbsp;
+  <a href="#04"><img src="https://img.shields.io/badge/04-Remote%20first-111111?style=for-the-badge" alt="04"></a>
+</p>
+
+<br>
+
+<a id="01"></a>
+
+<table>
+  <tr>
+    <td width="120" align="center" valign="top">
+      <br>
+      <img src="https://img.shields.io/badge/01-111111?style=for-the-badge&labelColor=111111" alt="01">
+      <br><br>
+      <sub><b>SIZE</b></sub>
+    </td>
+    <td valign="top">
 
 ### Tiny by design
 
@@ -61,14 +85,30 @@ Keen does not ship an entire browser ecosystem just to open a webpage.
 
 Everything that does not support the core TV journey is removed.
 
-- No bundled Chrome browser  
-- No tab-management machinery  
-- No account ecosystem  
-- No unnecessary background services  
+- No bundled Chrome browser
+- No tab-management machinery
+- No account ecosystem
+- No unnecessary background services
 
 **Just an incredibly lightweight layer between you, the web and your TV.**
 
+</td>
+  </tr>
+</table>
+
 <br>
+
+<a id="02"></a>
+
+<table>
+  <tr>
+    <td width="120" align="center" valign="top">
+      <br>
+      <img src="https://img.shields.io/badge/02-111111?style=for-the-badge&labelColor=111111" alt="02">
+      <br><br>
+      <sub><b>CONTROL</b></sub>
+    </td>
+    <td valign="top">
 
 ### Popups never get your screen
 
@@ -83,19 +123,35 @@ The destination is inspected first.
 
 The popup never gets your screen.
 
+</td>
+  </tr>
+</table>
+
 <br>
+
+<a id="03"></a>
+
+<table>
+  <tr>
+    <td width="120" align="center" valign="top">
+      <br>
+      <img src="https://img.shields.io/badge/03-111111?style=for-the-badge&labelColor=111111" alt="03">
+      <br><br>
+      <sub><b>LAYERS</b></sub>
+    </td>
+    <td valign="top">
 
 ### It blocks the whole hostile journey
 
 Keen combines multiple layers of protection:
 
-- network ad and tracker blocking  
-- service-worker request interception  
-- popup quarantine  
-- hostile redirect containment  
-- external-app escape prevention  
-- intrusive overlay removal  
-- site-specific repairs  
+- network ad and tracker blocking
+- service-worker request interception
+- popup quarantine
+- hostile redirect containment
+- external-app escape prevention
+- intrusive overlay removal
+- site-specific repairs
 
 Traditional blockers mainly ask:
 
@@ -107,7 +163,23 @@ Keen also asks:
 
 That difference matters on a television.
 
+</td>
+  </tr>
+</table>
+
 <br>
+
+<a id="04"></a>
+
+<table>
+  <tr>
+    <td width="120" align="center" valign="top">
+      <br>
+      <img src="https://img.shields.io/badge/04-111111?style=for-the-badge&labelColor=111111" alt="04">
+      <br><br>
+      <sub><b>INPUT</b></sub>
+    </td>
+    <td valign="top">
 
 ### Built for a remote, with touch when you need it
 
@@ -127,6 +199,10 @@ Switch to touch control when it does not.
 
 **One remote. Two ways to control the web.**
 
+</td>
+  </tr>
+</table>
+
 ---
 
 ## One screen. One session. One job.
@@ -135,7 +211,9 @@ Keen is not trying to recreate Chrome on a television.
 
 The journey is simple:
 
-**Open → navigate → choose → block the junk → play → fullscreen → return cleanly**
+```text
+Open → navigate → choose → block the junk → play → fullscreen → return cleanly
+```
 
 No browser circus.
 
@@ -153,17 +231,17 @@ Keen is under active development.
 
 The current release candidate includes:
 
-- lightweight ~3 MB APK  
-- Android TV launcher support  
-- D-pad navigation  
-- long-press OK to switch to touch-style control  
-- off-screen target handling  
-- popup quarantine  
-- redirect containment  
-- request blocking  
-- hostile-overlay removal  
-- fullscreen playback handling  
-- performance safeguards  
+- lightweight ~3 MB APK
+- Android TV launcher support
+- D-pad navigation
+- long-press OK to switch to touch-style control
+- off-screen target handling
+- popup quarantine
+- redirect containment
+- request blocking
+- hostile-overlay removal
+- fullscreen playback handling
+- performance safeguards
 
 Broader physical-device testing is ongoing.
 
