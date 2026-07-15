@@ -1,12 +1,11 @@
 <p align="center">
-  <img src="assets/logo-hero.png" alt="Keen" width="420">
+  <img src="assets/logo.png" alt="Keen" width="520">
 </p>
 
 <h1 align="center">Keen</h1>
 
 <p align="center">
-  <strong>Android TV browser for streaming sites and D-pad remotes.</strong><br>
-  Not a phone browser. Not a desktop browser. TV-only.
+  <strong>Android TV browser for streaming sites and D-pad remotes.</strong>
 </p>
 
 <p align="center">
@@ -142,7 +141,7 @@ Requirements: JDK 17, Android SDK 35. Release builds need a keystore under `~/.k
 ```text
 app/           Android application (Kotlin)
 branding/      Icon + TV banner masters and density pack
-assets/        README logo (white cutout + hero)
+assets/        README logo (white cutout)
 releases/      Published APK + checksums
 ```
 
