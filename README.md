@@ -5,14 +5,30 @@
 <h1 align="center">Keen</h1>
 
 <p align="center">
-  <strong>Android TV browser for streaming sites and D-pad remotes.</strong>
+  <strong>A tiny, fast Android TV browser built for the hostile streaming web.</strong>
 </p>
 
 <p align="center">
   <a href="releases/keen-0.1.14-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.14-111111?style=for-the-badge" alt="Download APK"></a>
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="Releases"></a>
+  &nbsp;
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="License MIT"></a>
 </p>
+
+<br>
+
+Keen is roughly **3 MB** and deliberately engineered to stay lightweight.
+
+**Zero bundled Chrome bloat. No second browser engine. No tabs. No sync. No extensions. No desktop-browser clutter.**
+
+Keen uses the Android System WebView already on your device and adds only what matters on a television.
+
+**Less overhead. Fewer moving parts. Faster startup. A browser built to stay out of the way.**
+
+One job:
+
+**Get from website to playback with a TV remote — without popups, redirects and hostile overlays taking over the screen.**
 
 ---
 
@@ -20,138 +36,151 @@
 
 | | |
 |:--|:--|
-| **Build** | v0.1.14 |
-| **Target** | Android TV · **32-bit ARM (`armeabi-v7a`)** |
-| **Package** | **[keen-0.1.14-armeabi-v7a.apk](releases/keen-0.1.14-armeabi-v7a.apk)** |
-| **Checksums** | [`releases/SHA256SUMS`](releases/SHA256SUMS) |
-| **GitHub Release** | [v0.1.14](https://github.com/SirPrizeNZ/keen/releases/tag/v0.1.14) |
+| **Version** | v0.1.14 |
+| **Platform** | Android TV / Google TV · API 29+ |
+| **ABI** | **32-bit ARM (`armeabi-v7a`)** — primary release |
+| **APK** | **[keen-0.1.14-armeabi-v7a.apk](releases/keen-0.1.14-armeabi-v7a.apk)** |
+| **Checksums** | [`SHA256SUMS`](releases/SHA256SUMS) |
+| **Release page** | [github.com/SirPrizeNZ/keen/releases](https://github.com/SirPrizeNZ/keen/releases/latest) |
 
 ```bash
-adb connect <tv-ip>:5555
 adb install -r releases/keen-0.1.14-armeabi-v7a.apk
 ```
 
-Requires **Android TV / Google TV · API 29+ (Android 10+)**.
+No dedicated arm64 package yet. The published build is the 32-bit ARMv7 APK for classic Android TV hardware.
 
 ---
 
-## Purpose
+## Why Keen?
 
-Keen exists to make real streaming websites usable on a television with a **standard remote**.
+### Tiny by design
 
-Android TV browsers are usually general-purpose web shells: they open pages, but they are not built around catalogue browsing, nested players, fullscreen video, or hostile interstitials. Streaming sites punish that gap.
+Keen does not ship an entire browser ecosystem just to open a webpage.
 
-Keen is built around one journey:
+**One Activity. One live WebView. One session. Around 3 MB.**
 
-```text
-Launch → open site → find content → play → fullscreen → control with D-pad → back out cleanly
-```
+Everything that does not support the core TV journey is removed.
 
----
+- No bundled Chrome browser  
+- No tab-management machinery  
+- No account ecosystem  
+- No unnecessary background services  
 
-## How it differs from other Android TV browsers
-
-Compared only to browsers people actually use on Android TV / Google TV / Fire TV–class devices (system WebView shells, TV Bro–class apps, vendor TV browsers, remote-pointer Chromium skins).
+**Just an incredibly lightweight layer between you, the web and your TV.**
 
 <br>
 
-### Focus
+### Popups never get your screen
 
-| | Typical Android TV browser | Keen |
-|:--|:---------------------------|:-----|
-| **Job to be done** | Browse the open web on a TV screen | Complete a **streaming journey** with a remote |
-| **Form factor** | TV port of a general browser | **Android TV–only product** |
-| **Session model** | Tabs, history, multi-page browsing | Single linear path: site → play → exit |
+Keen does more than ordinary ad blocking.
 
-<br>
+When a website tries to open a new window, Keen can place it inside an invisible **popup quarantine** before it ever reaches your TV.
 
-### Input & chrome
+The destination is inspected first.
 
-| | Typical Android TV browser | Keen |
-|:--|:---------------------------|:-----|
-| **Primary input** | D-pad focus traps, occasional on-screen cursor | Continuous remote pointer + DOM focus, long-press mode toggle |
-| **URL / chrome** | Full browser chrome (tabs, bookmarks, menus) | Minimal shell: URL bar, progress, pointer |
-| **Rails / carousels** | Often broken or edge-scroll only | Horizontal scroll under the pointer (Netflix-style rows) |
+**Unwanted popup? Destroyed.**  
+**Legitimate playback or login flow? Continued in the main session.**
+
+The popup never gets your screen.
 
 <br>
 
-### Streaming & hostility
+### It blocks the whole hostile journey
 
-| | Typical Android TV browser | Keen |
-|:--|:---------------------------|:-----|
-| **Playback** | Generic page; fullscreen is the site’s problem | Playback-oriented WebView path (fullscreen, media-oriented remote use) |
-| **Popups / traps** | User dismisses with awkward focus | Overlay / “not a robot” / QR interstitial guard (SPA-safe) |
-| **Engine** | Embedded Chromium *or* thin WebView wrapper | **System WebView** — small install, engine follows the OS |
+Keen combines multiple layers of protection:
+
+- network ad and tracker blocking  
+- service-worker request interception  
+- popup quarantine  
+- hostile redirect containment  
+- external-app escape prevention  
+- intrusive overlay removal  
+- site-specific repairs  
+
+Traditional blockers mainly ask:
+
+**Should this request load?**
+
+Keen also asks:
+
+**Did the user actually choose to go there?**
+
+That difference matters on a television.
 
 <br>
 
-### Explicit non-goals
+### Built for a remote, with touch when you need it
 
-Keen is **not** a general Android TV Chrome substitute, a tabbed multi-window browser, a phone browser with a leanback icon, a Chromium fork, or a download/VPN client.
+Most websites were designed for a mouse or touchscreen.
 
----
+Keen was built around the TV remote.
 
-## Platform & ABI
+It finds interactive elements, moves between them directionally, reaches content outside the visible screen and scrolls targets into view.
 
-| | |
-|:--|:--|
-| **Form factor** | Android TV / Google TV only |
-| **minSdk** | 29 (Android 10) |
-| **targetSdk** | 35 |
-| **Primary release** | **`armeabi-v7a` (32-bit ARM)** |
-| **arm64-v8a APK** | Not shipped yet |
-| **Runtime** | Kotlin / Java + System WebView (no app JNI today) |
+Need more direct control?
 
-**Why 32-bit first:** a large share of living-room Android TV boxes still run **ARMv7**. The published package is the `armeabiV7a` flavour (`com.keenzero.app.v7a`).
+**Long-press OK to switch between D-pad navigation and touch-style pointer control.**
 
-A pure-Java `universal` flavour can install on 64-bit devices, but the **supported, signed download is the 32-bit ARMv7 APK**. A dedicated arm64 package will ship when it is a first-class product target.
+Use D-pad navigation when the page behaves.
+
+Switch to touch control when it does not.
+
+**One remote. Two ways to control the web.**
 
 ---
 
-## Features (current)
+## One screen. One session. One job.
 
-- Leanback launcher entry and TV banner  
-- System WebView browse surface  
-- Continuous remote pointer (hold-to-move) and long-press mode toggle  
-- URL bar usable from the pointer; Enter loads and dismisses the IME  
-- Horizontal rail scroll under the pointer  
-- Hostile interstitial / QR “confirm you’re not a robot” guard (SPA-safe)  
-- Navigation containment for common trap patterns  
-- Host-based blocking assets for lab / baseline lists  
+Keen is not trying to recreate Chrome on a television.
 
----
+The journey is simple:
 
-## Build from source
+**Open → navigate → choose → block the junk → play → fullscreen → return cleanly**
 
-Requirements: JDK 17, Android SDK 35. Release builds need a keystore under `~/.keen-zero/signing/`.
+No browser circus.
 
-```bash
-./gradlew :app:assembleArmeabiV7aRelease
-# app/build/outputs/apk/armeabiV7a/release/app-armeabiV7a-release.apk
-```
+No endless tabs.
 
-```bash
-./gradlew :app:assembleArmeabiV7aDebug
-```
+**No popup bullshit.**
+
+Just a cleaner, faster path to what you actually wanted to watch.
 
 ---
 
-## Repository layout
+## Current status
 
-```text
-app/           Android application (Kotlin)
-branding/      Icon + TV banner masters and density pack
-assets/        README logo (white cutout)
-releases/      Published APK + checksums
-```
+Keen is under active development.
 
-Lab HTML under `app/src/main/assets/lab/` is for development and checks, not end-user content.
+The current release candidate includes:
+
+- lightweight ~3 MB APK  
+- Android TV launcher support  
+- D-pad navigation  
+- long-press OK to switch to touch-style control  
+- off-screen target handling  
+- popup quarantine  
+- redirect containment  
+- request blocking  
+- hostile-overlay removal  
+- fullscreen playback handling  
+- performance safeguards  
+
+Broader physical-device testing is ongoing.
 
 ---
 
-## Status
+## The goal
 
-Pre-release. Validated on physical Android TV hardware (ARMv7). Hostile sites will still bite; open issues with device model, WebView version, and URL.
+Browsing the web from a television should not feel like fighting the web.
+
+**You chose where you wanted to go.  
+Keen helps you get there.**
+
+<br>
+
+<p align="center">
+  <strong>Less browser. Better television.</strong>
+</p>
 
 ---
 
