@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.KeenZero" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/keen_bg</item>
+        <item name="android:colorBackground">@color/keen_bg</item>
+        <item name="android:textColorPrimary">@color/keen_text</item>
+        <item name="android:textColorSecondary">@color/keen_muted</item>
+        <item name="colorPrimary">@color/keen_focus</item>
+        <item name="colorAccent">@color/keen_accent</item>
+        <item name="android:statusBarColor">@color/keen_bg</item>
+        <item name="android:navigationBarColor">@color/keen_bg</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>

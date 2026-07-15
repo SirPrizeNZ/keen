@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/keen_bg">
+
+    <!-- Browsing shell: chrome above page; pointer layer covers both for URL-bar hits. -->
+    <FrameLayout
+        android:id="@+id/browseShell"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/browseColumn"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:id="@+id/chromeBar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FF000000"
+                android:orientation="vertical"
+                android:paddingTop="6dp">
+
+                <!-- Editable address bar (pointer can focus this). -->
+                <EditText
+                    android:id="@+id/browseUrlEdit"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#FF000000"
+                    android:ellipsize="middle"
+                    android:hint="@string/url_hint"
+                    android:imeOptions="actionGo"
+                    android:inputType="textUri"
+                    android:paddingHorizontal="16dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="4dp"
+                    android:singleLine="true"
+                    android:textColor="#FFE8E8E8"
+                    android:textColorHint="#FF666666"
+                    android:textSize="14sp"
+                    android:importantForAutofill="no" />
+
+                <!-- browseChrome kept for binding/progress layout; hidden (no mode callouts). -->
+                <TextView
+                    android:id="@+id/browseChrome"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:visibility="gone" />
+
+                <FrameLayout
+                    android:id="@+id/loadProgressTrack"
+                    android:layout_width="match_parent"
+                    android:layout_height="2dp"
+                    android:background="#FF000000">
+
+                    <View
+                        android:id="@+id/loadProgressBar"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:background="#FFFFFFFF"
+                        android:visibility="invisible" />
+                </FrameLayout>
+            </LinearLayout>
+
+            <FrameLayout
+                android:id="@+id/browserContainer"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <!-- Full-shell pointer layer (covers URL bar + page). -->
+        <FrameLayout
+            android:id="@+id/pointerLayer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clickable="false"
+            android:focusable="false" />
+    </FrameLayout>
+
+    <!-- Fullscreen custom view host (WebChromeClient). -->
+    <FrameLayout
+        android:id="@+id/fullscreenContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- Native home — first frame independent of WebView. -->
+    <ScrollView
+        android:id="@+id/homeScroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:id="@+id/homePanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="32dp"
+            android:paddingVertical="20dp">
+
+            <TextView
+                android:id="@+id/title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/home_title"
+                android:textColor="@color/keen_text"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/subtitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/home_subtitle"
+                android:textColor="@color/keen_muted"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/statusLine"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/status_home"
+                android:textColor="@color/keen_accent"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:id="@+id/continuePanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/focusable_field"
+                android:orientation="vertical"
+                android:padding="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/continue_heading"
+                    android:textColor="@color/keen_accent"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/continueTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textColor="@color/keen_text"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/continueMeta"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="@color/keen_muted"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/continueStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="@color/keen_muted"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btnContinue"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/focusable_button"
+                    android:focusable="true"
+                    android:text="@string/continue_watch"
+                    android:textAllCaps="false"
+                    android:textColor="@color/keen_text" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/urlInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/focusable_field"
+                android:hint="@string/url_hint"
+                android:imeOptions="actionGo"
+                android:inputType="textUri"
+                android:nextFocusDown="@id/btnLoad"
+                android:padding="12dp"
+                android:singleLine="true"
+                android:text="@string/home_url"
+                android:textColor="@color/keen_text"
+                android:textColorHint="@color/keen_muted"
+                android:textSize="16sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnLoad"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="10dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/focusable_button"
+                    android:focusable="true"
+                    android:nextFocusUp="@id/urlInput"
+                    android:nextFocusRight="@id/btnStandards"
+                    android:nextFocusDown="@id/btnDiagnostics"
+                    android:text="@string/load"
+                    android:textAllCaps="false"
+                    android:textColor="@color/keen_text" />
+
+                <Button
+                    android:id="@+id/btnStandards"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/focusable_button"
+                    android:focusable="true"
+                    android:nextFocusLeft="@id/btnLoad"
+                    android:nextFocusUp="@id/urlInput"
+                    android:nextFocusDown="@id/btnVerticalSlice"
+                    android:text="@string/load_standards"
+                    android:textAllCaps="false"
+                    android:textColor="@color/keen_text" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnVerticalSlice"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/focusable_button"
+                android:focusable="true"
+                android:nextFocusUp="@id/btnLoad"
+                android:nextFocusDown="@id/btnDiagnostics"
+                android:text="@string/load_vertical_slice"
+                android:textAllCaps="false"
+                android:textColor="@color/keen_text" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnDiagnostics"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="10dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/focusable_button"
+                    android:focusable="true"
+                    android:nextFocusUp="@id/btnLoad"
+                    android:nextFocusRight="@id/btnExport"
+                    android:text="@string/diagnostics"
+                    android:textAllCaps="false"
+                    android:textColor="@color/keen_text" />
+
+                <Button
+                    android:id="@+id/btnExport"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/focusable_button"
+                    android:focusable="true"
+                    android:nextFocusLeft="@id/btnDiagnostics"
+                    android:nextFocusUp="@id/btnStandards"
+                    android:text="@string/export_diagnostics"
+                    android:textAllCaps="false"
+                    android:textColor="@color/keen_text" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/diagnosticsPreview"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:fontFamily="monospace"
+                android:lineSpacingExtra="2dp"
+                android:textColor="@color/keen_muted"
+                android:textIsSelectable="true"
+                android:textSize="12sp"
+                android:visibility="gone" />
+        </LinearLayout>
+    </ScrollView>
+</FrameLayout>

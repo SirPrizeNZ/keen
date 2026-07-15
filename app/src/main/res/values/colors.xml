@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="keen_bg">#FF0B0D10</color>
+    <color name="keen_surface">#FF161A22</color>
+    <color name="keen_focus">#FF3D7EFF</color>
+    <color name="keen_text">#FFF2F4F8</color>
+    <color name="keen_muted">#FF9AA3B2</color>
+    <color name="keen_accent">#FF5CE1A8</color>
+    <color name="keen_danger">#FFFF6B6B</color>
+    <color name="keen_banner_bg">#FF10141C</color>
+</resources>

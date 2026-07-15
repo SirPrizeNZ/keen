@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Keen Remote Control Fixture</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0b0f14; color: #e8eef5; }
+    header { padding: 12px 16px; background: #121a24; border-bottom: 1px solid #243040; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    #status { font-size: 13px; color: #9fb3c8; min-height: 1.2em; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+    section { background: #121a24; border: 1px solid #243040; border-radius: 8px; padding: 12px; }
+    h2 { font-size: 14px; margin: 0 0 10px; color: #c5d4e4; }
+    .grid {
+      display: grid; grid-template-columns: repeat(3, 72px); grid-template-rows: repeat(3, 48px);
+      gap: 8px;
+    }
+    .grid a, .grid button, button, a.tile, input {
+      font: inherit; border-radius: 6px; border: 2px solid #3a4d63;
+      background: #1a2533; color: #e8eef5; text-decoration: none;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 40px; padding: 0 10px; box-sizing: border-box;
+    }
+    a:focus, button:focus, input:focus, [tabindex]:focus {
+      outline: 3px solid #3ddc97;
+      outline-offset: 2px;
+      border-color: #3ddc97;
+      box-shadow: 0 0 0 2px rgba(61, 220, 151, 0.35);
+    }
+    .links { display: flex; flex-direction: column; gap: 8px; }
+    .scroll {
+      height: 120px; overflow: auto; border: 1px solid #3a4d63; border-radius: 6px;
+      padding: 8px; data-keen-rail: true;
+    }
+    .scroll p { margin: 0 0 10px; color: #9fb3c8; }
+    #state-box { margin-top: 8px; padding: 8px; background: #0b0f14; border-radius: 6px; font-family: ui-monospace, monospace; font-size: 12px; }
+    #log { font-size: 11px; max-height: 140px; overflow: auto; color: #8aa0b5; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Remote control fixture</h1>
+    <div id="status">Awaiting remote keys (no auto-focus / auto-click).</div>
+  </header>
+  <main>
+    <section>
+      <h2>3×3 directional grid</h2>
+      <div class="grid" id="grid" data-keen-rail="1">
+        <button type="button" id="g00" data-keen-focus="1" data-cell="0,0">NW</button>
+        <button type="button" id="g01" data-keen-focus="1" data-cell="0,1">N</button>
+        <button type="button" id="g02" data-keen-focus="1" data-cell="0,2">NE</button>
+        <button type="button" id="g10" data-keen-focus="1" data-cell="1,0">W</button>
+        <button type="button" id="g11" data-keen-focus="1" data-cell="1,1">C</button>
+        <button type="button" id="g12" data-keen-focus="1" data-cell="1,2">E</button>
+        <button type="button" id="g20" data-keen-focus="1" data-cell="2,0">SW</button>
+        <button type="button" id="g21" data-keen-focus="1" data-cell="2,1">S</button>
+        <button type="button" id="g22" data-keen-focus="1" data-cell="2,2">SE</button>
+      </div>
+    </section>
+    <section>
+      <h2>Navigation targets</h2>
+      <div class="links">
+        <a id="link-internal" href="#route-a" data-keen-focus="1">Internal hash #route-a</a>
+        <a id="link-same-origin" href="remote_control_fixture.html?route=b" data-keen-focus="1">Same-origin route ?route=b</a>
+        <a id="link-blank" href="https://example.com/" target="_blank" rel="noopener" data-keen-focus="1">Target-blank example.com</a>
+        <button type="button" id="btn-state" data-keen-focus="1">Toggle page state</button>
+        <input id="text-input" type="text" placeholder="Text input" data-keen-focus="1" />
+      </div>
+      <div id="state-box" data-state="0">state=0</div>
+    </section>
+    <section>
+      <h2>Scroll container</h2>
+      <div class="scroll" id="scroll-box" data-keen-rail="1" tabindex="0">
+        <p>Scroll line 1</p><p>Scroll line 2</p><p>Scroll line 3</p>
+        <p>Scroll line 4</p><p>Scroll line 5</p><p>Scroll line 6</p>
+        <button type="button" id="scroll-btn" data-keen-focus="1">In-scroll control</button>
+        <p>Scroll line 7</p><p>Scroll line 8</p>
+      </div>
+    </section>
+    <section>
+      <h2>Telemetry</h2>
+      <div id="log"></div>
+    </section>
+  </main>
+  <script>
+    (function () {
+      var logEl = document.getElementById('log');
+      var statusEl = document.getElementById('status');
+      var stateBox = document.getElementById('state-box');
+      var state = 0;
+      function log(msg) {
+        var line = Date.now() + ' ' + msg;
+        logEl.textContent = (line + '\n' + logEl.textContent).slice(0, 4000);
+        console.log('KZ_REMOTE_FIXTURE:' + msg);
+      }
+      function reportFocus(el) {
+        if (!el || el === document.body) return;
+        var id = el.id || el.tagName;
+        var t = (el.innerText || el.value || el.getAttribute('href') || '').trim().slice(0, 40);
+        statusEl.textContent = 'focused=' + id + ' text=' + t;
+        log('focus ' + id + ' ' + t);
+      }
+      document.addEventListener('focusin', function (e) {
+        reportFocus(e.target);
+      }, true);
+      document.getElementById('btn-state').addEventListener('click', function () {
+        state += 1;
+        stateBox.dataset.state = String(state);
+        stateBox.textContent = 'state=' + state;
+        log('state ' + state);
+      });
+      document.querySelectorAll('.grid button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          log('activate ' + b.id + ' cell=' + b.dataset.cell);
+        });
+      });
+      window.addEventListener('hashchange', function () {
+        log('hash ' + location.hash);
+        statusEl.textContent = 'hash=' + location.hash;
+      });
+      // Do NOT auto-focus or auto-click. First focus comes only from remote path.
+      log('ready ' + location.href);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>body{background:#111;color:#eee;font:24px sans-serif}button{font-size:24px;padding:16px}video{max-width:70vw;max-height:55vh}</style>
+</head>
+<body>
+  <h1>Blocking coexistence probe</h1>
+  <button id="play">Play allowed media</button>
+  <video id="video" muted playsinline src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+  <img alt="blocked request probe" src="https://securepubads.g.doubleclick.net/probe.gif" hidden>
+  <p id="status">loading</p>
+  <script>
+    const status=document.getElementById('status');
+    const video=document.getElementById('video');
+    document.getElementById('play').onclick=()=>video.play();
+    video.addEventListener('canplay',()=>status.textContent='allowed-media-canplay');
+    video.addEventListener('playing',()=>status.textContent='allowed-media-playing');
+  </script>
+</body>
+</html>

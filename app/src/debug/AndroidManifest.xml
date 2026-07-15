@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug/lab-only surfaces. Never merged into release. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Layer A baseline control only (debug lab). Not a product entry point. -->
+        <activity
+            android:name=".web.PlainWebViewControlActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:label="Keen Plain Control" />
+    </application>
+</manifest>

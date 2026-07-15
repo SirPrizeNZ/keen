@@ -1,0 +1,32 @@
+# Gradle / Android
+.gradle/
+build/
+**/build/
+local.properties
+*.iml
+.idea/
+.cxx/
+captures/
+.externalNativeBuild/
+*.ap_
+*.aab
+*.dex
+*.class
+
+# Signing — never commit keys or passwords
+*.jks
+*.keystore
+keystore.properties
+**/keen-release.properties
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.kotlin/
+*.hprof
+*.log
+
+# Keep the published release APK under releases/
+*.apk
+!releases/*.apk

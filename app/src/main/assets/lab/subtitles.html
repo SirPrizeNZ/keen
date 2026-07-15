@@ -1,0 +1,27 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+body{font-family:sans-serif;background:#111;color:#eee;margin:16px}
+a,button,input,[tabindex]{font-size:20px;margin:8px;padding:12px}
+.overlay{position:fixed;inset:0;background:transparent;z-index:9}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:10}
+video{max-width:90vw;max-height:50vh}
+#status{color:#8f8}
+</style></head><body>
+<h1>Subtitles</h1><video id='v' controls muted playsinline src='https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4'>
+<track id='t' kind='subtitles' srclang='en' label='EN' default src='data:text/vtt,WEBVTT%0A%0A00:00:00.000%20--%3E%2000:00:05.000%0AHello'/>
+</video><button id='toggle-cc'>Toggle CC</button><p id='status'></p>
+<script>
+document.getElementById('v').play().catch(function(){});
+document.getElementById('toggle-cc').onclick=function(){
+  var t=document.getElementById('v').textTracks[0]; if(t){t.mode=t.mode==='showing'?'hidden':'showing';mark('cc:'+t.mode)}
+};
+</script>
+<script>
+window.__keen = window.__keen || {playing:false,ready:false,events:[]};
+function mark(e){window.__keen.events.push(e);document.getElementById('status')&&(document.getElementById('status').textContent=e)}
+document.querySelectorAll('video,audio').forEach(function(m){
+  m.addEventListener('loadeddata',function(){window.__keen.ready=true;mark('loadeddata')});
+  m.addEventListener('playing',function(){window.__keen.playing=true;mark('playing')});
+  m.addEventListener('canplay',function(){window.__keen.ready=true;mark('canplay')});
+});
+</script></body></html>

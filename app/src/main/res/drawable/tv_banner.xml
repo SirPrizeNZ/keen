@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fallback: raster TV banner from branding pack (prefer @mipmap/tv_banner). -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@mipmap/tv_banner"
+    android:gravity="fill" />

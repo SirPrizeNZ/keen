@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Keen Lab — Vertical Slice</title>
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:system-ui,sans-serif;background:#0b0d10;color:#e8eaed;margin:0;padding:16px}
+    h1{font-size:22px;margin:0 0 8px}
+    #status{color:#7ddea5;min-height:1.2em;font-size:13px}
+    .rail{display:flex;gap:12px;overflow-x:auto;padding:8px 0;margin-bottom:16px;scroll-behavior:auto}
+    .card{flex:0 0 auto;width:140px;height:80px;background:#1c2330;border:2px solid #2a3344;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#c5cad3}
+    .card:focus,.card:focus-visible,button:focus,input:focus,[tabindex]:focus{outline:3px solid #4da3ff;outline-offset:2px}
+    button,input,[tabindex]{font-size:16px;padding:10px 14px;margin:4px}
+    button{background:#243044;color:#fff;border:1px solid #3a4a63;border-radius:6px}
+    #real-play{background:#1b6b3a;border-color:#2f9e5b}
+    .fake-play{background:#6b1b1b;border-color:#9e2f2f}
+    .overlay-ad{position:fixed;inset:0;background:rgba(80,0,0,.35);z-index:20;display:flex;align-items:center;justify-content:center}
+    .overlay-ad.hidden{display:none}
+    .promo{animation:spin 2s linear infinite;color:#f66}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #player-wrap{margin-top:12px;max-width:720px}
+    video{width:100%;max-height:42vh;background:#000;border-radius:6px}
+    .ad-trap{position:absolute;width:1px;height:1px;opacity:0}
+    #auth{margin:12px 0;padding:12px;background:#151a22;border-radius:8px}
+    .carousel{height:40px;overflow:hidden;background:#1a1020;margin:8px 0}
+    .carousel span{display:inline-block;animation:marquee 4s linear infinite;white-space:nowrap}
+    @keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+  </style>
+</head>
+<body>
+  <h1>Vertical slice fixture</h1>
+  <p id="status">ready</p>
+
+  <div id="auth">
+    <label>Session user <input id="user" type="text" value="lab-user" autocomplete="username"/></label>
+    <button id="btn-signin" type="button">Sign in</button>
+    <span id="auth-state">signed-out</span>
+  </div>
+
+  <input id="search" type="search" placeholder="Search catalogue" />
+  <button id="btn-search" type="button">Search</button>
+
+  <h2>Rail A</h2>
+  <div class="rail" data-keen-rail="a" id="rail-a">
+    <div class="card" tabindex="0" data-content-id="ep-a1">A1 Bunny</div>
+    <div class="card" tabindex="0" data-content-id="ep-a2">A2 Flower</div>
+    <div class="card" tabindex="0" data-content-id="ep-a3">A3 Trailer</div>
+  </div>
+
+  <h2>Rail B</h2>
+  <div class="rail" data-keen-rail="b" id="rail-b">
+    <div class="card" tabindex="0" data-content-id="ep-b1">B1</div>
+    <div class="card" tabindex="0" data-content-id="ep-b2">B2</div>
+    <div class="card" tabindex="0" data-content-id="ep-b3">B3</div>
+  </div>
+
+  <div class="carousel promo" aria-hidden="true"><span>DECORATIVE CAROUSEL · ADS · TRACKERS · </span></div>
+
+  <div id="detail" hidden>
+    <h2 id="detail-title">Detail</h2>
+    <button type="button" class="fake-play" data-keen-fake-play="1" id="fake-play">▶ Play (fake)</button>
+    <button type="button" id="real-play" data-keen-play="1">Play</button>
+    <button type="button" id="open-popup">Open popup</button>
+    <button type="button" id="open-popunder">Popunder</button>
+  </div>
+
+  <div id="player-wrap" hidden>
+    <!-- Local 30s asset (via WebViewAssetLoader). Remote MDN clip stalled on emulator after restore. -->
+    <video id="v" playsinline preload="auto" loop
+      src="https://appassets.androidplatform.net/assets/lab/media/lab30.mp4"></video>
+  </div>
+
+  <div class="overlay-ad hidden" id="overlay" data-keen-hostile-overlay="1">
+    <button type="button" id="dismiss-overlay">Close ad</button>
+  </div>
+  <div class="ad-trap">ad trap</div>
+
+  <script>
+    window.__keen = window.__keen || {playing:false,ready:false,events:[],signedIn:false};
+    window.__keenContentId = null;
+    function mark(e){
+      window.__keen.events.push(e);
+      var s=document.getElementById('status');
+      if(s) s.textContent=e;
+      console.warn('KZ_FIXTURE:'+e);
+    }
+
+    // Simulated persistent session via localStorage (WebView profile).
+    try{
+      if(localStorage.getItem('keenLabSession')==='1'){
+        window.__keen.signedIn=true;
+        document.getElementById('auth-state').textContent='signed-in';
+        mark('session-restored');
+      }
+    }catch(e){}
+
+    document.getElementById('btn-signin').onclick=function(){
+      try{ localStorage.setItem('keenLabSession','1'); localStorage.setItem('keenLabUser',document.getElementById('user').value||'lab-user'); }catch(e){}
+      window.__keen.signedIn=true;
+      document.getElementById('auth-state').textContent='signed-in';
+      mark('signed-in');
+    };
+
+    document.getElementById('btn-search').onclick=function(){
+      mark('search:'+(document.getElementById('search').value||''));
+    };
+
+    document.querySelectorAll('.card').forEach(function(card){
+      card.addEventListener('click',function(){
+        window.__keenContentId=card.getAttribute('data-content-id');
+        document.getElementById('detail').hidden=false;
+        document.getElementById('detail-title').textContent=card.textContent.trim();
+        document.title='Keen Lab — '+card.textContent.trim();
+        mark('select:'+window.__keenContentId);
+        document.getElementById('real-play').focus();
+      });
+    });
+
+    // Fake play: spawns advertising popup + overlay, must NOT create legitimate Play.
+    document.getElementById('fake-play').onclick=function(ev){
+      mark('fake-play-click');
+      try{ window.open('https://evil.example/ad-landing','_blank'); }catch(e){}
+      try{ window.open('https://ads.example/pop','_blank'); }catch(e){}
+      document.getElementById('overlay').classList.remove('hidden');
+      // Delayed hostile redirect attempt
+      setTimeout(function(){ location.href='https://evil.example/steal'; }, 50);
+    };
+
+    document.getElementById('dismiss-overlay').onclick=function(){
+      document.getElementById('overlay').classList.add('hidden');
+      mark('overlay-dismissed');
+    };
+
+    document.getElementById('open-popup').onclick=function(){
+      mark('popup-click');
+      try{ window.open('https://pop.example/x','_blank'); }catch(e){}
+    };
+    document.getElementById('open-popunder').onclick=function(){
+      mark('popunder-click');
+      try{ var w=window.open('https://evil.example/under','_blank'); if(w) try{w.blur();window.focus();}catch(e){} }catch(e){}
+    };
+
+    // Legitimate Play — only this should start the intentional journey.
+    document.getElementById('real-play').onclick=function(){
+      mark('real-play-click');
+      // Hostile popup following genuine Play — must be quarantined.
+      try{ window.open('https://ads.example/should-die','_blank'); }catch(e){}
+      // Delayed window.open after Play.
+      setTimeout(function(){ try{ window.open('https://pop.example/delayed','_blank'); }catch(e){} }, 80);
+      document.getElementById('player-wrap').hidden=false;
+      var v=document.getElementById('v');
+      v.muted=true; // site starts muted; Keen should unmute after PlayIntent
+      // Episode metadata for continuity.
+      window.__keenSeason=1;
+      window.__keenEpisode=2;
+      v.play().then(function(){ mark('play-promise-ok'); }).catch(function(e){ mark('play-promise-fail:'+e); });
+    };
+
+    // Nested iframe popup attempt (same-doc simulation via iframe).
+    (function(){
+      var f=document.createElement('iframe');
+      f.id='hostile-frame';
+      f.style.cssText='width:1px;height:1px;opacity:0;position:absolute';
+      f.srcdoc='<script>setTimeout(function(){try{parent.window.open("https://evil.example/iframe-pop","_blank");}catch(e){}},200);<\/script>';
+      document.body.appendChild(f);
+    })();
+
+    // Transparent overlay popup (pointer-events none except trap).
+    var trap=document.createElement('div');
+    trap.setAttribute('data-keen-hostile-overlay','1');
+    trap.style.cssText='position:fixed;inset:0;z-index:5;background:transparent';
+    trap.addEventListener('click',function(){
+      mark('transparent-overlay-click');
+      try{ window.open('https://ads.example/overlay-pop','_blank'); }catch(e){}
+    });
+    document.body.appendChild(trap);
+
+    // Simulated legitimate auth window (same origin) — narrow allow path.
+    window.__keenSimAuth=function(){
+      mark('auth-window-sim');
+      try{ window.open(location.origin+'/assets/lab/auth_sim.html','_blank'); }catch(e){}
+    };
+
+    var v=document.getElementById('v');
+    v.addEventListener('loadeddata',function(){ window.__keen.ready=true; mark('loadeddata'); });
+    v.addEventListener('playing',function(){
+      window.__keen.playing=true;
+      mark('playing t='+v.currentTime);
+      // Observable audible confirmation when unmuted with volume.
+      if(!v.muted && v.volume>0){
+        window.__keen.audible=true;
+        mark('audible-playback');
+        console.warn('KZ_AUDIBLE_PLAYBACK');
+      }
+    });
+    /**
+     * Keen restore entry: expose player + ensure metadata so currentTime seek can land.
+     * Called from PlaybackOrchestrator before DIRECT seek. Not a product API.
+     */
+    window.__keenPrepareRestore=function(contentId){
+      try{
+        if(contentId){
+          window.__keenContentId=contentId;
+          var card=document.querySelector('[data-content-id="'+contentId+'"]');
+          if(card){
+            document.getElementById('detail').hidden=false;
+            document.getElementById('detail-title').textContent=card.textContent.trim();
+          }
+        }
+        document.getElementById('detail').hidden=false;
+        document.getElementById('player-wrap').hidden=false;
+        var vv=document.getElementById('v');
+        if(!vv) return false;
+        vv.loop=true;
+        vv.preload='auto';
+        try{ vv.load(); }catch(e){}
+        window.__keenSeason=1;
+        window.__keenEpisode=2;
+        mark('restore-prepare:'+(contentId||'')+':rs='+vv.readyState);
+        console.warn('KZ_RESTORE_PREPARE:readyState:'+vv.readyState);
+        return true;
+      }catch(e){
+        console.warn('KZ_RESTORE_PREPARE_ERR:'+e);
+        return false;
+      }
+    };
+    v.addEventListener('volumechange',function(){
+      if(!v.muted && v.volume>0 && !v.paused){
+        window.__keen.audible=true;
+        mark('audible-via-volume');
+        console.warn('KZ_AUDIBLE_PLAYBACK');
+      }
+    });
+    v.addEventListener('timeupdate',function(){
+      if(Math.floor(v.currentTime)%5===0) window.__keen.lastT=v.currentTime;
+    });
+    v.addEventListener('canplay',function(){ mark('canplay'); });
+
+    // Seek helper for automated restore journeys.
+    window.__keenSeek=function(t){ try{ v.currentTime=t; mark('seek:'+t); }catch(e){} };
+
+    // Aggressive decorative work during "browse"
+    setInterval(function(){ /* timer noise */ }, 100);
+    // History trap (must not escape user intent)
+    history.pushState({trap:1},'','#trap');
+  </script>
+</body>
+</html>

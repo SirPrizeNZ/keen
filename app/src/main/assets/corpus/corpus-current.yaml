@@ -1,0 +1,9 @@
+# Active frozen corpus pointer — do not retarget mid-gate.
+corpus_version: "0.1.0"
+path: v0.1.0/manifest.json
+frozen_at: "2026-07-12"
+note: >
+  Lab-first corpus for Gates 1–4 on available targets. Includes synthetic hostile
+  pages under app assets and public media/document URLs. Real FMHY-class hosts
+  appear only as access-documented SKIPPED or separate research entries — never
+  silently swapped during a gate run.

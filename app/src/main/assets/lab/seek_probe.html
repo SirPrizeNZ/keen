@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Keen Lab — Seek Probe</title>
+  <style>
+    body{font-family:system-ui,sans-serif;background:#0b0d10;color:#e8eaed;padding:16px}
+    #log{white-space:pre-wrap;font:12px/1.4 monospace;background:#151a22;padding:12px;border-radius:8px}
+    video{width:100%;max-width:480px;background:#000;margin:12px 0}
+  </style>
+</head>
+<body>
+  <h1>Seek probe (plain HTML5)</h1>
+  <p>Waits for seekable, then tests currentTime and media-fragment seeks.</p>
+  <video id="v" playsinline preload="auto"
+    src="https://appassets.androidplatform.net/assets/lab/media/lab30.mp4"></video>
+  <div id="log"></div>
+  <script>
+    (function(){
+      var logEl=document.getElementById('log');
+      var results={target:4.0, readyStateAtSeek:null, seekableEnd:null, currentTimeSeek:null, fragmentSeek:null, verdict:null};
+      function log(msg){
+        logEl.textContent += msg+'\n';
+        console.warn('KZ_SEEK_PROBE:'+msg);
+      }
+      function emitDone(){
+        console.warn('KZ_SEEK_PROBE_JSON:'+JSON.stringify(results));
+      }
+      var v=document.getElementById('v');
+      var target=4.0;
+      results.target=target;
+
+      function waitSeekable(timeoutMs){
+        return new Promise(function(resolve){
+          var t0=Date.now();
+          function tick(){
+            var end=0;
+            try{
+              if(v.seekable && v.seekable.length>0){
+                end=v.seekable.end(v.seekable.length-1);
+              }
+            }catch(e){}
+            var rs=v.readyState;
+            log('wait rs='+rs+' seekableEnd='+end+' elapsed='+(Date.now()-t0));
+            if(end>=target || Date.now()-t0>timeoutMs){
+              resolve({readyState:rs, seekableEnd:end});
+              return;
+            }
+            try{ var p=v.play(); if(p&&p.then) p.then(function(){try{v.pause();}catch(e){}}).catch(function(){}); }catch(e){}
+            setTimeout(tick, 300);
+          }
+          if(v.readyState>=1) tick();
+          else {
+            v.addEventListener('loadedmetadata', tick, {once:true});
+            v.addEventListener('canplay', tick, {once:true});
+            setTimeout(tick, 500);
+          }
+        });
+      }
+
+      function currentTimeSeek(){
+        return new Promise(function(resolve){
+          try{ v.pause(); }catch(e){}
+          var done=false;
+          function finish(){
+            if(done) return;
+            done=true;
+            var a=v.currentTime||0;
+            var ok=Math.abs(a-target)<=0.75;
+            log('currentTimeSeek actual='+a+' ok='+ok);
+            results.currentTimeSeek={actual:a, ok:ok};
+            resolve(ok);
+          }
+          v.addEventListener('seeked', finish, {once:true});
+          try{
+            if(typeof v.fastSeek==='function') v.fastSeek(target);
+            else v.currentTime=target;
+          }catch(e){ log('currentTimeSeek err='+e); }
+          setTimeout(finish, 1200);
+        });
+      }
+
+      function fragmentSeek(){
+        return new Promise(function(resolve){
+          var base=(v.currentSrc||v.src||'').split('#')[0];
+          var frag=base+'#t='+target.toFixed(3);
+          log('fragment '+frag);
+          var done=false;
+          function finish(){
+            if(done) return;
+            done=true;
+            var a=v.currentTime||0;
+            var ok=Math.abs(a-target)<=1.0 && a>0.05;
+            log('fragmentSeek actual='+a+' ok='+ok);
+            results.fragmentSeek={actual:a, ok:ok};
+            resolve(ok);
+          }
+          v.addEventListener('loadeddata', finish, {once:true});
+          v.addEventListener('canplay', finish, {once:true});
+          v.addEventListener('seeked', finish, {once:true});
+          v.src=frag;
+          try{ v.load(); }catch(e){}
+          try{ v.play(); }catch(e){}
+          setTimeout(finish, 2500);
+        });
+      }
+
+      (async function run(){
+        log('start');
+        try{ await v.play(); }catch(e){}
+        try{ v.pause(); }catch(e){}
+        var ready=await waitSeekable(15000);
+        results.readyStateAtSeek=ready.readyState;
+        results.seekableEnd=ready.seekableEnd;
+        // Goldfish often reports readyState=4 with seekableEnd=0. Still attempt seeks;
+        // empty seekable is evidence for WEBVIEW_ENGINE if both paths fail.
+        if(!(ready.seekableEnd>=target)){
+          log('seekable_empty_or_short end='+ready.seekableEnd+' rs='+ready.readyState);
+          results.seekableEmpty=true;
+        }
+        var ct=await currentTimeSeek();
+        if(ct){
+          results.verdict='CURRENT_TIME_OK';
+          log('verdict=CURRENT_TIME_OK');
+          emitDone();
+          return;
+        }
+        // Reset src without fragment for clean fragment test
+        var base=(v.currentSrc||v.src||'').split('#')[0];
+        v.src=base;
+        try{ v.load(); }catch(e){}
+        await waitSeekable(10000);
+        var fr=await fragmentSeek();
+        if(fr){
+          results.verdict='FRAGMENT_OK';
+          log('verdict=FRAGMENT_OK');
+        } else {
+          results.verdict='SEEK_FAILED';
+          log('verdict=SEEK_FAILED');
+        }
+        emitDone();
+      })().catch(function(e){
+        results.verdict='ERROR';
+        log('error '+e);
+        emitDone();
+      });
+    })();
+  </script>
+</body>
+</html>

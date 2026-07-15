@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Keen Zero</string>
+    <string name="home_title">Keen Zero</string>
+    <string name="home_subtitle">Remote-first streaming browser — FMHY home</string>
+    <string name="open_url">Open URL</string>
+    <string name="url_hint">https://fmhy.net/video</string>
+    <string name="load">Load</string>
+    <string name="diagnostics">Diagnostics</string>
+    <string name="export_diagnostics">Export evidence</string>
+    <string name="back_home">Home</string>
+    <string name="status_home">Opening FMHY streaming…</string>
+    <string name="status_browsing">Browsing</string>
+    <string name="status_webview_created">WebView created lazily</string>
+    <string name="renderer_gone">Renderer process gone — recovered to home</string>
+    <string name="renderer_gone_restore">Renderer gone — restoring checkpoint…</string>
+    <string name="invalid_url">Enter an https URL</string>
+    <string name="export_ok">Evidence written:\n%1$s</string>
+    <string name="export_fail">Export failed: %1$s</string>
+    <string name="load_standards">Open FMHY video</string>
+    <string name="load_vertical_slice">Vertical slice journey</string>
+    <!-- Product default front page: FMHY streaming section. -->
+    <string name="home_url">https://fmhy.net/video</string>
+    <string name="standards_url">https://fmhy.net/video</string>
+    <string name="mode_dom_hint">DOM · long-press OK = pointer</string>
+    <string name="mode_pointer_hint">Pointer · long-press OK = DOM</string>
+    <string name="continue_heading">CONTINUE</string>
+    <string name="continue_watch">Continue watching</string>
+    <string name="continue_unknown_title">Previous session</string>
+    <string name="continue_meta">Position %1$s / %2$s · %3$d%%</string>
+    <string name="continue_status_ready">Ready to restore from last checkpoint</string>
+    <string name="continue_status_restoring">Restoring…</string>
+    <string name="continue_status_recovery">Renderer recovery — reloading checkpoint</string>
+</resources>

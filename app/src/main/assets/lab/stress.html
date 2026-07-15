@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Keen Lab — Stress 2k DOM</title>
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:system-ui,sans-serif;background:#0b0d10;color:#e8eaed;margin:0;padding:12px}
+    h1{font-size:18px;margin:0 0 8px}
+    #status{color:#7ddea5;font-size:12px;min-height:1.2em}
+    .rail{display:flex;gap:8px;overflow-x:auto;padding:8px 0;margin-bottom:10px;scroll-behavior:auto}
+    .card{flex:0 0 auto;width:100px;height:56px;background:#1c2330;border:2px solid #2a3344;border-radius:6px;
+      display:flex;align-items:center;justify-content:center;font-size:12px}
+    .card:focus,button:focus,[tabindex]:focus{outline:3px solid #4da3ff;outline-offset:2px}
+    .scroll-y{max-height:180px;overflow-y:auto;border:1px solid #2a3344;padding:6px;margin-bottom:10px}
+    .inaccessible{pointer-events:none;opacity:.3}
+    .offscreen-park{position:absolute;left:-9999px;top:-9999px}
+    #player-wrap{margin-top:8px}
+    video{width:100%;max-height:28vh;background:#000}
+    .player-controls button{margin:4px;padding:8px 12px;background:#243044;color:#fff;border:1px solid #3a4a63}
+    #real-play{background:#1b6b3a}
+  </style>
+</head>
+<body>
+  <h1>Stress fixture (≥2000 DOM nodes)</h1>
+  <p id="status">building…</p>
+  <div id="rails"></div>
+  <div class="scroll-y" id="nested-v" data-keen-rail="vert"></div>
+  <div id="dynamic-host"></div>
+  <div class="offscreen-park" id="offscreen" aria-hidden="true"></div>
+  <div id="player-wrap">
+    <video id="v" playsinline preload="metadata"
+      src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+    <div class="player-controls">
+      <button type="button" id="real-play" data-keen-play="1">Play</button>
+      <button type="button" id="seek">Seek 5s</button>
+    </div>
+  </div>
+  <script>
+    window.__keen = window.__keen || {playing:false,ready:false,events:[],nodeCount:0};
+    function mark(e){
+      window.__keen.events.push(e);
+      var s=document.getElementById('status');
+      if(s) s.textContent=e;
+      console.warn('KZ_STRESS:'+e);
+    }
+    var rails=document.getElementById('rails');
+    // Multiple horizontal rails with focusable cards.
+    for(var r=0;r<8;r++){
+      var rail=document.createElement('div');
+      rail.className='rail';
+      rail.setAttribute('data-keen-rail','r'+r);
+      for(var c=0;c<24;c++){
+        var card=document.createElement('div');
+        card.className='card';
+        card.tabIndex=0;
+        card.textContent='R'+r+'C'+c;
+        card.dataset.contentId='stress-r'+r+'-c'+c;
+        rail.appendChild(card);
+      }
+      rails.appendChild(rail);
+    }
+    // Nested vertical scroll with many rows.
+    var nv=document.getElementById('nested-v');
+    for(var i=0;i<120;i++){
+      var row=document.createElement('div');
+      row.tabIndex=0;
+      row.textContent='row '+i;
+      if(i%7===0) row.className='inaccessible';
+      nv.appendChild(row);
+    }
+    // Decorative bulk nodes to exceed 2000 total.
+    var host=document.getElementById('dynamic-host');
+    for(var j=0;j<1600;j++){
+      var d=document.createElement('span');
+      d.className='bulk';
+      d.textContent='·';
+      if(j%50===0){ d.tabIndex=-1; d.setAttribute('aria-hidden','true'); }
+      host.appendChild(d);
+    }
+    // Offscreen focusable trap candidates.
+    var off=document.getElementById('offscreen');
+    for(var k=0;k<40;k++){
+      var b=document.createElement('button');
+      b.type='button';
+      b.textContent='off'+k;
+      off.appendChild(b);
+    }
+    // Dynamically inserted actionable items after load.
+    setTimeout(function(){
+      for(var n=0;n<12;n++){
+        var btn=document.createElement('button');
+        btn.type='button';
+        btn.textContent='dyn '+n;
+        btn.dataset.keenFocus='1';
+        host.appendChild(btn);
+      }
+      mark('dynamic-inserted');
+      window.__keen.nodeCount=document.getElementsByTagName('*').length;
+      mark('nodes='+window.__keen.nodeCount);
+    }, 50);
+
+    document.getElementById('real-play').onclick=function(){
+      mark('real-play-click');
+      var v=document.getElementById('v');
+      v.muted=true;
+      v.play().then(function(){ mark('play-ok'); }).catch(function(e){ mark('play-fail:'+e); });
+    };
+    document.getElementById('seek').onclick=function(){
+      var v=document.getElementById('v');
+      v.currentTime=5;
+      mark('seek-5');
+    };
+    var v=document.getElementById('v');
+    v.addEventListener('playing',function(){ window.__keen.playing=true; mark('playing'); });
+    v.addEventListener('canplay',function(){ window.__keen.ready=true; mark('canplay'); });
+
+    window.__keen.nodeCount=document.getElementsByTagName('*').length;
+    mark('nodes='+window.__keen.nodeCount);
+  </script>
+</body>
+</html>
