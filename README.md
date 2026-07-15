@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/keen-title.png" alt="Keen" width="300">
+  <img src="assets/keen-title.png" alt="Keen" width="150">
 </p>
 
 <p align="center">
