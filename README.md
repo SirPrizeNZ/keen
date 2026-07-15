@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Keen" width="520">
+  <img src="assets/logo.png" alt="Keen" width="480">
 </p>
 
 <p align="center">
-  <img src="assets/keen-title.png" alt="Keen" height="96">
+  <img src="assets/keen-title.png" alt="Keen" width="300">
 </p>
 
 <p align="center">
