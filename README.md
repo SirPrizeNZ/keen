@@ -2,7 +2,9 @@
   <img src="assets/logo.png" alt="Keen" width="520">
 </p>
 
-<h1 align="center">Keen</h1>
+<p align="center">
+  <img src="assets/keen-title.png" alt="Keen" height="96">
+</p>
 
 <p align="center">
   <strong>A tiny, fast Android TV browser built for the hostile streaming web.</strong>
