@@ -9,18 +9,25 @@
 </p>
 
 <p align="center">
-  <a href="releases/keen-0.1.14-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.14-111111?style=for-the-badge" alt="Download APK"></a>
+  <a href="releases/keen-0.1.14-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.14%20·%2032--bit-111111?style=for-the-badge" alt="Download APK 32-bit"></a>
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="Releases"></a>
   &nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="License MIT"></a>
 </p>
 
-<br>
+---
+
+## Built lightweight
 
 Keen is roughly **3 MB** and deliberately engineered to stay lightweight.
 
-**Zero bundled Chrome bloat. No second browser engine. No tabs. No sync. No extensions. No desktop-browser clutter.**
+- ✅ Zero bundled Chrome bloat  
+- ✅ No second browser engine  
+- ✅ No tabs  
+- ✅ No sync  
+- ✅ No extensions  
+- ✅ No desktop-browser clutter  
 
 Keen uses the Android System WebView already on your device and adds only what matters on a television.
 
@@ -39,15 +46,15 @@ One job:
 | **Version** | v0.1.14 |
 | **Platform** | Android TV / Google TV · API 29+ |
 | **ABI** | **32-bit ARM (`armeabi-v7a`)** — primary release |
-| **APK** | **[keen-0.1.14-armeabi-v7a.apk](releases/keen-0.1.14-armeabi-v7a.apk)** |
+| **APK** | **[keen-0.1.14-32bit-armeabi-v7a.apk](releases/keen-0.1.14-32bit-armeabi-v7a.apk)** |
 | **Checksums** | [`SHA256SUMS`](releases/SHA256SUMS) |
 | **Release page** | [github.com/SirPrizeNZ/keen/releases](https://github.com/SirPrizeNZ/keen/releases/latest) |
 
 ```bash
-adb install -r releases/keen-0.1.14-armeabi-v7a.apk
+adb install -r releases/keen-0.1.14-32bit-armeabi-v7a.apk
 ```
 
-No dedicated arm64 package yet. The published build is the 32-bit ARMv7 APK for classic Android TV hardware.
+No dedicated arm64 package yet. The published build is the **32-bit** ARMv7 APK for classic Android TV hardware.
 
 ---
 
