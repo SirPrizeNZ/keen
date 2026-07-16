@@ -1,12 +1,52 @@
-# Bundled conservative host rules. One host per line.
-# A leading dot matches the host and all subdomains.
+# Keen Zero — high-precision host blocklist (performance-first).
+# One host per line. Leading dot = host + all subdomains.
+# Keep short: match cost is O(label walk) against suffix set size.
+
+# Google ads / syndication
 .doubleclick.net
 .googlesyndication.com
 .googleadservices.com
+.googletagservices.com
+.googletagmanager.com
+.google-analytics.com
+.adservice.google.com
+.pagead2.googlesyndication.com
+
+# Common ad networks
 .adnxs.com
+.adsrvr.org
+.adform.net
+.advertising.com
+.adcolony.com
+.adsafeprotected.com
+.adtrafficquality.google
+.amazon-adsystem.com
+.criteo.com
+.criteo.net
+.taboola.com
+.outbrain.com
+.pubmatic.com
+.openx.net
+.rubiconproject.com
+.casalemedia.com
+.quantserve.com
+.scorecardresearch.com
+.moatads.com
+.2mdn.net
+.media.net
+
+# Pop / redirect networks (TV-hostile)
 .popads.net
 .popcash.net
 .propellerads.com
 .exoclick.com
 .trafficjunky.net
-.scorecardresearch.com
+.juicyads.com
+.adsterra.com
+.hilltopads.com
+
+# Lab / fixture hosts
+.ads.example
+.pop.example
+.evil.example
+.tracker.example

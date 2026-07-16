@@ -1,0 +1,20 @@
+<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>body{margin:0;font:18px sans-serif;background:#111;color:#eee}
+#probe{position:fixed;top:8px;left:8px;z-index:9;background:#0a0;color:#000;padding:8px}
+.page{padding:20px;height:400vh}</style></head>
+<body><div id="probe">pageY=?</div>
+<div class="page" id="p"><h1>MAIN PAGE</h1>
+<script>for(let i=0;i<100;i++)document.write('<p>line '+i+'</p>');</script></div>
+<script>
+function snap(){
+  var se=document.scrollingElement||document.documentElement;
+  document.getElementById('probe').textContent=
+    'pageY='+(window.scrollY||se.scrollTop||0)+
+    ' se='+(se.scrollTop||0)+
+    ' sh='+se.scrollHeight+' ch='+se.clientHeight;
+}
+setInterval(snap,100);
+// prove document can scroll
+window.__keenForceScroll=function(dy){window.scrollBy(0,dy||200);snap();return window.scrollY;};
+</script>
+</body></html>

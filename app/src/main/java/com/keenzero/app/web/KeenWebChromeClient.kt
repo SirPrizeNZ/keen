@@ -1,6 +1,7 @@
 package com.keenzero.app.web
 
 import android.os.Message
+import android.os.SystemClock
 import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
@@ -10,13 +11,15 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import com.keenzero.app.diagnostics.NavigationEvent
+import com.keenzero.app.navigation.ActivationLedger
+import com.keenzero.app.navigation.WindowRequestBroker
 import com.keenzero.app.playback.PopupQuarantine
 
 /**
- * Chrome client with real [onCreateWindow] quarantine.
+ * Chrome client with activation-aware new-window policy.
  *
- * New-window requests never attach to the visible hierarchy. The temporary
- * WebView captures the first meaningful destination, classifies it, then is destroyed.
+ * Provisional WebViews are never attached to the visible hierarchy.
+ * High-risk deliberate mismatches require native confirmation (never silent drop).
  */
 class KeenWebChromeClient(
     private val fullscreenHost: FrameLayout,
@@ -25,10 +28,13 @@ class KeenWebChromeClient(
     private val onConsole: (String) -> Unit,
     private val onEvent: (NavigationEvent) -> Unit,
     private val popupQuarantine: PopupQuarantine,
+    private val windowBroker: WindowRequestBroker,
+    private val activationLedger: ActivationLedger,
     private val requestingOrigin: () -> String?,
     private val playIntentActive: () -> Boolean,
     private val playOrigin: () -> String?,
     private val onApprovedMainLoad: (String) -> Unit,
+    private val onRequireConfirmation: (url: String, host: String?, reason: String) -> Unit,
     private val onProgress: (Int) -> Unit = {},
 ) : WebChromeClient() {
 
@@ -46,36 +52,47 @@ class KeenWebChromeClient(
         resultMsg: Message?,
     ): Boolean {
         val parent = view ?: return false
-        val startTime = System.currentTimeMillis()
-
-        // Deny-first: reject without constructing a second WebView when possible.
-        val pre = popupQuarantine.preflight(
+        val startElapsed = SystemClock.elapsedRealtime()
+        val grant = activationLedger.peek()
+        val decision = windowBroker.decide(
             targetUrl = null,
             isUserGesture = isUserGesture,
+            pageOrigin = requestingOrigin(),
+            grant = grant,
             playIntentActive = playIntentActive(),
+            playOrigin = playOrigin(),
         )
-        if (pre != null && pre.blocks) {
-            onEvent(
-                NavigationEvent(
-                    System.currentTimeMillis(),
-                    "POPUP_REJECT_IMMEDIATE",
-                    detail = "verdict=$pre gesture=$isUserGesture dialog=$isDialog play=${playIntentActive()} noQuarantineWebView=1",
-                ),
-            )
-            onEvent(
-                NavigationEvent(
-                    System.currentTimeMillis(),
-                    "POPUP_DESTROYED",
-                    detail = "$pre deny_first",
-                ),
-            )
-            return false
+
+        onEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "WINDOW_BROKER",
+                detail = "action=${decision.action} reason=${decision.reason} gesture=$isUserGesture " +
+                    "grant=${grant?.type} play=${playIntentActive()}",
+            ),
+        )
+
+        when (decision.action) {
+            WindowRequestBroker.Action.BLOCK -> {
+                if (decision.consumeGrant) activationLedger.consume()
+                onEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "POPUP_REJECT_IMMEDIATE",
+                        detail = "broker=${decision.reason} noQuarantineWebView=1",
+                    ),
+                )
+                return false
+            }
+            WindowRequestBroker.Action.OPEN_CURRENT_SESSION,
+            WindowRequestBroker.Action.REQUIRE_CONFIRMATION,
+            WindowRequestBroker.Action.PROVISIONAL_CAPTURE,
+            -> {
+                // Need provisional capture when URL is not yet known.
+            }
         }
 
-        val memBefore = com.keenzero.app.diagnostics.DeviceDiagnostics.getMemorySnapshot(parent.context)
-
-        // Transient quarantine WebView only for ambiguous gesture/play destinations.
-        // Never added to the visible hierarchy.
+        // Hidden provisional WebView — never added to container.
         val quarantine = WebView(parent.context)
         quarantine.settings.javaScriptEnabled = true
         quarantine.settings.domStorageEnabled = false
@@ -85,33 +102,12 @@ class KeenWebChromeClient(
         quarantine.settings.allowFileAccess = false
         quarantine.settings.allowContentAccess = false
         quarantine.settings.setGeolocationEnabled(false)
+        quarantine.visibility = View.GONE
 
         var decided = false
         var timeoutRunnable: Runnable? = null
 
-        fun finishQuarantine(targetUrl: String?) {
-            if (decided) return
-            decided = true
-            timeoutRunnable?.let { parent.removeCallbacks(it) }
-            val lifetime = System.currentTimeMillis() - startTime
-            val memDuring = com.keenzero.app.diagnostics.DeviceDiagnostics.getMemorySnapshot(parent.context)
-            val origin = requestingOrigin()
-            val verdict = popupQuarantine.decide(
-                targetUrl = targetUrl,
-                requestingOrigin = origin,
-                playIntentActive = playIntentActive(),
-                playOrigin = playOrigin(),
-            )
-            onEvent(
-                NavigationEvent(
-                    System.currentTimeMillis(),
-                    "POPUP_QUARANTINE_DECISION",
-                    url = targetUrl,
-                    detail = "verdict=$verdict gesture=$isUserGesture dialog=$isDialog origin=$origin lifetimeMs=$lifetime " +
-                            "memBeforePss=${memBefore.optInt("pssKb")} memDuringPss=${memDuring.optInt("pssKb")} " +
-                            "renderersBefore=${memBefore.optInt("renderers")} renderersDuring=${memDuring.optInt("renderers")}",
-                ),
-            )
+        fun destroyProvisional() {
             try {
                 quarantine.stopLoading()
                 quarantine.webChromeClient = null
@@ -119,30 +115,90 @@ class KeenWebChromeClient(
                 quarantine.destroy()
             } catch (_: Throwable) {
             }
-            val memAfter = com.keenzero.app.diagnostics.DeviceDiagnostics.getMemorySnapshot(parent.context)
-            when (verdict) {
-                PopupQuarantine.Verdict.ALLOW_PLAY_RESOLUTION,
-                PopupQuarantine.Verdict.ALLOW_AUTH_SAME_ORIGIN,
-                -> {
-                    if (!targetUrl.isNullOrBlank()) {
+        }
+
+        fun finishQuarantine(targetUrl: String?) {
+            if (decided) return
+            decided = true
+            timeoutRunnable?.let { parent.removeCallbacks(it) }
+            val lifetimeMs = SystemClock.elapsedRealtime() - startElapsed
+            val origin = requestingOrigin()
+            val g = activationLedger.peek()
+            val final = windowBroker.decide(
+                targetUrl = targetUrl,
+                isUserGesture = isUserGesture,
+                pageOrigin = origin,
+                grant = g,
+                playIntentActive = playIntentActive(),
+                playOrigin = playOrigin(),
+            )
+            if (final.consumeGrant) activationLedger.consume()
+
+            onEvent(
+                NavigationEvent(
+                    System.currentTimeMillis(),
+                    "POPUP_QUARANTINE_DECISION",
+                    url = targetUrl,
+                    detail = "action=${final.action} reason=${final.reason} gesture=$isUserGesture " +
+                        "origin=$origin lifetimeMs=$lifetimeMs host=${final.destinationHost}",
+                ),
+            )
+            destroyProvisional()
+
+            when (final.action) {
+                WindowRequestBroker.Action.OPEN_CURRENT_SESSION -> {
+                    if (!targetUrl.isNullOrBlank() && !targetUrl.equals("about:blank", true)) {
                         onApprovedMainLoad(targetUrl)
                         onEvent(
                             NavigationEvent(
                                 System.currentTimeMillis(),
                                 "POPUP_APPROVED_MAIN_LOAD",
                                 url = targetUrl,
-                                detail = "${verdict.name} memAfterPss=${memAfter.optInt("pssKb")} renderersAfter=${memAfter.optInt("renderers")}",
+                                detail = final.reason,
+                            ),
+                        )
+                    } else {
+                        onEvent(
+                            NavigationEvent(
+                                System.currentTimeMillis(),
+                                "POPUP_DESTROYED",
+                                url = targetUrl,
+                                detail = "empty_after_open reason=${final.reason}",
                             ),
                         )
                     }
                 }
-                else -> {
+                WindowRequestBroker.Action.REQUIRE_CONFIRMATION -> {
+                    if (!targetUrl.isNullOrBlank() && !targetUrl.equals("about:blank", true)) {
+                        onEvent(
+                            NavigationEvent(
+                                System.currentTimeMillis(),
+                                "POPUP_REQUIRE_CONFIRMATION",
+                                url = targetUrl,
+                                detail = final.reason,
+                            ),
+                        )
+                        onRequireConfirmation(targetUrl, final.destinationHost, final.reason)
+                    } else {
+                        onEvent(
+                            NavigationEvent(
+                                System.currentTimeMillis(),
+                                "POPUP_DESTROYED",
+                                url = targetUrl,
+                                detail = "confirm_empty reason=${final.reason}",
+                            ),
+                        )
+                    }
+                }
+                WindowRequestBroker.Action.BLOCK,
+                WindowRequestBroker.Action.PROVISIONAL_CAPTURE,
+                -> {
                     onEvent(
                         NavigationEvent(
                             System.currentTimeMillis(),
                             "POPUP_DESTROYED",
                             url = targetUrl,
-                            detail = "${verdict.name} memAfterPss=${memAfter.optInt("pssKb")} renderersAfter=${memAfter.optInt("renderers")}",
+                            detail = final.reason,
                         ),
                     )
                 }
@@ -169,7 +225,7 @@ class KeenWebChromeClient(
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
-                if (!url.isNullOrBlank() && url != "about:blank") {
+                if (!url.isNullOrBlank() && !url.equals("about:blank", true)) {
                     finishQuarantine(url)
                 }
             }
@@ -177,17 +233,7 @@ class KeenWebChromeClient(
 
         val transport = resultMsg?.obj as? WebView.WebViewTransport
         if (transport == null) {
-            onEvent(
-                NavigationEvent(
-                    System.currentTimeMillis(),
-                    "POPUP_QUARANTINE_DECISION",
-                    detail = "verdict=DESTROY_INVALID no-transport",
-                ),
-            )
-            try {
-                quarantine.destroy()
-            } catch (_: Throwable) {
-            }
+            destroyProvisional()
             return false
         }
         transport.webView = quarantine
@@ -196,18 +242,18 @@ class KeenWebChromeClient(
             NavigationEvent(
                 System.currentTimeMillis(),
                 "POPUP_QUARANTINE_OPEN",
-                detail = "gesture=$isUserGesture dialog=$isDialog attached=false memBeforePss=${memBefore.optInt("pssKb")} renderersBefore=${memBefore.optInt("renderers")}",
+                detail = "gesture=$isUserGesture provisional=1 visible=0",
             ),
         )
-        // CONSTRAINT_32: short quarantine lifetime (1s); never leave a second WebView around.
-        val quarantineTimeoutMs = 1_000L
+        val quarantineTimeoutMs = 1_800L
         val tr = Runnable {
             if (!decided) {
+                activationLedger.clear()
                 onEvent(
                     NavigationEvent(
                         System.currentTimeMillis(),
                         "POPUP_TIMEOUT",
-                        detail = "Destroying quarantine WebView after ${quarantineTimeoutMs}ms timeout",
+                        detail = "provisional_timeout_ms=$quarantineTimeoutMs",
                     ),
                 )
                 finishQuarantine(null)

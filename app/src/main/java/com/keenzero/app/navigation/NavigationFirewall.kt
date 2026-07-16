@@ -16,6 +16,7 @@ import java.net.URI
 class NavigationFirewall(
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
     private val quarantine: PopupQuarantine = PopupQuarantine(),
+    val activationLedger: ActivationLedger = ActivationLedger(clock),
 ) {
     private var topLevelOrigin: String? = null
     private var lastInputAt: Long = Long.MIN_VALUE
@@ -30,13 +31,26 @@ class NavigationFirewall(
     fun recordPlayIntent(intent: PlayIntent) {
         activePlayIntent = intent
         navigationWindowUntil = clock() + PlayIntent.ACTIVE_WINDOW_MS
+        activationLedger.record(
+            type = ActivationLedger.Type.PLAY,
+            sourceOrigin = intent.origin,
+            expectedHref = intent.expectedHref ?: intent.url,
+            elementRole = intent.role,
+            fingerprint = intent.focusedFingerprint,
+        )
     }
 
     fun clearPlayIntent() {
         activePlayIntent = null
     }
 
+    fun clearActivation() {
+        activationLedger.clear()
+    }
+
     fun activePlayIntent(): PlayIntent? = activePlayIntent?.takeIf { it.isActive(clock()) }
+
+    fun topLevelOrigin(): String? = topLevelOrigin
 
     fun recordCommittedUrl(url: String?) {
         topLevelOrigin = url?.let(::origin)
@@ -99,31 +113,40 @@ class NavigationFirewall(
     }
 
     /**
-     * New-window / popup path. Never returns a soft allow that would display a
-     * separate window — caller must either destroy or (rarely) load in-session.
+     * New-window / popup path via [WindowRequestBroker].
+     * Deliberate activations map to same-session load; automatic junk is blocked.
      */
-    fun decideNewWindow(url: String?): Decision {
+    fun decideNewWindow(url: String?, isUserGesture: Boolean = false): Decision {
         val play = activePlayIntent()
-        val verdict = quarantine.decide(
+        val broker = WindowRequestBroker(quarantine, clock)
+        val d = broker.decide(
             targetUrl = url,
-            requestingOrigin = topLevelOrigin,
+            isUserGesture = isUserGesture,
+            pageOrigin = topLevelOrigin,
+            grant = activationLedger.peek(),
             playIntentActive = play != null,
             playOrigin = play?.origin,
         )
-        return when (verdict) {
-            PopupQuarantine.Verdict.DESTROY_ADVERTISING -> Decision.BLOCK_POPUP_AD
-            PopupQuarantine.Verdict.DESTROY_EXTERNAL_SCHEME -> Decision.BLOCK_EXTERNAL_SCHEME
-            PopupQuarantine.Verdict.DESTROY_INVALID -> Decision.BLOCK_INVALID_URL
-            PopupQuarantine.Verdict.DESTROY_UNKNOWN,
-            PopupQuarantine.Verdict.REJECT_IMMEDIATE,
-            -> Decision.BLOCK_POPUP
-            PopupQuarantine.Verdict.ALLOW_AUTH_SAME_ORIGIN -> {
-                navigationWindowUntil = clock() + REDIRECT_CHAIN_WINDOW_MS
-                Decision.ALLOW_SAME_SESSION
+        return when (d.action) {
+            WindowRequestBroker.Action.BLOCK -> {
+                when (d.reason) {
+                    "ad_host" -> Decision.BLOCK_POPUP_AD
+                    "external_scheme" -> Decision.BLOCK_EXTERNAL_SCHEME
+                    "invalid_url" -> Decision.BLOCK_INVALID_URL
+                    else -> Decision.BLOCK_POPUP
+                }
             }
-            PopupQuarantine.Verdict.ALLOW_PLAY_RESOLUTION -> {
+            WindowRequestBroker.Action.OPEN_CURRENT_SESSION,
+            WindowRequestBroker.Action.PROVISIONAL_CAPTURE,
+            -> {
                 navigationWindowUntil = clock() + REDIRECT_CHAIN_WINDOW_MS
-                Decision.ALLOW_PLAY_RESOLUTION
+                if (d.reason == "play_resolution") Decision.ALLOW_PLAY_RESOLUTION
+                else Decision.ALLOW_SAME_SESSION
+            }
+            WindowRequestBroker.Action.REQUIRE_CONFIRMATION -> {
+                // Not a silent drop — UI must present Open/Cancel. Policy allows the
+                // navigation only after explicit native confirmation.
+                Decision.REQUIRE_CONFIRMATION
             }
         }
     }
@@ -144,6 +167,8 @@ class NavigationFirewall(
         ALLOW_CURRENT(false),
         ALLOW_SAME_SESSION(false),
         ALLOW_PLAY_RESOLUTION(false),
+        /** Deliberate high-risk mismatch — must surface native confirmation, not auto-nav. */
+        REQUIRE_CONFIRMATION(true),
         BLOCK_EXTERNAL_SCHEME(true),
         BLOCK_UNINTENDED_REDIRECT(true),
         BLOCK_POPUP(true),

@@ -25,8 +25,8 @@ android {
         // until a physical device model is confirmed and a deliberate floor change is approved.
         minSdk = 29
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.1.14-pre-mibox"
+        versionCode = 30
+        versionName = "0.1.15"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -116,7 +116,7 @@ android {
             val releaseStable = signingConfigs.getByName("releaseStable")
             require(releaseStable.storeFile != null && releaseStable.storeFile!!.exists()) {
                 "Stable release signing missing. Create ~/.keen-zero/signing/keen-release.jks " +
-                    "and keen-release.properties. " +
+                    "and keen-release.properties (see docs/SIGNING_IDENTITY.md). " +
                     "Debug keystore is not allowed for release Mi Box candidates."
             }
             signingConfig = releaseStable

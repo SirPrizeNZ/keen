@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Keen defence fixtures</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#0b0d10; color:#f2f4f8; padding:24px; }
+    a, button { display:block; margin:10px 0; font-size:18px; color:#5ce1a8; }
+    section { margin: 24px 0; padding:16px; border:1px solid #333; border-radius:8px; }
+    h2 { color:#9aa3b2; font-size:14px; text-transform:uppercase; letter-spacing:.06em; }
+  </style>
+</head>
+<body>
+  <h1>Defence validation fixtures</h1>
+  <p>Deterministic local HTML — no live sites.</p>
+
+  <section id="c1">
+    <h2>1 Same-origin link</h2>
+    <a id="same-origin" href="same_origin.html">Open same origin</a>
+  </section>
+
+  <section id="c2">
+    <h2>2 Cross-origin link</h2>
+    <a id="cross-origin" href="https://cdn.example/out">Cross origin (matched grant in tests)</a>
+  </section>
+
+  <section id="c3">
+    <h2>3 target=_blank</h2>
+    <a id="blank-target" href="same_origin.html" target="_blank">Blank target same origin</a>
+  </section>
+
+  <section id="c4">
+    <h2>4 Scripted delays</h2>
+    <button id="script-500" type="button">Script open 500ms</button>
+    <button id="script-1500" type="button">Script open 1500ms</button>
+    <button id="script-2500" type="button">Script open 2500ms</button>
+  </section>
+
+  <section id="c5">
+    <h2>5 Auto popup</h2>
+    <button id="auto-popup" type="button">Schedule auto popup (no user gesture chain)</button>
+  </section>
+
+  <section id="c6">
+    <h2>6 Double window</h2>
+    <button id="double-window" type="button">One click → two windows</button>
+  </section>
+
+  <section id="c7">
+    <h2>7–9 about:blank flows</h2>
+    <button id="blank-legit" type="button">Blank then legit</button>
+    <button id="blank-timeout" type="button">Blank stay blank</button>
+    <button id="blank-ad" type="button">Blank then ad host</button>
+  </section>
+
+  <section id="c10">
+    <h2>10–11 Redirects</h2>
+    <a id="user-redirect" href="redirect_chain.html">User redirect chain</a>
+    <meta id="auto-meta" http-equiv="refresh" content="999;url=https://hijack.example/out"/>
+  </section>
+
+  <section id="c12">
+    <h2>12 Play</h2>
+    <button id="real-play" data-keen-play="1" type="button">Play</button>
+    <a id="player-window" href="player.html" target="_blank">Player window</a>
+  </section>
+
+  <section id="c13">
+    <h2>13 Auth</h2>
+    <a id="auth-link" href="auth_callback.html">Login callback same origin</a>
+  </section>
+
+  <section id="c14">
+    <h2>14 Uncertain deliberate</h2>
+    <a id="uncertain" href="https://mystery.example/x" target="_blank">Unknown dest</a>
+  </section>
+
+  <section id="c15">
+    <h2>15–16 Network</h2>
+    <img id="fp-image" src="pixel.png" width="1" height="1" alt=""/>
+    <script src="app.js"></script>
+    <video id="fp-media" src="media/lab30.mp4" controls width="320"></video>
+  </section>
+
+  <script>
+    function openAfter(ms, url) {
+      setTimeout(function(){ window.open(url, '_blank'); }, ms);
+    }
+    document.getElementById('script-500').onclick = function(){ openAfter(500, 'same_origin.html'); };
+    document.getElementById('script-1500').onclick = function(){ openAfter(1500, 'same_origin.html'); };
+    document.getElementById('script-2500').onclick = function(){ openAfter(2500, 'same_origin.html'); };
+    document.getElementById('auto-popup').onclick = function(){
+      setTimeout(function(){ window.open('https://popup.example/ad', '_blank'); }, 100);
+    };
+    document.getElementById('double-window').onclick = function(){
+      window.open('https://legit.example/', '_blank');
+      window.open('https://second.example/', '_blank');
+    };
+    document.getElementById('blank-legit').onclick = function(){
+      var w = window.open('about:blank', '_blank');
+      setTimeout(function(){ if(w) w.location = 'player.html'; }, 400);
+    };
+    document.getElementById('blank-timeout').onclick = function(){
+      window.open('about:blank', '_blank');
+    };
+    document.getElementById('blank-ad').onclick = function(){
+      var w = window.open('about:blank', '_blank');
+      setTimeout(function(){ if(w) w.location = 'https://ads.example/click'; }, 200);
+    };
+    document.getElementById('real-play').onclick = function(){
+      window.open('player.html', '_blank');
+    };
+  </script>
+</body>
+</html>

@@ -21,6 +21,8 @@ import com.keenzero.app.playback.PlayIntent
 import com.keenzero.app.playback.PlaybackOrchestrator
 import com.keenzero.app.playback.PlaybackJourneyState
 import com.keenzero.app.playback.PopupQuarantine
+import com.keenzero.app.navigation.ActivationLedger
+import com.keenzero.app.navigation.WindowRequestBroker
 import org.json.JSONObject
 import java.util.UUID
 
@@ -47,6 +49,8 @@ class WebViewHost(
     /** Height of URL chrome in px (for pointer hit-test / web touch offset). */
     private val chromeHeightPx: () -> Int = { 0 },
     private val onUrlBarActivate: () -> Unit = {},
+    /** High-risk deliberate navigation: show Open host? (never silent drop). */
+    private val onConfirmNavigation: ((url: String, host: String, reason: String) -> Unit)? = null,
 ) {
     var webView: WebView? = null
         private set
@@ -118,6 +122,14 @@ class WebViewHost(
 
     fun exitPlaybackMode(reason: String) {
         playback?.exitPlaybackMode(reason)
+    }
+
+    /**
+     * Keep pointer mode during HTML fullscreen / Keen playback surface so the user
+     * can reach player controls (subtitles, quality, audio) without DOM focus.
+     */
+    fun setMediaPointerLock(locked: Boolean) {
+        inputRouter?.setMediaPointerLock(locked)
     }
 
     fun onBackground() {
@@ -198,12 +210,27 @@ class WebViewHost(
             },
             chromeHeightPx = chromeHeightPx,
             onUrlBarActivate = onUrlBarActivate,
+            onDeliberateActivation = { fingerprintJson ->
+                recordDeliberateActivation(fingerprintJson, firewall)
+            },
+            onHideKeyboard = {
+                try {
+                    val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                        as? android.view.inputmethod.InputMethodManager
+                    val token = webView?.windowToken ?: cursor.windowToken
+                    imm?.hideSoftInputFromWindow(token, 0)
+                    webView?.clearFocus()
+                    webView?.requestFocus()
+                } catch (_: Throwable) {
+                }
+            },
         )
         this.inputRouter = inputRouter
         val wv = KeenWebView(context, inputRouter)
         HardenedWebSettings.apply(wv)
         BlockingRuntime.ensureServiceWorkerInterception()
 
+        val windowBroker = WindowRequestBroker(popupQuarantine)
         val chrome = KeenWebChromeClient(
             fullscreenHost = fullscreenHost,
             onFullscreen = onFullscreen,
@@ -310,6 +337,8 @@ class WebViewHost(
             },
             onEvent = onEvent,
             popupQuarantine = popupQuarantine,
+            windowBroker = windowBroker,
+            activationLedger = firewall.activationLedger,
             requestingOrigin = {
                 webView?.url?.let { originOf(it) }
             },
@@ -317,6 +346,17 @@ class WebViewHost(
             playOrigin = { playback.activeSession?.origin },
             onApprovedMainLoad = { url ->
                 webView?.loadUrl(url)
+            },
+            onRequireConfirmation = { url, host, reason ->
+                onEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "NAV_CONFIRM_PROMPT",
+                        url = url,
+                        detail = "host=$host reason=$reason",
+                    ),
+                )
+                onConfirmNavigation?.invoke(url, host ?: "unknown", reason)
             },
             onProgress = onProgress,
         )
@@ -394,6 +434,43 @@ class WebViewHost(
         "${u.scheme}://${u.host}${if (u.port != -1) ":${u.port}" else ""}"
     } catch (_: Exception) {
         null
+    }
+
+    private fun recordDeliberateActivation(
+        fingerprintJson: String?,
+        firewall: NavigationFirewall,
+    ) {
+        val o = try {
+            if (fingerprintJson.isNullOrBlank()) null else JSONObject(fingerprintJson)
+        } catch (_: Exception) {
+            null
+        }
+        val href = o?.optString("href", "")?.takeIf { it.isNotBlank() && it != "null" }
+        val role = o?.optString("role", "")?.takeIf { it.isNotBlank() }
+        val fp = o?.optString("fp", "")?.takeIf { it.isNotBlank() }
+        val type = when {
+            o?.optBoolean("play", false) == true -> ActivationLedger.Type.PLAY
+            o?.optBoolean("form", false) == true -> ActivationLedger.Type.FORM
+            !href.isNullOrBlank() -> ActivationLedger.Type.LINK
+            role?.equals("button", ignoreCase = true) == true -> ActivationLedger.Type.UNKNOWN
+            else -> ActivationLedger.Type.UNKNOWN
+        }
+        firewall.activationLedger.record(
+            type = type,
+            sourceOrigin = webView?.url?.let { originOf(it) },
+            expectedHref = href,
+            elementRole = role,
+            fingerprint = fp,
+        )
+        firewall.recordUserInput()
+        onEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "ACTIVATION_GRANT",
+                url = webView?.url,
+                detail = "type=$type href=${href?.take(120)} role=$role",
+            ),
+        )
     }
 
     private fun emitPlayIntent(
@@ -962,6 +1039,9 @@ class WebViewHost(
         val wv = webView ?: return
         val chrome = chromeClient
         val cursor = cursorOverlay
+        firewall?.clearActivation()
+        firewall?.clearPlayIntent()
+        BlockingRuntime.clearPageHost()
         if (reason != "renderer_gone") {
             playback?.checkpointNow(reason = "webview_destroy:$reason")
         }

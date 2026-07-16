@@ -69,6 +69,9 @@ class KeenWebViewClient(
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         firewall.recordCommittedUrl(url)
+        BlockingRuntime.setPageUrl(url)
+        // New document commit invalidates prior single-use activation.
+        firewall.clearActivation()
         onUrlChanged(url)
         onEvent(
             NavigationEvent(

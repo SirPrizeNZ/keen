@@ -27,9 +27,18 @@ class RemoteInputRouter(
     private val onIndexStats: ((statsJson: String) -> Unit)? = null,
     private val chromeHeightPx: () -> Int = { 0 },
     private val onUrlBarActivate: () -> Unit = {},
+    /** Record single-use activation before synthetic click / DOM activate. */
+    private val onDeliberateActivation: ((fingerprintJson: String?) -> Unit)? = null,
+    /** Hide soft keyboard (search Enter / commit). */
+    private val onHideKeyboard: () -> Unit = {},
 ) {
     // Product default: pointer first.
     private var mode = Mode.POINTER
+    /**
+     * While video is fullscreen / Keen playback surface is active, keep POINTER
+     * so the user can hit player chrome (subs, quality, audio) without DOM focus.
+     */
+    private var mediaPointerLock = false
     private var centreHeld = false
     private var modeToggledByLongPress = false
     val interactionIndex = InteractionIndex()
@@ -125,7 +134,8 @@ class RemoteInputRouter(
                 event.keyCode == KeyEvent.KEYCODE_TV_MEDIA_CONTEXT_MENU)
         ) {
             onUserInput()
-            toggleMode()
+            // Menu still allowed to toggle only when not locked to media pointer.
+            if (!mediaPointerLock) toggleMode()
             return true
         }
         if (event.keyCode in SELECT_KEYS) return handleSelect(webView, event)
@@ -323,7 +333,8 @@ class RemoteInputRouter(
             return
         }
 
-        val edge = 64f * density
+        // Generous edge so TV D-pad reaches page-scroll zone without pixel hunting.
+        val edge = 96f * density
         val scrollPx = (EDGE_SCROLL_DP * density * dt).toInt().coerceAtLeast(1)
         val (vw, vh) = cursor.viewportSize()
         if (vw <= 0 || vh <= 0) return
@@ -333,7 +344,7 @@ class RemoteInputRouter(
         val inLeftZone = cursor.cursorX <= edge
         val inRightZone = cursor.cursorX >= vw - edge
 
-        // Horizontal: JS rails under pointer; native WebView only at screen edges (not both).
+        // Horizontal: Netflix-style rails under pointer mid-page; page scroll only at L/R edges.
         if (holdLeft || holdRight) {
             val dx = if (holdLeft) -scrollPx else scrollPx
             if (inLeftZone || inRightZone) {
@@ -342,25 +353,138 @@ class RemoteInputRouter(
                 scrollUnderPointer(webView, pageX, pageY, dx, 0, forceWindow = false)
             }
         }
-        // Vertical: ONE authority only.
-        // - Mid page: nested/window via JS under pointer
-        // - Screen edges: native webView.scrollBy only (JS + native fought and felt like push-up)
+        // Vertical — simple rules:
+        // 1) Nested scroller under the pointer (rails / in-page lists)
+        // 2) Search/modal sheet list (only if sheet has a text input + list)
+        // 3) Else at screen edge → page scroll (native + document)
         if (holdUp || holdDown) {
             val dy = if (holdUp) -scrollPx else scrollPx
-            if (inTopZone || inBottomZone) {
-                webView.scrollBy(0, dy)
-            } else {
-                scrollUnderPointer(webView, pageX, pageY, 0, dy, forceWindow = true)
-            }
+            val atPageEdge = (holdUp && inTopZone) || (holdDown && inBottomZone)
+            scrollVertical(webView, pageX, pageY, dy, atPageEdge)
         }
     }
 
-    /**
-     * Scroll the nearest overflow container under the pointer (horizontal rails, etc.).
-     * [pageX]/[pageY] are WebView/content coordinates (chrome already subtracted).
-     * Applies a single scroll path — never window.scrollBy AND scrollTop together.
-     */
+    /** Suppress page edge-scroll only right after a search-sheet list actually moved. */
+    private var suppressPageScrollUntil = 0L
     private var lastDocScrollAt = 0L
+
+    private fun scrollVertical(
+        webView: WebView,
+        pageX: Float,
+        pageY: Float,
+        dy: Int,
+        atPageEdge: Boolean,
+    ) {
+        if (dy == 0) return
+        val now = SystemClock.elapsedRealtime()
+        val x = pageX.toInt()
+        val y = pageY.toInt()
+
+        val runJs = now - lastDocScrollAt >= 14L
+        if (runJs) {
+            lastDocScrollAt = now
+            webView.evaluateJavascript(
+                """(function(px,py,dy,edge){
+                  try{
+                    function isDoc(n){
+                      return !n||n===document||n===document.scrollingElement||
+                        n===document.documentElement||n===document.body;
+                    }
+                    function hit(n){
+                      if(!n||!n.getBoundingClientRect) return false;
+                      var r=n.getBoundingClientRect();
+                      return px>=r.left-2&&px<=r.right+2&&py>=r.top-2&&py<=r.bottom+2;
+                    }
+                    function oy(n){
+                      try{var s=getComputedStyle(n);return (s.overflowY||s.overflow||'').toLowerCase();}
+                      catch(e){return '';}
+                    }
+                    function applyY(n,a){
+                      if(isDoc(n)||!a) return false;
+                      var b=n.scrollTop|0;
+                      n.scrollTop=b+a;
+                      if((n.scrollTop|0)!==b) return true;
+                      try{if(n.scrollBy)n.scrollBy(0,a);}catch(e){}
+                      return (n.scrollTop|0)!==b;
+                    }
+                    function nestedY(n){
+                      if(isDoc(n)||!hit(n)||!(n.scrollHeight>n.clientHeight+2)) return false;
+                      var o=oy(n);
+                      if(o==='auto'||o==='scroll'||o==='overlay') return true;
+                      if(/overflow-y-auto|overflow-y-scroll|overscroll-contain|overflow-auto/.test(String(n.className||''))) return true;
+                      return o==='hidden'&&n.scrollHeight>n.clientHeight+8;
+                    }
+                    // 1) under pointer
+                    var el=document.elementFromPoint(px,py), p=el, h=0;
+                    while(p&&h<32){
+                      if(nestedY(p)&&applyY(p,dy)) return 'nested';
+                      p=p.parentElement; h++;
+                    }
+                    // 2) Search sheet ONLY: fixed full-screen host that contains a text input
+                    //    AND an overflow list (bcine search). Nav bars alone do not match.
+                    var vw=window.innerWidth||1, vh=window.innerHeight||1, va=vw*vh;
+                    var all=document.querySelectorAll('body *'), lim=Math.min(all.length,400);
+                    var best=null, bestSc=-1;
+                    for(var i=0;i<lim;i++){
+                      var e=all[i], st;
+                      try{st=getComputedStyle(e);}catch(ex){continue;}
+                      if(st.position!=='fixed'||st.display==='none'||st.visibility==='hidden') continue;
+                      var r=e.getBoundingClientRect();
+                      if(r.width*r.height<va*0.5||r.height<vh*0.5) continue;
+                      // Must look like a search UI
+                      var hasSearch=false;
+                      try{
+                        var inputs=e.querySelectorAll('input,textarea,[role="searchbox"],[contenteditable="true"]');
+                        for(var ii=0;ii<inputs.length;ii++){
+                          var inp=inputs[ii];
+                          var t=(inp.getAttribute('type')||'text').toLowerCase();
+                          if(inp.tagName==='TEXTAREA'||inp.isContentEditable||t===''||t==='text'||t==='search'){
+                            var ir=inp.getBoundingClientRect();
+                            if(ir.width>40&&ir.height>16){ hasSearch=true; break; }
+                          }
+                        }
+                      }catch(e2){}
+                      if(!hasSearch) continue;
+                      var kids=e.querySelectorAll('div,ul,ol,section');
+                      for(var k=0;k<Math.min(kids.length,160);k++){
+                        var c=kids[k], cr=c.getBoundingClientRect();
+                        if(cr.height<40||cr.width*cr.height>va*0.85) continue;
+                        if(!(c.scrollHeight>c.clientHeight+4)) continue;
+                        var o=oy(c), cls=String(c.className||'');
+                        if(!(o==='auto'||o==='scroll'||o==='overlay'||o==='hidden'||
+                             /overflow-y-auto|overscroll-contain|overflow-auto/.test(cls))) continue;
+                        var sc=(c.scrollHeight-c.clientHeight)+(hit(c)?2000:0)+(edge?500:0);
+                        if(sc>bestSc){bestSc=sc;best=c;}
+                      }
+                    }
+                    if(best&&applyY(best,dy)) return 'modal';
+                    // 3) Page scroll inside JS when at edge (document-level)
+                    if(edge){
+                      try{window.scrollBy(0,dy);}catch(e3){}
+                      try{
+                        var se=document.scrollingElement||document.documentElement||document.body;
+                        if(se) se.scrollTop=(se.scrollTop||0)+dy;
+                      }catch(e4){}
+                      return 'page';
+                    }
+                    return 'none';
+                  }catch(e){return 'none';}
+                })($x,$y,$dy,${if (atPageEdge) 1 else 0});""",
+            ) { raw ->
+                val kind = unwrap(raw) ?: "none"
+                if (kind == "modal") {
+                    suppressPageScrollUntil = SystemClock.elapsedRealtime() + 600L
+                }
+            }
+        }
+
+        // Native WebView edge scroll — independent of JS (most TV WebView sites need this).
+        // Only skip while a search sheet list is actively scrolling.
+        if (atPageEdge && now >= suppressPageScrollUntil) {
+            webView.scrollBy(0, dy)
+        }
+    }
+
     private fun scrollUnderPointer(
         webView: WebView,
         pageX: Float,
@@ -369,84 +493,43 @@ class RemoteInputRouter(
         dy: Int,
         forceWindow: Boolean,
     ) {
-        if (dx == 0 && dy == 0) return
+        if (dx == 0) return
         val now = SystemClock.elapsedRealtime()
-        // ~1 scroll inject per frame; avoid stacking async evaluateJavascript.
         if (now - lastDocScrollAt < 14L) return
         lastDocScrollAt = now
         val x = pageX.toInt()
         val y = pageY.toInt()
-        val fw = if (forceWindow) 1 else 0
         webView.evaluateJavascript(
-            """(function(px,py,dx,dy,forceWindow){
+            """(function(px,py,dx){
               try{
-                function canScrollX(n){
-                  if(!n||n===document||n===document.documentElement) return false;
-                  var st=getComputedStyle(n);
-                  var ox=st.overflowX||st.overflow;
-                  if(!(ox==='auto'||ox==='scroll'||ox==='overlay')) return false;
-                  return n.scrollWidth > n.clientWidth + 4;
+                function isDoc(n){
+                  return !n||n===document||n===document.scrollingElement||
+                    n===document.documentElement||n===document.body;
                 }
-                function canScrollY(n){
-                  if(!n||n===document) return false;
-                  // Prefer real overflow containers; documentElement/body only as last resort
-                  // (avoids fighting WebView native scroll on the same axis).
-                  var isDoc = (n===document.scrollingElement||n===document.documentElement||n===document.body);
-                  var st=getComputedStyle(n);
-                  var oy=st.overflowY||st.overflow;
-                  if(!(oy==='auto'||oy==='scroll'||oy==='overlay')) {
-                    if(isDoc) return (n.scrollHeight||0) > (n.clientHeight||0) + 4;
-                    return false;
-                  }
-                  return n.scrollHeight > n.clientHeight + 4;
+                function hit(n){
+                  if(!n||!n.getBoundingClientRect) return false;
+                  var r=n.getBoundingClientRect();
+                  return px>=r.left-2&&px<=r.right+2&&py>=r.top-2&&py<=r.bottom+2;
                 }
-                var target=document.elementFromPoint(px,py);
-                var n=target;
-                var hops=0;
-                var scrolled=false;
-                // Prefer nested (non-document) scrollers first.
-                while(n && hops<16){
-                  var isDoc = (n===document.scrollingElement||n===document.documentElement||n===document.body);
-                  if(dx!==0 && !isDoc && canScrollX(n)){
-                    var before=n.scrollLeft;
-                    n.scrollLeft = before + dx;
-                    if(n.scrollLeft!==before){ scrolled=true; break; }
-                  }
-                  if(dy!==0 && !isDoc && canScrollY(n)){
-                    var beforeY=n.scrollTop;
-                    n.scrollTop = beforeY + dy;
-                    if(n.scrollTop!==beforeY){ scrolled=true; break; }
-                  }
-                  if(dx!==0 && n.classList && (
-                      n.classList.contains('rail')||n.classList.contains('row')||
-                      n.hasAttribute('data-keen-rail')||
-                      /carousel|slider|scroll-x|horizontal/i.test(n.className||'')
-                    )){
-                    if(n.scrollWidth > n.clientWidth + 4){
-                      n.scrollLeft = (n.scrollLeft||0) + dx;
-                      scrolled=true; break;
+                function ox(n){
+                  try{var s=getComputedStyle(n);return (s.overflowX||s.overflow||'').toLowerCase();}
+                  catch(e){return '';}
+                }
+                var el=document.elementFromPoint(px,py), n=el, h=0;
+                while(n&&h<28){
+                  if(!isDoc(n)&&hit(n)&&n.scrollWidth>n.clientWidth+2){
+                    var o=ox(n);
+                    var rail=n.classList&&(n.classList.contains('rail')||n.classList.contains('row')||n.hasAttribute('data-keen-rail'));
+                    if(o==='auto'||o==='scroll'||o==='overlay'||rail||/carousel|slider|scroll-x|horizontal|overflow-x/.test(String(n.className||''))){
+                      var b=n.scrollLeft|0; n.scrollLeft=b+dx;
+                      if((n.scrollLeft|0)!==b) return true;
                     }
                   }
-                  n=n.parentElement; hops++;
+                  n=n.parentElement; h++;
                 }
-                // Document-level: single apply (window.scrollBy OR scrollTop — never both).
-                // forceWindow / vertical: always fall through to document if no nested scroller.
-                // Horizontal mid-page without a rail: do nothing (avoid sideways page jump).
-                if(!scrolled && (forceWindow || dy!==0 || !target)){
-                  if(dx!==0 && dy===0 && !forceWindow && target){
-                    // mid-page horizontal with target but no rail — skip
-                  } else if(window.scrollBy){
-                    window.scrollBy(dx,dy);
-                  } else {
-                    var el=document.scrollingElement||document.documentElement||document.body;
-                    if(el){
-                      if(dy) el.scrollTop=(el.scrollTop||0)+dy;
-                      if(dx) el.scrollLeft=(el.scrollLeft||0)+dx;
-                    }
-                  }
-                }
-              }catch(e){}
-            })($x,$y,$dx,$dy,$fw);""",
+                return false;
+              }catch(e){return false;}
+            })($x,$y,$dx);""",
             null,
         )
     }
@@ -476,8 +559,10 @@ class RemoteInputRouter(
 
     private fun scheduleLongPressToggle() {
         cancelLongPressToggle()
+        // Do not mode-switch during video fullscreen — long OK is often used on player chrome.
+        if (mediaPointerLock) return
         val r = Runnable {
-            if (centreHeld && !modeToggledByLongPress) {
+            if (centreHeld && !modeToggledByLongPress && !mediaPointerLock) {
                 modeToggledByLongPress = true
                 toggleMode()
             }
@@ -485,6 +570,27 @@ class RemoteInputRouter(
         longPressRunnable = r
         mainHandler.postDelayed(r, LONG_PRESS_MS)
     }
+
+    /**
+     * Force pointer while a video surface is active (HTML fullscreen or Keen playback mode).
+     * Prevents accidental DOM focus when activating fullscreen / player controls.
+     */
+    fun setMediaPointerLock(locked: Boolean) {
+        mediaPointerLock = locked
+        if (locked) {
+            cancelLongPressToggle()
+            modeToggledByLongPress = false
+            centreHeld = false
+            // Always re-assert pointer + cursor for player UI (subs / quality / audio).
+            if (mode != Mode.POINTER) {
+                setMode(Mode.POINTER)
+            } else if (cursor.visibility != android.view.View.VISIBLE) {
+                cursor.showAtCentre()
+            }
+        }
+    }
+
+    fun isMediaPointerLocked(): Boolean = mediaPointerLock
 
     private fun cancelLongPressToggle() {
         longPressRunnable?.let { mainHandler.removeCallbacks(it) }
@@ -495,6 +601,8 @@ class RemoteInputRouter(
         if (mode == Mode.DOM_FOCUS) {
             webView.evaluateJavascript(INSPECT_JS) { inspectRaw ->
                 val fingerprint = unwrap(inspectRaw)
+                // Authority before page JS runs (popups must see a live grant).
+                onDeliberateActivation?.invoke(fingerprint)
                 if (looksLikePlay(fingerprint)) {
                     onPlayLikeActivation?.invoke(fingerprint)
                 }
@@ -515,27 +623,65 @@ class RemoteInputRouter(
         }
         // WebView is laid out below chrome — offset touch Y.
         val y = (yShell - chromeH).coerceAtLeast(0f)
-        webView.evaluateJavascript(
-            """(function(){
-              var el=document.elementFromPoint($x,$y);
-              if(!el) return null;
-              var t=(el.innerText||el.getAttribute('aria-label')||el.id||'').trim().slice(0,80);
-              var role=el.getAttribute('role')||el.tagName;
-              var play=/(^|\\s)play(\\s|$)|▶|watch|start/i.test(t)||el.id==='real-play'||el.dataset.keenPlay==='1';
-              return JSON.stringify({play:play,role:role,text:t,id:el.id||'',href:el.href||'',fp:(el.tagName+'#'+(el.id||'')+'.'+(el.className||'')).slice(0,120)});
-            })();""",
-        ) { inspectRaw ->
-            val fingerprint = unwrap(inspectRaw)
-            if (looksLikePlay(fingerprint)) {
-                onPlayLikeActivation?.invoke(fingerprint)
+
+        // Search / text-field Enter UX:
+        // Live sites (bcine etc.) already show typeahead results. Enter should
+        // commit: dismiss IME, blur the field, leave pointer free to scroll results.
+        // Prefer focused field (activeElement) over hit-test — typing often leaves
+        // the pointer where the search icon was, not over the input.
+        webView.evaluateJavascript(SEARCH_COMMIT_JS.format(x.toInt(), y.toInt())) { raw ->
+            val kind = unwrap(raw)
+            if (kind != null && (kind.startsWith("search_commit") || kind == "input_blur")) {
+                onHideKeyboard()
+                onUserInput()
+                // Nudge pointer into the results panel when we have a Y hint.
+                if (kind.startsWith("search_commit")) {
+                    val (vw, vh) = cursor.viewportSize()
+                    val parts = kind.split(':')
+                    val hintY = parts.getOrNull(1)?.toFloatOrNull()
+                    val targetY = if (hintY != null && hintY > 0f) {
+                        // JS returns content Y; convert to shell Y (chrome offset).
+                        hintY + chromeH
+                    } else {
+                        cursor.cursorY + 96f * density
+                    }
+                    val ny = targetY.coerceIn(chromeH + 24f, (vh - 24f).coerceAtLeast(chromeH + 24f))
+                    val nx = cursor.cursorX.coerceIn(24f, (vw - 24f).coerceAtLeast(24f))
+                    cursor.setPosition(nx, ny)
+                }
+                return@evaluateJavascript
+            }
+            // Normal click path.
+            webView.evaluateJavascript(
+                """(function(){
+                  var el=document.elementFromPoint($x,$y);
+                  if(!el) return null;
+                  var t=(el.innerText||el.getAttribute('aria-label')||el.id||'').trim().slice(0,80);
+                  var role=el.getAttribute('role')||el.tagName;
+                  var href='';
+                  try{
+                    var a=el.closest?el.closest('a[href]'):null;
+                    href=(a&&a.href)||el.href||el.getAttribute('href')||'';
+                  }catch(e){}
+                  var play=/(^|\\s)play(\\s|$)|▶|watch|start/i.test(t)||el.id==='real-play'||el.dataset.keenPlay==='1';
+                  var form=!!(el.closest&&el.closest('form'));
+                  return JSON.stringify({play:play,form:form,role:role,text:t,id:el.id||'',href:href,fp:(el.tagName+'#'+(el.id||'')+'.'+(el.className||'')).slice(0,120)});
+                })();""",
+            ) { inspectRaw ->
+                val fingerprint = unwrap(inspectRaw)
+                onDeliberateActivation?.invoke(fingerprint)
+                if (looksLikePlay(fingerprint)) {
+                    onPlayLikeActivation?.invoke(fingerprint)
+                }
+                onHideKeyboard()
+                val down = pointerEvent(MotionEvent.ACTION_DOWN, InputDevice.SOURCE_TOUCHSCREEN, x, y)
+                val up = pointerEvent(MotionEvent.ACTION_UP, InputDevice.SOURCE_TOUCHSCREEN, x, y)
+                webView.dispatchTouchEvent(down)
+                webView.dispatchTouchEvent(up)
+                down.recycle()
+                up.recycle()
             }
         }
-        val down = pointerEvent(MotionEvent.ACTION_DOWN, InputDevice.SOURCE_TOUCHSCREEN, x, y)
-        val up = pointerEvent(MotionEvent.ACTION_UP, InputDevice.SOURCE_TOUCHSCREEN, x, y)
-        webView.dispatchTouchEvent(down)
-        webView.dispatchTouchEvent(up)
-        down.recycle()
-        up.recycle()
     }
 
     private fun looksLikePlay(fingerprintJson: String?): Boolean {
@@ -575,11 +721,22 @@ class RemoteInputRouter(
     ).apply { source = eventSource }
 
     private fun toggleMode() {
+        if (mediaPointerLock) {
+            // Refuse DOM while video UI needs the pointer.
+            if (mode != Mode.POINTER) setMode(Mode.POINTER)
+            return
+        }
         setMode(if (mode == Mode.DOM_FOCUS) Mode.POINTER else Mode.DOM_FOCUS)
     }
 
     private fun setMode(next: Mode) {
-        if (mode == next) return
+        val target = if (mediaPointerLock && next == Mode.DOM_FOCUS) Mode.POINTER else next
+        if (mode == target) {
+            if (target == Mode.POINTER && cursor.visibility != android.view.View.VISIBLE) {
+                cursor.showAtCentre()
+            }
+            return
+        }
         // Clear continuous motion when leaving pointer.
         holdLeft = false
         holdRight = false
@@ -589,14 +746,14 @@ class RemoteInputRouter(
         velY = 0f
         holdStartedAt = 0L
         stopFrameLoop()
-        mode = next
-        if (next == Mode.POINTER) {
+        mode = target
+        if (target == Mode.POINTER) {
             cursor.showAtCentre()
         } else {
             cursor.hide()
             indexDirty = true
         }
-        onModeChanged(if (next == Mode.POINTER) "Pointer" else "DOM")
+        onModeChanged(if (target == Mode.POINTER) "Pointer" else "DOM")
     }
 
     private enum class Mode { DOM_FOCUS, POINTER }
@@ -609,11 +766,119 @@ class RemoteInputRouter(
         )
         const val LONG_PRESS_MS = 450L
         const val REBUILD_DEBOUNCE_MS = 280L
-        /** Continuous pointer speed (dp/sec). */
-        const val SPEED_MIN_DP = 220f
-        const val SPEED_MAX_DP = 980f
-        const val ACCEL_MS = 420f
-        const val EDGE_SCROLL_DP = 520f
+        /** Continuous pointer speed (dp/sec). Tuned for TV D-pad — smooth but not rushed. */
+        const val SPEED_MIN_DP = 120f
+        const val SPEED_MAX_DP = 480f
+        const val ACCEL_MS = 520f
+        const val EDGE_SCROLL_DP = 380f
+
+        /**
+         * Search/typeahead Enter: keep results open, drop IME focus, report where
+         * results live so native code can park the pointer for scrolling.
+         *
+         * Prefer document.activeElement (what the user typed into) over hit-test.
+         * Never dispatch Escape — that closes many search overlays.
+         * Returns: "search_commit:<contentY>" | "search_commit" | "input_blur" | null
+         * Format args: pageX, pageY (WebView coords, unused when focused).
+         */
+        val SEARCH_COMMIT_JS = """
+            (function(){
+              var px=%d, py=%d;
+              try{
+                function isTextual(el){
+                  if(!el||el.nodeType!==1) return false;
+                  var tag=(el.tagName||'').toUpperCase();
+                  if(tag==='TEXTAREA'||el.isContentEditable) return true;
+                  if(tag==='INPUT'){
+                    var type=(el.getAttribute('type')||'text').toLowerCase();
+                    return type===''||type==='text'||type==='search'||type==='url'||type==='email';
+                  }
+                  var role=(el.getAttribute('role')||'').toLowerCase();
+                  return role==='searchbox'||role==='combobox'||role==='textbox';
+                }
+                function findInput(){
+                  var a=document.activeElement;
+                  if(isTextual(a)) return a;
+                  if(a&&a.closest){
+                    var c=a.closest('input,textarea,[contenteditable="true"],[role="searchbox"],[role="combobox"],[role="textbox"]');
+                    if(isTextual(c)) return c;
+                  }
+                  var el=document.elementFromPoint(px,py);
+                  if(!el) return null;
+                  if(isTextual(el)) return el;
+                  if(el.closest){
+                    var c2=el.closest('input,textarea,[contenteditable="true"],[role="searchbox"],[role="combobox"],[role="textbox"]');
+                    if(isTextual(c2)) return c2;
+                  }
+                  return null;
+                }
+                function looksOverlay(n){
+                  if(!n||!n.getAttribute) return false;
+                  var role=(n.getAttribute('role')||'').toLowerCase();
+                  if(role==='dialog'||role==='listbox'||role==='menu'||role==='combobox'||role==='search') return true;
+                  var idc=((n.id||'')+' '+String(n.className||'')).toLowerCase();
+                  return /modal|dialog|popup|overlay|dropdown|popover|search|suggest|result|combobox|listbox|drawer|typeahead|autocomplete/.test(idc);
+                }
+                function canScrollY(n){
+                  if(!n||n===document||n===document.body||n===document.documentElement) return false;
+                  try{
+                    var st=getComputedStyle(n);
+                    var oy=st.overflowY||st.overflow;
+                    if(oy==='auto'||oy==='scroll'||oy==='overlay'){
+                      return n.scrollHeight > n.clientHeight + 4;
+                    }
+                    var pos=st.position;
+                    if((pos==='fixed'||pos==='absolute') && n.scrollHeight > n.clientHeight + 8) return true;
+                  }catch(e){}
+                  return false;
+                }
+                function resultsHintY(input){
+                  // Prefer a scrollable panel under/near the field (typeahead list).
+                  var root=input;
+                  var hops=0;
+                  while(root && hops<12){
+                    if(looksOverlay(root)||canScrollY(root)) break;
+                    root=root.parentElement; hops++;
+                  }
+                  if(!root) root=input.parentElement||document.body;
+                  var best=null, bestScore=-1;
+                  var nodes=root.querySelectorAll?root.querySelectorAll('*'):[];
+                  var ir=input.getBoundingClientRect?input.getBoundingClientRect():null;
+                  for(var i=0;i<nodes.length && i<200;i++){
+                    var n=nodes[i];
+                    if(!canScrollY(n) && !(n.querySelector && n.querySelector('a[href],li,[role="option"]'))) continue;
+                    var r=n.getBoundingClientRect();
+                    if(r.width<40||r.height<40) continue;
+                    // Prefer panels below the input or large overlay bodies.
+                    var below=(ir? r.top>=ir.top-8 : true);
+                    var score=(canScrollY(n)?1000:0)+r.height+(below?200:0);
+                    if(score>bestScore){ bestScore=score; best=n; }
+                  }
+                  if(best){
+                    var br=best.getBoundingClientRect();
+                    return Math.round(br.top + Math.min(80, br.height*0.35));
+                  }
+                  if(ir) return Math.round(ir.bottom + 48);
+                  return Math.round(py + 96);
+                }
+                var input=findInput();
+                if(!input) return null;
+                var val=(input.value!=null?String(input.value): (input.textContent||'')).trim();
+                // Blur only — keep typeahead DOM mounted. Do NOT Escape (closes overlays).
+                try{ input.blur(); }catch(e){}
+                try{
+                  if(document.activeElement && document.activeElement!==document.body && document.activeElement.blur){
+                    document.activeElement.blur();
+                  }
+                }catch(e2){}
+                if(val.length>0){
+                  var hy=resultsHintY(input);
+                  return 'search_commit:'+hy;
+                }
+                return 'input_blur';
+              }catch(e){ return null; }
+            })();
+        """.trimIndent()
 
         val UNLOCK_SCROLL_JS = """
             (function(){

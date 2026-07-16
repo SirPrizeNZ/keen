@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="releases/keen-0.1.14-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.14%20·%2032--bit-111111?style=for-the-badge" alt="Download APK 32-bit"></a>
+  <a href="releases/keen-0.1.15-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.15%20·%2032--bit-111111?style=for-the-badge" alt="Download APK 32-bit"></a>
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="Releases"></a>
   &nbsp;
@@ -45,10 +45,10 @@ One job:
 
 | | |
 |:--|:--|
-| **Version** | v0.1.14 |
+| **Version** | v0.1.15 |
 | **Platform** | Android TV / Google TV · API 29+ |
 | **ABI** | **32-bit ARM (`armeabi-v7a`)** — primary release |
-| **APK** | **[keen-0.1.14-32bit-armeabi-v7a.apk](releases/keen-0.1.14-32bit-armeabi-v7a.apk)** |
+| **APK** | **[keen-0.1.15-32bit-armeabi-v7a.apk](releases/keen-0.1.15-32bit-armeabi-v7a.apk)** |
 | **Checksums** | [`SHA256SUMS`](releases/SHA256SUMS) |
 | **Release page** | [github.com/SirPrizeNZ/keen/releases](https://github.com/SirPrizeNZ/keen/releases/latest) |
 
@@ -60,7 +60,7 @@ One job:
 
 ```bash
 adb connect <tv-ip>:5555
-adb install -r releases/keen-0.1.14-32bit-armeabi-v7a.apk
+adb install -r releases/keen-0.1.15-32bit-armeabi-v7a.apk
 ```
 
 Accept the debugging prompt on the TV if it appears. Port is usually `5555`; wireless debugging may show a different port — use that if so.

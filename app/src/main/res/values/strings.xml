@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Keen Zero</string>
-    <string name="home_title">Keen Zero</string>
+    <string name="app_name">Keen</string>
+    <string name="home_title">Keen</string>
     <string name="home_subtitle">Remote-first streaming browser — FMHY home</string>
     <string name="open_url">Open URL</string>
     <string name="url_hint">https://fmhy.net/video</string>
@@ -31,4 +31,8 @@
     <string name="continue_status_ready">Ready to restore from last checkpoint</string>
     <string name="continue_status_restoring">Restoring…</string>
     <string name="continue_status_recovery">Renderer recovery — reloading checkpoint</string>
+    <string name="nav_confirm_title">Open link?</string>
+    <string name="nav_confirm_message">Open %1$s?</string>
+    <string name="nav_confirm_open">Open</string>
+    <string name="nav_confirm_cancel">Cancel</string>
 </resources>

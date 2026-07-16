@@ -10,6 +10,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -120,11 +121,9 @@ class KeenActivity : AppCompatActivity() {
         showHome(status = getString(R.string.status_home))
         hydrateContinuitySurface()
         recordEvent(NavigationEvent(System.currentTimeMillis(), "native_home_ready"))
-        if (BuildConfig.DEBUG) {
-            handleDebugIntent(intent)
-        }
-        // Product default: always open FMHY streaming section on cold start
-        // unless a debug LAB_URL intent already navigated.
+        // LAB_URL / harness extras allowed on release for physical TV validation.
+        handleDebugIntent(intent)
+        // Product default: open FMHY streaming section unless LAB_URL navigated first.
         if (webHost == null && intent?.getStringExtra("com.keenzero.app.extra.LAB_URL").isNullOrBlank()) {
             binding.urlInput.setText(getString(R.string.home_url))
             openUrl(getString(R.string.home_url))
@@ -134,7 +133,7 @@ class KeenActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (BuildConfig.DEBUG) handleDebugIntent(intent)
+        handleDebugIntent(intent)
     }
 
     override fun onPause() {
@@ -1111,11 +1110,14 @@ class KeenActivity : AppCompatActivity() {
                         binding.chromeBar.visibility =
                             if (fullscreen) View.GONE else View.VISIBLE
                     }
+                    // Player chrome needs pointer (subs / quality / audio) — never flip to DOM.
+                    webHost?.setMediaPointerLock(fullscreen || webHost?.isPlaybackMode == true)
                     recordEvent(
                         NavigationEvent(
                             System.currentTimeMillis(),
                             if (fullscreen) "html_custom_view_enter" else "html_custom_view_exit",
                             url = currentUrl,
+                            detail = "mediaPointerLock=$fullscreen",
                         ),
                     )
                 }
@@ -1123,6 +1125,7 @@ class KeenActivity : AppCompatActivity() {
             onPlaybackMode = { enter ->
                 runOnUiThread {
                     applyKeenPlaybackMode(enter)
+                    webHost?.setMediaPointerLock(enter)
                 }
             },
             onJourneyState = { state ->
@@ -1209,6 +1212,11 @@ class KeenActivity : AppCompatActivity() {
             onUrlBarActivate = {
                 runOnUiThread { focusBrowseUrlBar() }
             },
+            onConfirmNavigation = { url, host, reason ->
+                runOnUiThread {
+                    showNavigationConfirm(url, host, reason)
+                }
+            },
             onCheckpoint = { cp ->
                 latestCheckpoint = cp
                 // Periodic checkpoints debounce on background thread (ContinuityStore).
@@ -1267,11 +1275,63 @@ class KeenActivity : AppCompatActivity() {
         return host
     }
 
+    /**
+     * Minimal native confirmation for deliberate high-risk destinations.
+     * Open → load in current session. Cancel → stay (never silent open/drop).
+     */
+    private fun showNavigationConfirm(url: String, host: String, reason: String) {
+        if (isFinishing) return
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "NAV_CONFIRM_SHOWN",
+                url = url,
+                detail = "host=$host reason=$reason",
+            ),
+        )
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.nav_confirm_title))
+            .setMessage(getString(R.string.nav_confirm_message, host))
+            .setPositiveButton(R.string.nav_confirm_open) { _, _ ->
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "NAV_CONFIRM_OPEN",
+                        url = url,
+                        detail = "host=$host",
+                    ),
+                )
+                webHost?.load(url)
+            }
+            .setNegativeButton(R.string.nav_confirm_cancel) { _, _ ->
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "NAV_CONFIRM_CANCEL",
+                        url = url,
+                        detail = "host=$host",
+                    ),
+                )
+            }
+            .setOnCancelListener {
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "NAV_CONFIRM_CANCEL",
+                        url = url,
+                        detail = "host=$host dismissed",
+                    ),
+                )
+            }
+            .show()
+    }
+
     private fun handleBack() {
         when (uiState) {
             AppUiState.PLAYBACK_MODE -> {
                 webHost?.exitPlaybackMode("back")
                 applyKeenPlaybackMode(false)
+                webHost?.setMediaPointerLock(false)
                 uiState = AppUiState.BROWSING
                 binding.browseShell.visibility = View.VISIBLE
                 binding.chromeBar.visibility = View.VISIBLE
@@ -1286,6 +1346,10 @@ class KeenActivity : AppCompatActivity() {
                     )
                     uiState = AppUiState.BROWSING
                     binding.chromeBar.visibility = View.VISIBLE
+                }
+                // Unlock only if not still in Keen playback mode.
+                if (webHost?.isPlaybackMode != true) {
+                    webHost?.setMediaPointerLock(false)
                 }
             }
             AppUiState.NATIVE_OVERLAY -> {
@@ -1499,8 +1563,13 @@ class KeenActivity : AppCompatActivity() {
             BlockingRuntime.snapshot().let { snapshot ->
                 JSONObject()
                     .put("ready", snapshot.ready)
+                    .put("allowedRequests", snapshot.allowedRequests)
                     .put("blockedRequests", snapshot.blockedRequests)
+                    .put("matchP50Us", snapshot.matchP50Us)
+                    .put("matchP95Us", snapshot.matchP95Us)
+                    .put("matchP99Us", snapshot.matchP99Us)
                     .put("serviceWorkerInterception", snapshot.serviceWorkerInterception)
+                    .put("pageHost", snapshot.pageHost)
                     .put("visibility", snapshot.visibility)
             },
         ).put(

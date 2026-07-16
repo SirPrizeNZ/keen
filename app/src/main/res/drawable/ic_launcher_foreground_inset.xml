@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ~32% of field: 34% inset each side. Full black adaptive background. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_launcher_mark"
+    android:insetLeft="34%"
+    android:insetTop="34%"
+    android:insetRight="34%"
+    android:insetBottom="34%" />
