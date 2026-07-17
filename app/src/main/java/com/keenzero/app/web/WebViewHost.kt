@@ -213,14 +213,51 @@ class WebViewHost(
             onDeliberateActivation = { fingerprintJson ->
                 recordDeliberateActivation(fingerprintJson, firewall)
             },
+            // HTML custom-view is a separate surface — pointer clicks/hovers must hit it.
+            mediaTouchTarget = { chromeClient?.fullscreenCustomView },
             onHideKeyboard = {
                 try {
                     val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
                         as? android.view.inputmethod.InputMethodManager
                     val token = webView?.windowToken ?: cursor.windowToken
                     imm?.hideSoftInputFromWindow(token, 0)
-                    webView?.clearFocus()
-                    webView?.requestFocus()
+                    // Never clearFocus here — it tears down WebEditText InputConnection
+                    // and cancels the keyboard (ImeTracker PHASE_WM_SHOW_IME_RUNNER cancelled).
+                } catch (_: Throwable) {
+                }
+            },
+            onShowKeyboard = {
+                try {
+                    val wv = webView
+                    if (wv != null) {
+                        // Do NOT clearFocus — that restarts InputConnection as inputType=NULL
+                        // and cancels the TV IME mid-show (ImeTracker onCancelled).
+                        wv.isFocusable = true
+                        wv.isFocusableInTouchMode = true
+                        if (!wv.hasFocus()) wv.requestFocus()
+                        val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                            as? android.view.inputmethod.InputMethodManager
+                        wv.post {
+                            try {
+                                imm?.showSoftInput(
+                                    wv,
+                                    android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT,
+                                )
+                            } catch (_: Throwable) {
+                            }
+                        }
+                        wv.postDelayed({
+                            try {
+                                if (wv.hasFocus()) {
+                                    imm?.showSoftInput(
+                                        wv,
+                                        android.view.inputmethod.InputMethodManager.SHOW_FORCED,
+                                    )
+                                }
+                            } catch (_: Throwable) {
+                            }
+                        }, 200L)
+                    }
                 } catch (_: Throwable) {
                 }
             },
@@ -381,6 +418,11 @@ class WebViewHost(
                 }
                 // Kill QR / full-page interstitials immediately and keep sweeping.
                 armHostileOverlayGuard(view)
+                // Modal scroll controller (document-start may be unavailable on some devices).
+                view.evaluateJavascript(com.keenzero.app.input.ModalScrollJs.INSTALL_JS, null)
+                // Scroll authority: sites cannot yank viewport; Keen grants movement.
+                view.evaluateJavascript(com.keenzero.app.input.ScrollAuthorityJs.INSTALL_JS, null)
+                inputRouter?.onNavigationCommitted()
                 playback.attach(view)
                 playback.onPageSettled(view, url)
                 inputRouter.markIndexDirty("page_finished")
@@ -528,6 +570,22 @@ class WebViewHost(
 
     fun goBack() {
         webView?.goBack()
+    }
+
+    /**
+     * SPA sites often use history.pushState without a native WebView back entry
+     * WebView reports. Always try JS history.back() when native canGoBack is false.
+     */
+    fun historyBack() {
+        val wv = webView ?: return
+        if (wv.canGoBack()) {
+            wv.goBack()
+        } else {
+            wv.evaluateJavascript(
+                """(function(){try{if(history.length>1){history.back();return true;}return false;}catch(e){return false;}})();""",
+                null,
+            )
+        }
     }
 
     fun handleRemoteKey(event: KeyEvent): Boolean =
@@ -1092,36 +1150,63 @@ class WebViewHost(
         // window.open quarantine + hostile QR/interstitial guard (coreflix-class popups).
         WebViewCompat.addDocumentStartJavaScript(
             webView,
+            // NEVER return null from window.open — SPA movie sites treat null as "popup blocked"
+            // and scroll-home / abort content navigation (cineby-class). Ads get a dead stub;
+            // same-origin / content paths navigate same-tab. HostileOverlayGuard overwrites with
+            // the full policy; this early patch is the fail-safe if that install is skipped.
             """(function(){
-              let trustedClickAt=0;
-              document.addEventListener('click',function(event){ if(event.isTrusted) trustedClickAt=Date.now(); },true);
-              function isAd(url){
+              function keenEarlyStub(){
+                var w={closed:false,opener:null,name:''};
+                w.close=function(){ w.closed=true; };
+                w.focus=function(){}; w.blur=function(){}; w.postMessage=function(){};
+                w.location={href:'about:blank',assign:function(){},replace:function(){},reload:function(){}};
+                w.document={write:function(){},writeln:function(){},close:function(){},open:function(){return this;}};
+                return w;
+              }
+              function isAdHost(url){
                 try{
                   var h=new URL(url,location.href).hostname;
                   return /(doubleclick\.net|googlesyndication|adservice\.google|ads\.example|pop\.example|evil\.example|tracker\.example|adnxs\.com|popads|propellerads|exoclick|juicyads)/i.test(h);
-                }catch(e){return true;}
+                }catch(e){ return true; }
               }
-              var _open=window.open;
+              function isContentPath(u){
+                return /\/movie\/|\/tv\/|\/show\/|\/title\/|\/watch\/|\/play\/|\/v\/|\/embed\/|\/film\/|\/series\//i.test(u||'');
+              }
               window.open=function(url){
-                console.warn('KZ_WINDOW_OPEN_NATIVE_PATH '+url);
-                if(typeof url!=='string' || !/^https?:/i.test(url)){
-                  console.warn('KZ_QUARANTINE:invalid'); return null;
-                }
-                if(isAd(url)){ console.warn('KZ_QUARANTINE:ad '+url); return null; }
-                try{ return _open.apply(window, arguments); }catch(e){
-                  console.warn('KZ_BLOCK_WINDOW_OPEN '+url); return null;
-                }
+                try{
+                  var href=typeof url==='string'?url:String(url||'');
+                  console.warn('KZ_WINDOW_OPEN_NATIVE_PATH '+href.slice(0,120));
+                  if(!href || href==='about:blank' || href.indexOf('javascript:')===0){
+                    return keenEarlyStub();
+                  }
+                  var a=document.createElement('a'); a.href=href;
+                  var host=(a.hostname||'').toLowerCase();
+                  var same=!host||host===location.hostname;
+                  if(isAdHost(a.href)){
+                    console.warn('KZ_QUARANTINE:ad '+a.href.slice(0,120));
+                    return keenEarlyStub();
+                  }
+                  if(same || isContentPath(a.pathname)||isContentPath(a.href)){
+                    try{ location.assign(a.href); }catch(e){}
+                    return keenEarlyStub();
+                  }
+                  // Cross-origin non-ad: stub only (no second WebView on TV).
+                  console.warn('KZ_BLOCK_WINDOW_OPEN '+a.href.slice(0,120));
+                  return keenEarlyStub();
+                }catch(e){ return keenEarlyStub(); }
               };
               document.addEventListener('click',function(event){
                 const link=event.target && event.target.closest && event.target.closest('a[target="_blank"]');
                 if(link){
                   try{
-                    if(isAd(link.href)){ event.preventDefault(); console.warn('KZ_QUARANTINE:blank-ad'); return; }
+                    if(isAdHost(link.href)){ event.preventDefault(); console.warn('KZ_QUARANTINE:blank-ad'); return; }
                     link.target='_self';
                   }catch(e){}
                 }
               },true);
-            })();""" + "\n" + HostileOverlayGuard.DOCUMENT_START_JS,
+            })();""" + "\n" + HostileOverlayGuard.DOCUMENT_START_JS +
+                "\n" + com.keenzero.app.input.ModalScrollJs.INSTALL_JS +
+                "\n" + com.keenzero.app.input.ScrollAuthorityJs.INSTALL_JS,
             setOf("*"),
         )
     }
@@ -1177,7 +1262,7 @@ class WebViewHost(
                 id=e.dataset.keenIdx;
                 if(seen[id]) return;
                 seen[id]=1;
-                if(!e.hasAttribute('tabindex')) e.setAttribute('tabindex','-1');
+                // Observation only — do not stamp tabindex (ghost focus rings on nav).
                 var href=e.href || e.getAttribute('href') || e.getAttribute('data-href') || e.getAttribute('data-link') || '';
                 var origin='';
                 try{ if(href) origin=new URL(href, location.href).origin; }catch(ex){}

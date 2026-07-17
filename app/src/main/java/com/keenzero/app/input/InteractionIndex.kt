@@ -241,7 +241,9 @@ class InteractionIndex(
                 if(!e.dataset.keenIdx) e.dataset.keenIdx=id;
                 id=e.dataset.keenIdx;
                 seen[id]=1;
-                if(!e.hasAttribute('tabindex')) e.setAttribute('tabindex','-1');
+                // NEVER stamp tabindex during collect — that makes every nav link focusable
+                // and causes ghost :focus rings (fmhy "Changelog" flash when OK'ing Cineby).
+                // tabindex is applied only in FOCUS_JS when DOM mode actually focuses a candidate.
                 var role=e.getAttribute('role')||e.tagName;
                 var text=(e.innerText||e.getAttribute('aria-label')||e.getAttribute('title')||e.value||'').trim().slice(0,40);
                 var href=e.href||e.getAttribute('href')||e.getAttribute('data-href')||'';

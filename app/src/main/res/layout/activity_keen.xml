@@ -73,22 +73,27 @@
                 android:layout_height="0dp"
                 android:layout_weight="1" />
         </LinearLayout>
-
-        <!-- Full-shell pointer layer (covers URL bar + page). -->
-        <FrameLayout
-            android:id="@+id/pointerLayer"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clickable="false"
-            android:focusable="false" />
     </FrameLayout>
 
-    <!-- Fullscreen custom view host (WebChromeClient). -->
+    <!-- Fullscreen custom view host (WebChromeClient). Pointer layer stays ABOVE this. -->
     <FrameLayout
         android:id="@+id/fullscreenContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:clickable="false"
+        android:focusable="false"
+        android:descendantFocusability="blocksDescendants"
         android:visibility="gone" />
+
+    <!-- Keen-owned pointer: always a root sibling above browse + HTML fullscreen. -->
+    <FrameLayout
+        android:id="@+id/pointerLayer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="false"
+        android:focusable="false"
+        android:focusableInTouchMode="false"
+        android:elevation="32dp" />
 
     <!-- Native home — first frame independent of WebView. -->
     <ScrollView

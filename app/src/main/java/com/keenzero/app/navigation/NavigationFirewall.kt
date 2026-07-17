@@ -130,7 +130,7 @@ class NavigationFirewall(
         return when (d.action) {
             WindowRequestBroker.Action.BLOCK -> {
                 when (d.reason) {
-                    "ad_host" -> Decision.BLOCK_POPUP_AD
+                    "ad_host", "ad_host_heuristic" -> Decision.BLOCK_POPUP_AD
                     "external_scheme" -> Decision.BLOCK_EXTERNAL_SCHEME
                     "invalid_url" -> Decision.BLOCK_INVALID_URL
                     else -> Decision.BLOCK_POPUP

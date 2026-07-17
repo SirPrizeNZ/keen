@@ -3,6 +3,7 @@ package com.keenzero.app.web
 import android.os.Message
 import android.os.SystemClock
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
@@ -271,9 +272,15 @@ class KeenWebChromeClient(
         }
         customView = view
         customCallback = callback
+        // Pointer + Activity key routing own input. Block D-pad focus/selection inside
+        // the HTML player surface so keys never drive DOM outlines under fullscreen.
+        fullscreenHost.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        fullscreenHost.isFocusable = false
+        fullscreenHost.isFocusableInTouchMode = false
         fullscreenHost.visibility = View.VISIBLE
         fullscreenHost.removeAllViews()
         if (view != null) {
+            suppressFocusTree(view)
             fullscreenHost.addView(
                 view,
                 FrameLayout.LayoutParams(
@@ -281,6 +288,8 @@ class KeenWebChromeClient(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                 ),
             )
+            // Keep video painting under Keen pointer layer (sibling above host).
+            fullscreenHost.elevation = 8f
         }
         onFullscreen(true)
     }
@@ -295,9 +304,14 @@ class KeenWebChromeClient(
         return true
     }
 
+    /** Active HTML custom-view surface (for pointer click/hover while fullscreen). */
+    val fullscreenCustomView: View?
+        get() = customView
+
     private fun exitFullscreenInternal() {
         fullscreenHost.removeAllViews()
         fullscreenHost.visibility = View.GONE
+        fullscreenHost.elevation = 0f
         customView = null
         try {
             customCallback?.onCustomViewHidden()
@@ -305,6 +319,18 @@ class KeenWebChromeClient(
         }
         customCallback = null
         onFullscreen(false)
+    }
+
+    private fun suppressFocusTree(root: View) {
+        root.isFocusable = false
+        root.isFocusableInTouchMode = false
+        root.isClickable = root.isClickable // leave click for synthetic touches
+        if (root is ViewGroup) {
+            root.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            for (i in 0 until root.childCount) {
+                suppressFocusTree(root.getChildAt(i))
+            }
+        }
     }
 
     override fun onReceivedTitle(view: WebView?, title: String?) {

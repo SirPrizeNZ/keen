@@ -47,6 +47,8 @@ class KeenActivity : AppCompatActivity() {
     private val events = ArrayDeque<NavigationEvent>(MAX_EVENTS)
     private val rendererTerminations = mutableListOf<JSONObject>()
     private var currentUrl: String? = null
+    /** First URL of this browse session (home chooser → site). Back only returns to chooser here. */
+    private var browseEntryUrl: String? = null
     private var webViewEverCreated: Boolean = false
     private var latestCheckpoint: ContinuityCheckpoint? = null
     private var pendingRestore: ContinuityCheckpoint? = null
@@ -939,6 +941,9 @@ class KeenActivity : AppCompatActivity() {
         recordEvent(NavigationEvent(System.currentTimeMillis(), "user_open_url", url = url))
         val host = ensureWebHost()
         webViewEverCreated = true
+        // Session root: Back should not return to FMHY chooser until we leave this site stack.
+        browseEntryUrl = url
+        currentUrl = url
         val restoreCp = pendingRestore
         if (restore && restoreCp != null) {
             host.beginRestore(restoreCp)
@@ -1110,8 +1115,13 @@ class KeenActivity : AppCompatActivity() {
                         binding.chromeBar.visibility =
                             if (fullscreen) View.GONE else View.VISIBLE
                     }
-                    // Player chrome needs pointer (subs / quality / audio) — never flip to DOM.
+                    // Keep pointer above video for subs / quality / audio — never DOM.
                     webHost?.setMediaPointerLock(fullscreen || webHost?.isPlaybackMode == true)
+                    ensurePointerAboveContent()
+                    if (!fullscreen) {
+                        // Return focus to the single live WebView after custom-view teardown.
+                        webHost?.webView?.requestFocus()
+                    }
                     recordEvent(
                         NavigationEvent(
                             System.currentTimeMillis(),
@@ -1126,6 +1136,7 @@ class KeenActivity : AppCompatActivity() {
                 runOnUiThread {
                     applyKeenPlaybackMode(enter)
                     webHost?.setMediaPointerLock(enter)
+                    ensurePointerAboveContent()
                 }
             },
             onJourneyState = { state ->
@@ -1206,8 +1217,10 @@ class KeenActivity : AppCompatActivity() {
                 runOnUiThread { setLoadProgress(percent) }
             },
             chromeHeightPx = {
-                binding.chromeBar.height.takeIf { it > 0 }
-                    ?: binding.chromeBar.measuredHeight
+                // GONE chrome still reports last height on some devices — only count when visible.
+                if (binding.chromeBar.visibility != View.VISIBLE) 0
+                else binding.chromeBar.height.takeIf { it > 0 }
+                    ?: binding.chromeBar.measuredHeight.coerceAtLeast(0)
             },
             onUrlBarActivate = {
                 runOnUiThread { focusBrowseUrlBar() }
@@ -1278,9 +1291,29 @@ class KeenActivity : AppCompatActivity() {
     /**
      * Minimal native confirmation for deliberate high-risk destinations.
      * Open → load in current session. Cancel → stay (never silent open/drop).
+     * Ad/junk hosts are auto-cancelled — never leave "Open hai8g.com?" on the TV.
      */
     private fun showNavigationConfirm(url: String, host: String, reason: String) {
         if (isFinishing) return
+        val q = com.keenzero.app.playback.PopupQuarantine()
+        val junk = q.looksDisposableAdHost(host) ||
+            q.decide(
+                targetUrl = url,
+                requestingOrigin = null,
+                playIntentActive = false,
+                playOrigin = null,
+            ) == com.keenzero.app.playback.PopupQuarantine.Verdict.DESTROY_ADVERTISING
+        if (junk) {
+            recordEvent(
+                NavigationEvent(
+                    System.currentTimeMillis(),
+                    "NAV_CONFIRM_AUTO_BLOCK",
+                    url = url,
+                    detail = "host=$host reason=$reason junk_ad",
+                ),
+            )
+            return
+        }
         recordEvent(
             NavigationEvent(
                 System.currentTimeMillis(),
@@ -1326,9 +1359,57 @@ class KeenActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * Back stack (see [com.keenzero.app.navigation.BrowsingBackPolicy]):
+     * custom-view / document fullscreen → playback chrome → history → home.
+     *
+     * Document fullscreen (PlaybackOrchestrator OPTIONAL_FULLSCREEN_JS) is not always
+     * mirrored in [uiState]; peel it whenever leaving fullscreen *or* playback.
+     */
     private fun handleBack() {
-        when (uiState) {
-            AppUiState.PLAYBACK_MODE -> {
+        val surface = when (uiState) {
+            AppUiState.HOME -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.HOME
+            AppUiState.BROWSING -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.BROWSING
+            AppUiState.PLAYBACK_MODE -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.PLAYBACK_MODE
+            AppUiState.WEB_FULLSCREEN -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.WEB_FULLSCREEN
+            AppUiState.NATIVE_OVERLAY -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.NATIVE_OVERLAY
+            AppUiState.RECOVERY -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.RECOVERY
+            AppUiState.RESTORING -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.RESTORING
+        }
+        val customViewFs = webHost?.chromeClient?.isFullscreen == true
+        val atEntry = com.keenzero.app.navigation.BrowsingBackPolicy.isSameBrowseEntry(
+            browseEntryUrl,
+            currentUrl,
+        )
+        val action = com.keenzero.app.navigation.BrowsingBackPolicy.decide(
+            surface = surface,
+            htmlCustomViewActive = customViewFs,
+            documentFullscreen = uiState == AppUiState.WEB_FULLSCREEN,
+            webViewCanGoBack = webHost?.canGoBack() == true,
+            atBrowseEntry = atEntry,
+            urlBarFocused = binding.browseUrlEdit.hasFocus(),
+        )
+        when (action) {
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.EXIT_FULLSCREEN -> {
+                exitAllHtmlFullscreen()
+                uiState = if (webHost?.isPlaybackMode == true) {
+                    AppUiState.PLAYBACK_MODE
+                } else {
+                    AppUiState.BROWSING
+                }
+                binding.browseShell.visibility = View.VISIBLE
+                binding.chromeBar.visibility = View.VISIBLE
+                if (webHost?.isPlaybackMode != true) {
+                    webHost?.setMediaPointerLock(false)
+                }
+                webHost?.webView?.requestFocus()
+                recordEvent(
+                    NavigationEvent(System.currentTimeMillis(), "exit_fullscreen", url = currentUrl),
+                )
+            }
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.EXIT_PLAYBACK_MODE -> {
+                // Must peel HTML fullscreen first or video stays stuck full-bleed.
+                exitAllHtmlFullscreen()
                 webHost?.exitPlaybackMode("back")
                 applyKeenPlaybackMode(false)
                 webHost?.setMediaPointerLock(false)
@@ -1336,53 +1417,53 @@ class KeenActivity : AppCompatActivity() {
                 binding.browseShell.visibility = View.VISIBLE
                 binding.chromeBar.visibility = View.VISIBLE
                 webHost?.webView?.requestFocus()
+                recordEvent(
+                    NavigationEvent(System.currentTimeMillis(), "exit_playback_mode", url = currentUrl),
+                )
             }
-            AppUiState.WEB_FULLSCREEN -> {
-                val exited = webHost?.chromeClient?.exitFullscreenIfNeeded() == true
-                if (!exited) {
-                    webHost?.webView?.evaluateJavascript(
-                        "(function(){if(document.fullscreenElement)document.exitFullscreen();})();",
-                        null,
-                    )
-                    uiState = AppUiState.BROWSING
-                    binding.chromeBar.visibility = View.VISIBLE
-                }
-                // Unlock only if not still in Keen playback mode.
-                if (webHost?.isPlaybackMode != true) {
-                    webHost?.setMediaPointerLock(false)
-                }
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.CLEAR_URL_FOCUS -> {
+                hideKeyboard(binding.browseUrlEdit)
+                binding.browseUrlEdit.clearFocus()
+                webHost?.webView?.requestFocus()
             }
-            AppUiState.NATIVE_OVERLAY -> {
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.HISTORY_BACK -> {
+                // Movie page → previous site page (search/list), never FMHY chooser mid-site.
+                exitAllHtmlFullscreen()
+                webHost?.historyBack()
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "history_back",
+                        url = currentUrl,
+                        detail = "entry=$browseEntryUrl nativeCanGoBack=${webHost?.canGoBack()}",
+                    ),
+                )
+            }
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.RETURN_HOME -> {
+                // Only when already at session entry URL (e.g. cineby home after openUrl).
+                exitAllHtmlFullscreen()
+                webHost?.flushSession()
+                webHost?.destroy("return_home")
+                webHost = null
+                browseEntryUrl = null
+                showHome(status = getString(R.string.status_home) + " (returned)")
+                hydrateContinuitySurface()
+            }
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.DISMISS_OVERLAY -> {
                 binding.diagnosticsPreview.visibility = View.GONE
                 uiState = AppUiState.HOME
             }
-            AppUiState.BROWSING, AppUiState.RESTORING -> {
-                if (binding.browseUrlEdit.hasFocus()) {
-                    hideKeyboard(binding.browseUrlEdit)
-                    binding.browseUrlEdit.clearFocus()
-                    webHost?.webView?.requestFocus()
-                    return
-                }
-                val host = webHost
-                if (host != null && host.canGoBack()) {
-                    host.goBack()
-                    recordEvent(
-                        NavigationEvent(System.currentTimeMillis(), "history_back", url = currentUrl),
-                    )
-                } else {
-                    host?.flushSession()
-                    host?.destroy("return_home")
-                    webHost = null
-                    showHome(status = getString(R.string.status_home) + " (returned)")
-                    hydrateContinuitySurface()
-                }
-            }
-            AppUiState.RECOVERY -> showHome(status = getString(R.string.status_home))
-            AppUiState.HOME -> {
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.SYSTEM_EXIT -> {
                 recordEvent(NavigationEvent(System.currentTimeMillis(), "system_exit_back"))
                 finish()
             }
         }
+    }
+
+    /** Custom-view host + document/webkit fullscreen (idempotent). */
+    private fun exitAllHtmlFullscreen() {
+        webHost?.chromeClient?.exitFullscreenIfNeeded()
+        webHost?.webView?.evaluateJavascript(EXIT_DOCUMENT_FULLSCREEN_JS, null)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -1403,6 +1484,19 @@ class KeenActivity : AppCompatActivity() {
             return true
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    /**
+     * Keen pointer is a root sibling — always above browse shell and HTML custom-view host.
+     * Never parent the cursor into the WebView or fullscreen custom view.
+     */
+    private fun ensurePointerAboveContent() {
+        binding.pointerLayer.elevation = 32f
+        binding.pointerLayer.bringToFront()
+        // Confirmation / system overlays may sit higher; keep home under pointer while browsing.
+        if (binding.homeScroll.visibility == View.VISIBLE) {
+            binding.homeScroll.bringToFront()
+        }
     }
 
     /**
@@ -1649,6 +1743,17 @@ class KeenActivity : AppCompatActivity() {
         const val REMOTE_FIXTURE_URL =
             "https://appassets.androidplatform.net/assets/lab/remote_control_fixture.html"
         private const val MAX_EVENTS = 400
+
+        /** Peel document/webkit fullscreen from OPTIONAL_FULLSCREEN_JS path. */
+        private val EXIT_DOCUMENT_FULLSCREEN_JS = """
+            (function(){
+              try{
+                if(document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
+                else if(document.webkitFullscreenElement && document.webkitExitFullscreen) document.webkitExitFullscreen();
+                else if(document.webkitIsFullScreen && document.webkitCancelFullScreen) document.webkitCancelFullScreen();
+              }catch(e){}
+            })();
+        """.trimIndent()
     }
 
     private fun writeRemoteDump(obj: org.json.JSONObject) {

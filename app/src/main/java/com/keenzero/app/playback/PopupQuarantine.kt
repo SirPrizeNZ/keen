@@ -90,8 +90,42 @@ class PopupQuarantine(
     }
 
     private fun isAdvertising(host: String): Boolean {
-        if (host in advertisingHosts) return true
-        return advertisingHosts.any { host == it || host.endsWith(".$it") }
+        val h = host.lowercase().removePrefix("www.")
+        if (h in advertisingHosts) return true
+        if (advertisingHosts.any { h == it || h.endsWith(".$it") }) return true
+        // Generated redirect/ad farms (e.g. hai8g.com) are not on static lists.
+        return looksDisposableAdHost(h)
+    }
+
+    /**
+     * Heuristic for throwaway ad/redirect hosts that never deserve a confirm dialog.
+     * Tuned for streaming-site junk: short nonsense labels + cheap TLDs + digits.
+     * Must not classify real brands (netflix, youtube, bcine, …).
+     */
+    fun looksDisposableAdHost(host: String): Boolean {
+        val h = host.lowercase().removePrefix("www.")
+        if (h in SAFE_BRAND_HOSTS || SAFE_BRAND_HOSTS.any { h == it || h.endsWith(".$it") }) {
+            return false
+        }
+        val parts = h.split('.').filter { it.isNotEmpty() }
+        if (parts.size < 2) return false
+        val name = parts[parts.size - 2]
+        val tld = parts.last()
+        if (tld !in JUNK_TLDS) return false
+        if (name.length !in 4..12) return false
+        if (!name.all { it.isLetterOrDigit() || it == '-' }) return false
+        // Explicit known junk samples / patterns.
+        if (name in KNOWN_JUNK_LABELS) return true
+        val letters = name.filter { it.isLetter() }
+        val digits = name.count { it.isDigit() }
+        val vowels = letters.count { it in "aeiou" }
+        // hai8g-style: short label with digits (generated campaign hosts).
+        if (digits > 0 && name.length <= 8 && letters.length >= 3) return true
+        // Consonant soup / near-zero vowels (generated).
+        if (letters.length in 4..8 && vowels <= 1 && digits == 0) return true
+        // Pure random alnum 5–7 with mixed digits+letters.
+        if (name.length in 5..7 && digits >= 1 && vowels <= 2) return true
+        return false
     }
 
     private fun isRecognisedMediaProvider(host: String): Boolean {
@@ -136,6 +170,37 @@ class PopupQuarantine(
             "pop.example",
             "evil.example",
             "tracker.example",
+            // Common streaming ad / click-under farms (extend with evidence, not guesses alone).
+            "hai8g.com",
+            "popads.net",
+            "propellerads.com",
+            "adsterra.com",
+            "exoclick.com",
+            "juicyads.com",
+            "clickadu.com",
+            "trafficjunky.com",
+            "adcash.com",
+            "hilltopads.com",
+        )
+
+        /** Registrable labels / hosts that must never be treated as disposable ads. */
+        private val SAFE_BRAND_HOSTS = setOf(
+            "google", "youtube", "youtu", "netflix", "amazon", "primevideo", "disney", "hulu",
+            "spotify", "twitch", "vimeo", "cloudflare", "github", "microsoft", "apple",
+            "bcine", "coreflix", "fmhy", "imdb", "tmdb", "themoviedb", "wikipedia",
+            "reddit", "discord", "telegram", "whatsapp", "twitter", "x", "facebook",
+            "instagram", "tiktok", "akamai", "cloudfront", "fastly", "jsdelivr", "unpkg",
+            "gstatic", "googleapis", "gvt1", "ggpht", "ytimg",
+        )
+
+        private val JUNK_TLDS = setOf(
+            "com", "net", "xyz", "top", "click", "link", "live", "site", "online",
+            "icu", "buzz", "work", "space", "fun", "pw", "cc", "icu", "rest", "quest",
+            "cfd", "sbs", "cyou", "shop", "store", "pro", "info", "biz",
+        )
+
+        private val KNOWN_JUNK_LABELS = setOf(
+            "hai8g", "popads", "adsterra", "exoclick", "juicyads", "clickadu",
         )
     }
 }

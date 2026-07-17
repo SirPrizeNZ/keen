@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  body{margin:0;font:16px/1.4 system-ui,sans-serif;background:#111;color:#eee}
+  #probe{position:fixed;top:8px;left:8px;z-index:99;background:#0a0;color:#000;padding:8px;font:13px mono}
+  .block{padding:24px 20px;border-bottom:1px solid #333}
+  #top{background:#1a3}
+  #footer{background:#a31;min-height:40vh;padding:40px 20px}
+</style>
+</head>
+<body>
+<div id="probe">y=? max=? atTop=? atFoot=?</div>
+<div id="top" class="block"><h1>TOP EDGE</h1><p>Success: return here after footer.</p></div>
+<script>
+for (let i = 0; i < 80; i++) {
+  document.write('<div class="block">Section ' + i + ' — filler for long page scroll</div>');
+}
+</script>
+<div id="footer"><h1>FOOTER</h1><p id="footmark">You reached the footer.</p></div>
+<script>
+function snap(){
+  const se = document.scrollingElement || document.documentElement;
+  const y = se.scrollTop | 0;
+  const max = Math.max(0, (se.scrollHeight|0) - (se.clientHeight|0));
+  const atTop = y <= 2;
+  const fr = document.getElementById('footer').getBoundingClientRect();
+  const atFoot = fr.top < (window.innerHeight * 0.85);
+  document.getElementById('probe').textContent =
+    'y=' + y + ' max=' + max + ' atTop=' + atTop + ' atFoot=' + atFoot +
+    ' pct=' + (max ? Math.round(100*y/max) : 0);
+}
+setInterval(snap, 80);
+snap();
+</script>
+</body></html>

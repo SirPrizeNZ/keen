@@ -94,16 +94,26 @@ class WindowRequestBroker(
                 // Deliberate Play already cleared ad/scheme checks — open player path in-session.
                 return Decision(Action.OPEN_CURRENT_SESSION, "grant_play", consumeGrant = true, destinationHost = host)
             }
-            // Deliberate activation, high-risk mismatch — never silent drop; native confirm required.
+            // Junk ad/redirect farms never get a confirm dialog — silent block.
+            if (host != null && quarantine.looksDisposableAdHost(host)) {
+                return Decision(Action.BLOCK, "ad_host_heuristic", consumeGrant = true, destinationHost = host)
+            }
+            // Deliberate activation, high-risk mismatch — native confirm required.
             return Decision(Action.REQUIRE_CONFIRMATION, "deliberate_uncertain", consumeGrant = true, destinationHost = host)
         }
 
-        // Platform gesture without grant: same-origin open; cross-origin confirm.
+        // Platform gesture WITHOUT a Keen deliberate grant:
+        // same-origin OK; anything else FAIL CLOSED (no confirm dialog for ad farms).
+        // Confirm is only for deliberate_uncertain grants above — not for raw site popups.
         if (isUserGesture || playIntentActive) {
             if (pageOrigin != null && sameOrigin(pageOrigin, targetUrl)) {
                 return Decision(Action.OPEN_CURRENT_SESSION, "gesture_same_origin", consumeGrant = false, destinationHost = host)
             }
-            return Decision(Action.REQUIRE_CONFIRMATION, "gesture_cross_origin", consumeGrant = false, destinationHost = host)
+            if (host != null && quarantine.looksDisposableAdHost(host)) {
+                return Decision(Action.BLOCK, "ad_host_heuristic", consumeGrant = false, destinationHost = host)
+            }
+            // Unknown third-party window: block. Streaming ads abuse "user gesture" on play.
+            return Decision(Action.BLOCK, "gesture_cross_origin_no_grant", consumeGrant = false, destinationHost = host)
         }
 
         return Decision(Action.BLOCK, "default_block", consumeGrant = false, destinationHost = host)

@@ -113,6 +113,7 @@ class RequestBlocker private constructor(
             "/ads/",
             "/adserver",
             "/ad-serve",
+            "/adserve",
             "doubleclick",
             "googlesyndication",
             "googleadservices",
@@ -121,6 +122,18 @@ class RequestBlocker private constructor(
             "adsystem",
             "/vast/",
             "prebid",
+            "/banner",
+            "/popunder",
+            "/pop.js",
+            "/ads.js",
+            "/ad.js",
+            "tracking.",
+            "/track?",
+            "/collect?",
+            "fingerprint",
+            "/sponsor",
+            "/promo/",
+            "clickunder",
         )
 
         fun fromLines(
