@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/SirPrizeNZ/keen/releases/download/v0.1.80/keen-0.1.80-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.80%20%C2%B7%2032--bit-111111?style=for-the-badge" alt="Download Keen v0.1.80 APK"></a>
+  <a href="https://github.com/SirPrizeNZ/keen/releases/download/v0.1.81/keen-0.1.81-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.81%20%C2%B7%2032--bit-111111?style=for-the-badge" alt="Download Keen v0.1.81 APK"></a>
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="GitHub Releases"></a>
   &nbsp;
@@ -24,7 +24,7 @@
 
 Keen turns touch-first, popup-heavy streaming sites into a remote-controlled TV journey. Open a site, choose what you want, block the junk and play.
 
-**New in v0.1.80:** activate a magnet link or `.torrent` download in the browser and Keen starts streaming the largest video directly in its TV-native player. You can also paste a magnet URI into the address bar.
+**Since v0.1.80:** activate a magnet link or `.torrent` download in the browser and Keen starts streaming the largest video directly in its TV-native player. You can also paste a magnet URI into the address bar.
 
 The torrent engine runs in a separate process, downloads sequentially, serves only over a loopback HTTP bridge and deletes its cache when playback ends. A loading screen reports peers, speed and buffering progress while the stream starts.
 
@@ -34,7 +34,7 @@ The torrent engine runs in a separate process, downloads sequentially, serves on
 
 Keen does not bundle Chromium or a second browser engine. It uses Android System WebView already on the device and adds a focused TV control, blocking and playback layer.
 
-The signed v0.1.80 ARMv7 APK is **18.3 MiB**. Most of the increase from earlier ~3 MB builds is the bundled native ARMv7 torrent engine; the browser architecture remains deliberately small.
+The signed ARMv7 APK is **18.3 MiB**. Most of the increase from earlier ~3 MB builds is the bundled native ARMv7 torrent engine; the browser architecture remains deliberately small.
 
 - one Activity and one live WebView
 - no tabs, sync, extensions or account ecosystem
@@ -46,12 +46,12 @@ The signed v0.1.80 ARMv7 APK is **18.3 MiB**. Most of the increase from earlier 
 
 | | |
 |:--|:--|
-| **Version** | v0.1.80 (`versionCode` 100) |
+| **Version** | v0.1.81 (`versionCode` 101) |
 | **Platform** | Android TV / Google TV · Android 10+ (API 29+) |
 | **ABI** | **32-bit ARM (`armeabi-v7a`)** |
-| **APK** | **[keen-0.1.80-32bit-armeabi-v7a.apk](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.80/keen-0.1.80-32bit-armeabi-v7a.apk)** |
-| **Checksum** | [`SHA256SUMS`](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.80/SHA256SUMS) |
-| **Release notes** | [Keen v0.1.80](https://github.com/SirPrizeNZ/keen/releases/tag/v0.1.80) |
+| **APK** | **[keen-0.1.81-32bit-armeabi-v7a.apk](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.81/keen-0.1.81-32bit-armeabi-v7a.apk)** |
+| **Checksum** | [`SHA256SUMS`](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.81/SHA256SUMS) |
+| **Release notes** | [Keen v0.1.81](https://github.com/SirPrizeNZ/keen/releases/tag/v0.1.81) |
 
 **Install over Wi-Fi**
 
@@ -61,7 +61,7 @@ The signed v0.1.80 ARMv7 APK is **18.3 MiB**. Most of the increase from earlier 
 
 ```bash
 adb connect <tv-ip>:5555
-adb install -r keen-0.1.80-32bit-armeabi-v7a.apk
+adb install -r keen-0.1.81-32bit-armeabi-v7a.apk
 ```
 
 Accept the debugging prompt on the TV if it appears. Wireless debugging may show a port other than `5555`; use the port displayed by the TV.
@@ -92,7 +92,7 @@ Long-press **OK** to switch between D-pad navigation and touch-style pointer con
 
 Playback uses D-pad and media controls, supports fullscreen, and returns cleanly to the page underneath.
 
-## What v0.1.80 includes
+## What Keen includes
 
 - direct magnet and `.torrent` streaming in the browser
 - native TV playback through Media3/ExoPlayer
@@ -101,7 +101,7 @@ Playback uses D-pad and media controls, supports fullscreen, and returns cleanly
 - playback priority plus durable session restoration after low-memory kills
 - Android TV launcher support for API 29+ ARMv7 devices
 
-The v0.1.80 torrent path has passed clean local builds and unit tests. Physical-device torrent playback validation is still pending.
+v0.1.81 is a packaging and repository-curation release only; app behavior is unchanged from v0.1.80.
 
 ## One screen. One session. One job.
 

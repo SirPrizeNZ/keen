@@ -13,6 +13,9 @@ captures/
 *.dex
 *.class
 
+# APKs are never committed in-tree; distribution happens via GitHub Releases only.
+*.apk
+
 # Signing — never commit keys or passwords
 *.jks
 *.keystore
@@ -23,10 +26,51 @@ keystore.properties
 .DS_Store
 *.swp
 *~
-.kotlin/
+.tmp.driveupload/
+**/.tmp.driveupload/
+.tmp.drivedownload/
+**/.tmp.drivedownload/
+.android/
 *.hprof
-*.log
 
-# Keep the published release APK under releases/
-*.apk
-!releases/*.apk
+# Logs
+*.log
+tv_logcat.log
+
+# Kotlin
+.kotlin/
+
+# Do not commit app/build outputs. Published artefacts live only in GitHub Releases.
+
+# Tests: excluded from the published repo
+app/src/test/
+app/src/androidTest/
+
+# Internal working directories — never published
+releases/
+evidence/
+corpus/
+experiments/
+archives/
+research/
+.grok/
+skills/
+tools/
+
+# Internal working docs — stay local, never published
+AGENTS.md
+AGENT_OPERATING_GUIDE.md
+START_HERE.md
+PROJECT_STATE.md
+DECISION_LOG.md
+EVIDENCE_STANDARD.md
+MVP_PLAN.md
+RESEARCH_BACKLOG.md
+TEST_CORPUS_SPEC.md
+SOURCES.md
+README.txt
+PERFORMANCE_CONTRACT.md
+SECURITY_MODEL.md
+SITE_PACK_SPEC.md
+TECHNICAL_ARCHITECTURE.md
+docs/handoffs/
