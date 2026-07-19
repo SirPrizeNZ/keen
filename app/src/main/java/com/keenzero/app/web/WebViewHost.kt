@@ -13,6 +13,7 @@ import androidx.webkit.WebViewFeature
 import android.widget.FrameLayout
 import com.keenzero.app.continuity.ContinuityCheckpoint
 import com.keenzero.app.diagnostics.NavigationEvent
+import com.keenzero.app.diagnostics.MemoryPressureDiagnostics
 import com.keenzero.app.input.RemoteInputRouter
 import com.keenzero.app.input.CursorOverlay
 import com.keenzero.app.navigation.NavigationFirewall
@@ -44,6 +45,7 @@ class WebViewHost(
     private val onInputModeChanged: (String) -> Unit,
     private val onCheckpoint: (ContinuityCheckpoint) -> Unit,
     private val onPlaybackConfirmed: (PlaybackOrchestrator.PlaybackSnapshot) -> Unit = {},
+    private val onPlaybackActive: (Boolean) -> Unit = {},
     private val onJourneyState: (PlaybackJourneyState) -> Unit = {},
     private val onProgress: (Int) -> Unit = {},
     /** Height of URL chrome in px (for pointer hit-test / web touch offset). */
@@ -51,6 +53,10 @@ class WebViewHost(
     private val onUrlBarActivate: () -> Unit = {},
     /** High-risk deliberate navigation: show Open host? (never silent drop). */
     private val onConfirmNavigation: ((url: String, host: String, reason: String) -> Unit)? = null,
+    /** magnet: link activated in-page → start native torrent streaming. */
+    private val onMagnetIntent: ((magnet: String) -> Unit)? = null,
+    /** Site offered a .torrent download → fetch + stream natively (cookies for auth'd trackers). */
+    private val onTorrentFileIntent: ((url: String, cookies: String?, userAgent: String?) -> Unit)? = null,
 ) {
     var webView: WebView? = null
         private set
@@ -66,6 +72,7 @@ class WebViewHost(
     private val popupQuarantine = PopupQuarantine()
     private var hostileSweepGeneration: Int = 0
     private val hostileHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val lifecycleHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** Last observed restore settlement path: "seek" | "natural" | null. */
     @Volatile
@@ -132,14 +139,64 @@ class WebViewHost(
         inputRouter?.setMediaPointerLock(locked)
     }
 
-    fun onBackground() {
-        playback?.onBackground()
-        try {
-            webView?.onPause()
-        } catch (_: Throwable) {
+    fun onBackground(onFreshCheckpointComplete: () -> Unit = {}) {
+        var completed = false
+        val pauseWebView = {
+            if (completed) {
+                Unit
+            } else {
+                completed = true
+                try {
+                    webView?.onPause()
+                } catch (_: Throwable) {
+                }
+                onFreshCheckpointComplete()
+            }
+        }
+        val activePlayback = playback
+        if (activePlayback != null) {
+            val timeout = Runnable {
+                onEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "CONTINUITY_FRESH_SAMPLE_TIMEOUT",
+                        url = currentUrl,
+                    ),
+                )
+                activePlayback.onBackground()
+                pauseWebView()
+            }
+            lifecycleHandler.postDelayed(timeout, BACKGROUND_SAMPLE_TIMEOUT_MS)
+            activePlayback.checkpointFresh("app_background_fresh") {
+                lifecycleHandler.removeCallbacks(timeout)
+                pauseWebView()
+            }
+        } else {
+            pauseWebView()
         }
         // Drop stuck D-pad holds / frame loop so resume starts clean.
         inputRouter?.resetPointerMotion()
+    }
+
+    fun trimMemory(level: Int) {
+        if (!MemoryPressureDiagnostics.shouldReleaseRecreatableState(level)) return
+        hostileSweepGeneration++
+        hostileHandler.removeCallbacksAndMessages(null)
+        inputRouter?.dropRecreatableState()
+        try {
+            // false releases WebView's in-memory resource/image cache without
+            // discarding the disk cache needed for efficient restore.
+            webView?.clearCache(false)
+        } catch (_: Throwable) {
+        }
+        onEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "MEMORY_TRIM_RELEASE",
+                url = currentUrl,
+                detail = "level=$level webViewMemoryCache=cleared interactionIndex=cleared hostileSweep=stopped",
+            ),
+        )
     }
 
     fun onForeground() {
@@ -149,6 +206,7 @@ class WebViewHost(
         } catch (_: Throwable) {
         }
         inputRouter?.onHostResumed(webView)
+        webView?.let { armHostileOverlayGuard(it) }
     }
 
     fun checkpointBeforeDestroy() {
@@ -176,6 +234,7 @@ class WebViewHost(
             onCheckpoint = onCheckpoint,
             onPlaybackConfirmed = onPlaybackConfirmed,
             onPlaybackMode = onPlaybackMode,
+            onPlaybackActive = onPlaybackActive,
             onJourneyState = onJourneyState,
         )
         this.playback = playback
@@ -411,6 +470,7 @@ class WebViewHost(
                 onRendererGone(detail)
                 true
             },
+            onMagnet = onMagnetIntent,
             onPageFinishedExtra = { view, url ->
                 val pos = restorePositionSec
                 if (pos != null && pos > 0) {
@@ -429,8 +489,25 @@ class WebViewHost(
                 inputRouter.requestRebuild(view, force = true)
             },
         )
-        wv.setDownloadListener(DownloadListener { url, _, _, _, _ ->
-            onEvent(NavigationEvent(System.currentTimeMillis(), "BLOCK_DOWNLOAD", url = url))
+        wv.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
+            if (isTorrentDownload(url, contentDisposition, mimetype)) {
+                onEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "TORRENT_DOWNLOAD_INTERCEPTED",
+                        url = url,
+                        detail = "mime=$mimetype disposition=${contentDisposition?.take(120)}",
+                    ),
+                )
+                val cookies = try {
+                    CookieManager.getInstance().getCookie(url)
+                } catch (_: Throwable) {
+                    null
+                }
+                onTorrentFileIntent?.invoke(url, cookies, userAgent)
+            } else {
+                onEvent(NavigationEvent(System.currentTimeMillis(), "BLOCK_DOWNLOAD", url = url))
+            }
         })
         installDocumentStartProtection(wv)
         playback.attach(wv)
@@ -469,6 +546,17 @@ class WebViewHost(
             ),
         )
         return wv
+    }
+
+    private fun isTorrentDownload(url: String?, contentDisposition: String?, mimetype: String?): Boolean {
+        if (mimetype?.lowercase() == "application/x-bittorrent") return true
+        val path = try {
+            android.net.Uri.parse(url ?: return false).path?.lowercase()
+        } catch (_: Throwable) {
+            null
+        }
+        if (path?.endsWith(".torrent") == true) return true
+        return contentDisposition?.lowercase()?.contains(".torrent") == true
     }
 
     private fun originOf(url: String): String? = try {
@@ -1237,6 +1325,8 @@ class WebViewHost(
     }
 
     private companion object {
+        private const val BACKGROUND_SAMPLE_TIMEOUT_MS = 750L
+
         /**
          * Observation-only candidate dump for remote harness.
          * Does not click, focus, or navigate.

@@ -1,13 +1,22 @@
 package com.keenzero.app
 
 /**
- * Phase 0 home-bar URL normalisation. Only http(s) destinations are accepted.
+ * Address-bar URL normalisation. HTTP(S) and explicit magnet links are accepted.
  */
 object UrlNormalizer {
 
     fun normalize(raw: String): String? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
+        if (trimmed.startsWith("magnet:?", ignoreCase = true)) {
+            val query = trimmed.substringAfter('?', "")
+            return trimmed.takeIf {
+                query.split('&').any { part ->
+                    part.substringBefore('=').equals("xt", ignoreCase = true) &&
+                        part.substringAfter('=', "").startsWith("urn:bt", ignoreCase = true)
+                }
+            }
+        }
 
         val candidate = when {
             trimmed.startsWith("https://", ignoreCase = true) -> trimmed

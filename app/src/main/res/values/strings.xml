@@ -35,4 +35,12 @@
     <string name="nav_confirm_message">Open %1$s?</string>
     <string name="nav_confirm_open">Open</string>
     <string name="nav_confirm_cancel">Cancel</string>
+    <string name="torrent_loading_title">Starting torrent stream…</string>
+    <string name="torrent_stage_starting">Setting up…</string>
+    <string name="torrent_stage_fetching">Downloading torrent info…</string>
+    <string name="torrent_stage_metadata">Connecting to peers…</string>
+    <string name="torrent_stage_buffering">Buffering %1$d%%</string>
+    <string name="torrent_peers">%1$d peers</string>
+    <string name="torrent_cancel_hint">Press Back to cancel</string>
+    <string name="torrent_playback_error">Playback failed — the stream stopped or this file cannot be played</string>
 </resources>

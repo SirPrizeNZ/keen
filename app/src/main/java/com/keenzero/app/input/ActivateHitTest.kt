@@ -158,4 +158,138 @@ object ActivateHitTest {
         if (a == null || b == null) return false
         return a.node.id != b.node.id && a.node.href != b.node.href
     }
+
+    // ── Nested icon / decorative-leaf → interactive ancestor ─────────────
+    // Generic hit resolution: SVG/PATH/SPAN leaves must not retain activation.
+
+    /** Leaf / wrapper tags that are never the real control. */
+    private val DECORATIVE_LEAF_TAGS = setOf(
+        "SVG", "PATH", "USE", "I", "SPAN", "IMG", "IMAGE",
+        "G", "CIRCLE", "RECT", "POLYLINE", "POLYGON", "LINE", "ELLIPSE",
+        "SYMBOL", "DEFS", "CLIPPATH", "MASK", "TITLE", "DESC",
+        "STRONG", "B", "EM", "SMALL", "FONT", "U", "S", "SUB", "SUP",
+    )
+
+    data class HitNode(
+        val id: String,
+        val tag: String,
+        val role: String = "",
+        val href: String? = null,
+        val rect: Rect,
+        /** DOM depth; higher = deeper. */
+        val depth: Int = 0,
+        val disabled: Boolean = false,
+        val hidden: Boolean = false,
+        val pointerEventsNone: Boolean = false,
+        val opacity: Double = 1.0,
+        val displayNone: Boolean = false,
+        val visibilityHidden: Boolean = false,
+    )
+
+    enum class ActivationKind {
+        /** Native WebView touch only — no synthetic JS click first. */
+        TRUSTED_TOUCH,
+        LOCATION_ASSIGN,
+        SYNTHETIC_CLICK,
+        NONE,
+    }
+
+    data class NestedResolve(
+        val target: HitNode,
+        val kind: ActivationKind,
+        /** When false, production must not dispatch element.click / MouseEvent first. */
+        val allowSyntheticClick: Boolean,
+        val reason: String,
+        val leafId: String,
+    )
+
+    fun isDecorativeLeafTag(tag: String): Boolean =
+        DECORATIVE_LEAF_TAGS.contains(tag.uppercase())
+
+    /**
+     * Interactive control tags/roles for nested promotion.
+     * Does not depend on icon names, aria text, or hostnames.
+     */
+    fun isInteractiveControl(tag: String, role: String = "", href: String? = null): Boolean {
+        val t = tag.uppercase()
+        val r = role.lowercase()
+        if (t == "BUTTON") return true
+        if (r == "button") return true
+        if (t == "A" && isGoodHref(href)) return true
+        if (t == "INPUT" || t == "LABEL" || t == "SUMMARY" || t == "SELECT" || t == "TEXTAREA") return true
+        return false
+    }
+
+    fun isPointerEligible(node: HitNode, px: Double, py: Double, pad: Double = 2.0): Boolean {
+        if (node.disabled || node.hidden || node.displayNone || node.visibilityHidden) return false
+        if (node.pointerEventsNone) return false
+        if (node.opacity <= 0.0) return false
+        if (node.rect.width < 1.0 || node.rect.height < 1.0) return false
+        return node.rect.contains(px, py, pad)
+    }
+
+    /**
+     * From an elementsFromPoint-ordered stack (topmost/deepest first), promote
+     * decorative leaves to the **smallest** visible interactive ancestor/control
+     * under the pointer.
+     *
+     * Non-interactive backdrops are never promoted. Hidden/disabled/pointer-ineligible
+     * ancestors are rejected.
+     */
+    fun resolveNestedInteractive(
+        px: Double,
+        py: Double,
+        /** elementsFromPoint order: index 0 = topmost leaf. */
+        stackTopFirst: List<HitNode>,
+    ): NestedResolve? {
+        if (stackTopFirst.isEmpty()) return null
+        val leaf = stackTopFirst.first()
+
+        // Candidates: every stack node that is an eligible interactive control under pointer.
+        // Prefer smallest area, then deepest (higher depth).
+        val candidates = stackTopFirst.filter { n ->
+            isInteractiveControl(n.tag, n.role, n.href) && isPointerEligible(n, px, py)
+        }
+        val best = candidates.minWithOrNull(
+            compareBy<HitNode> { it.rect.area }.thenByDescending { it.depth },
+        ) ?: return null
+
+        // Do not "promote" a non-interactive full-viewport backdrop that slipped through —
+        // isInteractiveControl already excludes plain DIV.
+        val kind = activationKindFor(best)
+        val allowSynthetic = kind == ActivationKind.SYNTHETIC_CLICK
+        return NestedResolve(
+            target = best,
+            kind = kind,
+            allowSyntheticClick = allowSynthetic,
+            reason = when {
+                isDecorativeLeafTag(leaf.tag) -> "promote_leaf_${leaf.tag.lowercase()}"
+                leaf.id == best.id -> "direct_control"
+                else -> "promote_stack"
+            },
+            leafId = leaf.id,
+        )
+    }
+
+    fun activationKindFor(node: HitNode): ActivationKind {
+        val t = node.tag.uppercase()
+        val r = node.role.lowercase()
+        if (t == "BUTTON" || r == "button") return ActivationKind.TRUSTED_TOUCH
+        if (t == "INPUT") {
+            // Text-like inputs are focus (handled elsewhere); button-ish → trusted.
+            return ActivationKind.TRUSTED_TOUCH
+        }
+        if (t == "SUMMARY" || t == "SELECT") return ActivationKind.TRUSTED_TOUCH
+        if (t == "A" && isGoodHref(node.href)) return ActivationKind.LOCATION_ASSIGN
+        if (t == "LABEL" || t == "TEXTAREA") return ActivationKind.TRUSTED_TOUCH
+        return ActivationKind.SYNTHETIC_CLICK
+    }
+
+    /** Production activate JS must request trusted touch for these methods. */
+    fun methodRequiresTrustedTouch(method: String): Boolean =
+        method == "trusted_button" ||
+            method == "trusted_control" ||
+            method == "playerControl" ||
+            method == "clickTouch" ||
+            method.startsWith("chevron")
 }

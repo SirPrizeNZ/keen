@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>nested-icon-button fixture</title></head>
+<body>
+  <!-- Canonical regression: decorative leaf must promote to BUTTON. -->
+  <button id="search-btn" aria-label="Search" style="position:absolute;left:100px;top:100px;width:48px;height:48px;">
+    <span id="search-span">
+      <svg id="search-svg" width="24" height="24" viewBox="0 0 24 24">
+        <path id="search-path" d="M10 2a8 8 0 105.3 14.1L20 20"></path>
+      </svg>
+    </span>
+  </button>
+
+  <!-- Non-interactive backdrop must not steal promotion. -->
+  <div id="backdrop" style="position:absolute;left:0;top:0;width:100vw;height:100vh;pointer-events:none;"></div>
+
+  <!-- Overlapping non-interactive wrapper beside the button. -->
+  <div id="wrapper" style="position:absolute;left:90px;top:90px;width:80px;height:80px;pointer-events:none;"></div>
+
+  <!-- Real content link must keep location.assign policy. -->
+  <a id="movie-link" href="https://example.test/movie/1"
+     style="position:absolute;left:200px;top:100px;width:120px;height:180px;">Movie</a>
+
+  <!-- Disabled / hidden controls must be rejected. -->
+  <button id="disabled-btn" disabled style="position:absolute;left:400px;top:100px;width:40px;height:40px;">
+    <svg><path d="M0 0"></path></svg>
+  </button>
+  <button id="hidden-btn" hidden style="position:absolute;left:450px;top:100px;width:40px;height:40px;">
+    <svg><path d="M0 0"></path></svg>
+  </button>
+</body>
+</html>

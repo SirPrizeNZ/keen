@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -84,6 +85,75 @@
         android:focusable="false"
         android:descendantFocusability="blocksDescendants"
         android:visibility="gone" />
+
+    <!-- Native torrent playback: ExoPlayer reaches platform audio decoders
+         (E-AC-3/DTS) that WebView video cannot. Sits above browse shell and
+         pointer; below the torrent loading overlay. -->
+    <FrameLayout
+        android:id="@+id/torrentPlayerContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF000000"
+        android:elevation="20dp"
+        android:keepScreenOn="true"
+        android:visibility="gone">
+
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/torrentPlayerView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:focusable="true"
+            app:resize_mode="fit"
+            app:show_buffering="when_playing"
+            app:show_subtitle_button="true"
+            app:surface_type="surface_view" />
+    </FrameLayout>
+
+    <!-- Torrent startup feedback: covers the page from click to first playable pieces. -->
+    <FrameLayout
+        android:id="@+id/torrentLoadingOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#E6000000"
+        android:clickable="true"
+        android:focusable="false"
+        android:elevation="24dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <ProgressBar
+                android:id="@+id/torrentLoadingSpinner"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:indeterminate="true" />
+
+            <TextView
+                android:id="@+id/torrentLoadingTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="@string/torrent_loading_title"
+                android:textColor="@color/keen_text"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/torrentLoadingDetail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center_horizontal"
+                android:text="@string/torrent_cancel_hint"
+                android:textColor="@color/keen_muted"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </FrameLayout>
 
     <!-- Keen-owned pointer: always a root sibling above browse + HTML fullscreen. -->
     <FrameLayout

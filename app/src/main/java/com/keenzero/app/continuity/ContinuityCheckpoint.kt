@@ -22,6 +22,7 @@ data class ContinuityCheckpoint(
     val fullscreen: Boolean = false,
     val playbackMode: Boolean = false,
     val playbackState: String? = null,
+    val journeyState: String? = null,
     val subtitleTrack: String? = null,
     val audioTrack: String? = null,
     val qualityPreference: String? = null,
@@ -46,6 +47,7 @@ data class ContinuityCheckpoint(
         .put("fullscreen", fullscreen)
         .put("playbackMode", playbackMode)
         .put("playbackState", playbackState)
+        .put("journeyState", journeyState)
         .put("subtitleTrack", subtitleTrack)
         .put("audioTrack", audioTrack)
         .put("qualityPreference", qualityPreference)
@@ -54,6 +56,17 @@ data class ContinuityCheckpoint(
         .put("timestampMs", timestampMs)
 
     companion object {
+        private val MEDIA_JOURNEY_STATES = setOf(
+            "PLAY_INTENT",
+            "RESOLVING",
+            "PLAYING",
+            "PLAYBACK_MODE",
+            "PAUSED",
+            "ENDED",
+            "RESTORING",
+            "RECOVERING",
+        )
+
         fun fromJson(raw: String?): ContinuityCheckpoint? {
             if (raw.isNullOrBlank()) return null
             return try {
@@ -75,6 +88,7 @@ data class ContinuityCheckpoint(
                     fullscreen = o.optBoolean("fullscreen", false),
                     playbackMode = o.optBoolean("playbackMode", o.optBoolean("fullscreen", false)),
                     playbackState = o.nullableString("playbackState"),
+                    journeyState = o.nullableString("journeyState"),
                     subtitleTrack = o.nullableString("subtitleTrack"),
                     audioTrack = o.nullableString("audioTrack"),
                     qualityPreference = o.nullableString("qualityPreference"),
@@ -93,4 +107,10 @@ data class ContinuityCheckpoint(
             return v.takeIf { it.isNotBlank() && it != "null" }
         }
     }
+
+    fun requiresMediaRestore(): Boolean =
+        playbackMode ||
+            playbackPositionSec > 0.0 ||
+            playerType != null ||
+            journeyState in MEDIA_JOURNEY_STATES
 }

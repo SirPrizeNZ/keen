@@ -151,7 +151,8 @@ class RemoteInputRouter(
             val dt = if (lastFrameNs == 0L) {
                 1f / 60f
             } else {
-                ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+                // Cap at ~2 vsync so dropped frames nudge instead of teleport the cursor.
+                ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.034f)
             }
             lastFrameNs = frameTimeNanos
             tickPointer(wv, dt)
@@ -520,7 +521,9 @@ class RemoteInputRouter(
     private fun opportunisticModalBind(webView: WebView) {
         if (modalOwner == ModalOwner.ACTIVE || modalOwner == ModalOwner.BINDING) return
         val now = SystemClock.elapsedRealtime()
-        if (now >= modalLikelyUntil) return
+        // Keep trying to bind while a search field is focused, even past the timed
+        // window — the user may still be typing before results settle.
+        if (now >= modalLikelyUntil && !keyboardLikelyVisible) return
         if (now - lastOpportunisticClaimAt < 120L) return
         lastOpportunisticClaimAt = now
 
@@ -1042,7 +1045,9 @@ class RemoteInputRouter(
         dy /= len
         val heldMs = if (holdStartedAt == 0L) 0L else SystemClock.elapsedRealtime() - holdStartedAt
         // Ease from slow precise crawl → fast cruise (Apple-TV-like).
-        val t = (heldMs / ACCEL_MS).coerceIn(0f, 1f)
+        // Constant-speed crawl window first so taps / short holds land predictably
+        // on small controls (dropdown rows, player chrome) before the ramp begins.
+        val t = ((heldMs - PRECISION_CRAWL_MS) / ACCEL_MS).coerceIn(0f, 1f)
         val speed = (SPEED_MIN_DP + (SPEED_MAX_DP - SPEED_MIN_DP) * smoothstep(t)) * density
         velX = dx * speed
         velY = dy * speed
@@ -1081,6 +1086,19 @@ class RemoteInputRouter(
         endPageDrag()
         endHorizontalDrag()
         stopFrameLoop()
+    }
+
+    /** Release bounded, page-derived state that is cheap to rebuild after resume. */
+    fun dropRecreatableState() {
+        resetPointerMotion()
+        interactionIndex.clear()
+        indexDirty = true
+        rebuildPending = false
+        modalListLeft = 0f
+        modalListTop = 0f
+        modalListRight = 0f
+        modalListBottom = 0f
+        modalListRectValid = false
     }
 
     /** Call from Activity.onResume after screensaver / idle. */
@@ -1137,7 +1155,21 @@ class RemoteInputRouter(
         if (!mediaPointerLock) {
             if (cursor.cursorY < chromeH - 2f) {
                 // In URL chrome: only scroll page when holding up (reveal content).
-                if (holdUp) scrollPageVertical(webView, -scrollPx)
+                // Same anchored touch drag as the edge path — scrollPageVertical alone
+                // dies on sites whose real scroller is an inner element, which made
+                // scroll-up appear broken (down parks in the bottom band and never
+                // leaves the drag path, so it never hit this).
+                if (holdUp && modalOwner == ModalOwner.NONE) {
+                    advanceAnchoredDrag(
+                        webView,
+                        webView.width * 0.62f,
+                        webView.height * 0.55f,
+                        -scrollPx,
+                    )
+                } else {
+                    if (holdUp) scrollPageVertical(webView, -scrollPx)
+                    endPageDrag()
+                }
                 cursor.setPosition(nx, ny)
                 if (cursor.alpha < 0.99f) cursor.wake()
                 return
@@ -1159,7 +1191,12 @@ class RemoteInputRouter(
                     )
                     val inset = edge * 0.55f
                     ny = if (holdUp) {
-                        min(ny, chromeH + inset)
+                        // Park in the band while native scroll room remains, mirroring
+                        // the bottom band, so the drag path keeps ownership. Inner-scroller
+                        // sites report no room — cursor passes into chrome, where the
+                        // drag continues (see chrome branch above).
+                        if (webView.canScrollVertically(-1)) chromeH + inset
+                        else min(ny, chromeH + inset)
                     } else {
                         max(ny, vh - inset)
                     }
@@ -1206,6 +1243,13 @@ class RemoteInputRouter(
             // Fullscreen / playback: pointer only + hover so HTML player chrome reveals.
             endPageDrag()
             endHorizontalDrag()
+            if (holdUp || holdDown) {
+                // Player overlay menus (episode / subtitle / server lists) scroll via
+                // direct scrollTop on the container under the pointer — no touch drag,
+                // which players interpret as seek/volume gestures.
+                val (mx, my) = shellToWebViewLocal(webView, cursor.cursorX, cursor.cursorY)
+                scrollMediaOverlayUnderPointer(webView, mx, my, if (holdUp) -scrollPx else scrollPx)
+            }
             dispatchMediaHover(nx, ny)
         }
 
@@ -1375,6 +1419,53 @@ class RemoteInputRouter(
         }
     }
 
+    private var lastMediaVScrollAt = 0L
+
+    /**
+     * Vertical scroll for overlay menus during fullscreen/playback.
+     * Scrolls the nearest scrollable non-document container under the pointer via
+     * scrollTop only; stops at the VIDEO surface so the player never receives a
+     * vertical gesture (mobile players map those to seek/volume).
+     */
+    private fun scrollMediaOverlayUnderPointer(
+        webView: WebView,
+        viewX: Float,
+        viewY: Float,
+        dyPx: Int,
+    ) {
+        if (dyPx == 0) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastMediaVScrollAt < 32L) return
+        lastMediaVScrollAt = now
+        val vw = webView.width.coerceAtLeast(1)
+        val vh = webView.height.coerceAtLeast(1)
+        webView.evaluateJavascript(
+            """(function(vx,vy,viewW,viewH,dy){
+              try{
+                var cssW=window.innerWidth||viewW, cssH=window.innerHeight||viewH;
+                var px=vx*(cssW/viewW), py=vy*(cssH/viewH);
+                var step=Math.round(dy*(cssH/viewH));
+                if(step===0) step=dy>0?24:-24;
+                var stack=document.elementsFromPoint(px,py)||[];
+                for(var i=0;i<stack.length;i++){
+                  var n=stack[i];
+                  if(!n||n===document.documentElement||n===document.body) continue;
+                  if(n.tagName==='VIDEO') break;
+                  if((n.scrollHeight||0)<=(n.clientHeight||0)+4) continue;
+                  var s;try{s=getComputedStyle(n);}catch(e){continue;}
+                  var oy=(s.overflowY||s.overflow||'').toLowerCase();
+                  if(oy!=='auto'&&oy!=='scroll'&&oy!=='overlay') continue;
+                  var before=n.scrollTop;
+                  n.scrollTop=before+step;
+                  if(n.scrollTop!==before) return 'scrolled';
+                }
+              }catch(e){}
+              return 'none';
+            })(${viewX.toInt()},${viewY.toInt()},$vw,$vh,$dyPx);""",
+            null,
+        )
+    }
+
     /** Reveal HTML player chrome without clicking (mousemove / hover). */
     private fun dispatchMediaHover(shellX: Float, shellY: Float) {
         val target = mediaTouchTarget() ?: boundWebView ?: return
@@ -1390,14 +1481,19 @@ class RemoteInputRouter(
         }
         // Some players listen on the document inside the original WebView.
         if (target !is WebView) {
-            boundWebView?.evaluateJavascript(
-                """(function(x,y){
+            val wv = boundWebView ?: return
+            val vw = wv.width.coerceAtLeast(1)
+            val vh = wv.height.coerceAtLeast(1)
+            wv.evaluateJavascript(
+                """(function(vx,vy,viewW,viewH){
                   try{
+                    var cssW=window.innerWidth||viewW, cssH=window.innerHeight||viewH;
+                    var x=vx*(cssW/viewW), y=vy*(cssH/viewH);
                     var el=document.elementFromPoint(x,y)||document.body;
                     var ev=new MouseEvent('mousemove',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window});
                     el.dispatchEvent(ev);
                   }catch(e){}
-                })(${shellX.toInt()},${shellY.toInt()});""",
+                })(${shellX.toInt()},${shellY.toInt()},$vw,$vh);""",
                 null,
             )
         }
@@ -1839,6 +1935,13 @@ class RemoteInputRouter(
                 }
             }
             cursor.bringToFront()
+        } else {
+            // Leaving the player: make sure the pointer is visible so the user
+            // is not left cursor-less on the page they returned to.
+            if (mode == Mode.POINTER) {
+                if (cursor.visibility != android.view.View.VISIBLE) cursor.showAtCentre()
+                else cursor.wake()
+            }
         }
     }
 
@@ -1872,6 +1975,12 @@ class RemoteInputRouter(
             val target = mediaTouchTarget() ?: webView
             val x = cursor.cursorX
             val y = cursor.cursorY
+            if (BuildConfig.DEBUG) {
+                Log.i(
+                    "KeenInput",
+                    "activate media_lock touch shell=${x.toInt()},${y.toInt()} target=${target.javaClass.simpleName}",
+                )
+            }
             onDeliberateActivation?.invoke(null)
             onHideKeyboard()
             val down = pointerEvent(MotionEvent.ACTION_DOWN, InputDevice.SOURCE_TOUCHSCREEN, x, y)
@@ -1940,6 +2049,7 @@ class RemoteInputRouter(
                 }
                 function isTextField(el){
                   if(!el) return false;
+                  if(el.readOnly || el.disabled) return false;
                   var tag=(el.tagName||'').toUpperCase();
                   if(tag==='TEXTAREA') return true;
                   if(tag==='INPUT'){
@@ -2046,40 +2156,122 @@ class RemoteInputRouter(
                   }
                 }catch(e){}
 
-                // 4) Rail chevron / next-prev under pointer — before card steal.
-                // Cineby row › arrows often ignore synthetic click; need Swiper API + trusted touch.
+                // 4) Nested decorative leaf → interactive ancestor (generic).
+                // SVG/PATH/SPAN/I inside a BUTTON must not retain activation; synthetic click
+                // on the leaf is ignored by many SPAs. Promote to the smallest eligible control.
+                function isDecorativeLeaf(el){
+                  if(!el||!el.tagName) return false;
+                  var t=(el.tagName||'').toUpperCase();
+                  return t==='SVG'||t==='PATH'||t==='USE'||t==='I'||t==='SPAN'||t==='IMG'||t==='IMAGE'||
+                    t==='G'||t==='CIRCLE'||t==='RECT'||t==='POLYLINE'||t==='POLYGON'||t==='LINE'||t==='ELLIPSE'||
+                    t==='SYMBOL'||t==='DEFS'||t==='CLIPPATH'||t==='MASK'||t==='TITLE'||t==='DESC'||
+                    t==='STRONG'||t==='B'||t==='EM'||t==='SMALL'||t==='FONT'||t==='U'||t==='S';
+                }
+                function isPointerEligible(el){
+                  if(!el||!el.getBoundingClientRect) return false;
+                  try{
+                    if(el.disabled) return false;
+                    if(el.getAttribute&&(el.getAttribute('aria-disabled')==='true'||el.getAttribute('disabled')!=null)) return false;
+                    if(el.hidden||(el.getAttribute&&el.hasAttribute('hidden'))) return false;
+                    var s=getComputedStyle(el);
+                    if(!s) return false;
+                    if(s.display==='none'||s.visibility==='hidden'||s.pointerEvents==='none') return false;
+                    if(parseFloat(s.opacity||'1')===0) return false;
+                    var r=el.getBoundingClientRect();
+                    if(r.width<1||r.height<1) return false;
+                    if(x<r.left-2||x>r.right+2||y<r.top-2||y>r.bottom+2) return false;
+                  }catch(e){ return false; }
+                  return true;
+                }
+                function isInteractiveControl(el){
+                  if(!el) return false;
+                  var tag=(el.tagName||'').toUpperCase();
+                  var role=(el.getAttribute&&el.getAttribute('role')||'').toLowerCase();
+                  if(tag==='BUTTON') return true;
+                  if(role==='button') return true;
+                  if(tag==='A'&&goodHref(hrefOf(el))) return true;
+                  if(tag==='INPUT'||tag==='LABEL'||tag==='SUMMARY'||tag==='SELECT'||tag==='TEXTAREA') return true;
+                  return false;
+                }
+                /** Smallest visible interactive under pointer from full elementsFromPoint stack. */
+                function promoteInteractive(stack){
+                  var best=null, bestArea=1e15;
+                  function consider(el){
+                    if(!el||el===document.documentElement||el===document.body) return;
+                    if(!isInteractiveControl(el)||!isPointerEligible(el)) return;
+                    try{
+                      var r=el.getBoundingClientRect();
+                      var ar=Math.max(1,r.width)*Math.max(1,r.height);
+                      // Prefer smallest; reject near-fullscreen non-button layers.
+                      if(ar>cssW*cssH*0.85&&(el.tagName||'').toUpperCase()!=='BUTTON') return;
+                      if(ar<bestArea){ best=el; bestArea=ar; }
+                    }catch(e){}
+                  }
+                  for(var i=0;i<stack.length&&i<32;i++){
+                    var n=stack[i], hops=0;
+                    while(n&&hops<14){
+                      consider(n);
+                      n=n.parentElement; hops++;
+                    }
+                  }
+                  return best;
+                }
+                var el0=st[0]||document.elementFromPoint(x,y);
+                var promoted=promoteInteractive(st);
+                var leafTag=el0?(el0.tagName||''):'';
+
+                // 4a) BUTTON / [role=button] → trusted native touch ONLY (no synthetic click).
+                if(promoted){
+                  var ptag=(promoted.tagName||'').toUpperCase();
+                  var prole=(promoted.getAttribute&&promoted.getAttribute('role')||'').toLowerCase();
+                  if(ptag==='BUTTON'||prole==='button'){
+                    var pbr=promoted.getBoundingClientRect();
+                    return JSON.stringify({ok:true,method:'trusted_button',play:false,href:'',
+                      needTouch:true,synthetic:false,promotedFrom:leafTag,
+                      text:(promoted.innerText||promoted.getAttribute('aria-label')||'').trim().slice(0,40),
+                      tag:ptag||'BUTTON',role:prole,cls:String(promoted.className||'').slice(0,40),
+                      x:x,y:y,box:[pbr.left|0,pbr.top|0,pbr.width|0,pbr.height|0]});
+                  }
+                  // Non-text INPUT / SUMMARY / SELECT → trusted touch only.
+                  if(ptag==='INPUT'||ptag==='SUMMARY'||ptag==='SELECT'){
+                    if(ptag==='INPUT'&&isTextField(promoted)){
+                      // Already handled above when pointer on field; if we get here, skip.
+                    }else{
+                      var ibr=promoted.getBoundingClientRect();
+                      return JSON.stringify({ok:true,method:'trusted_control',play:false,href:'',
+                        needTouch:true,synthetic:false,promotedFrom:leafTag,
+                        text:(promoted.getAttribute('aria-label')||promoted.id||ptag).slice(0,40),
+                        tag:ptag,cls:String(promoted.className||'').slice(0,40),
+                        x:x,y:y,box:[ibr.left|0,ibr.top|0,ibr.width|0,ibr.height|0]});
+                    }
+                  }
+                  // LABEL (not already focus_input) → trusted touch on label.
+                  if(ptag==='LABEL'&&!(promoted.control&&isTextField(promoted.control))){
+                    var lbr=promoted.getBoundingClientRect();
+                    return JSON.stringify({ok:true,method:'trusted_control',play:false,href:'',
+                      needTouch:true,synthetic:false,promotedFrom:leafTag,
+                      text:(promoted.innerText||'label').trim().slice(0,40),
+                      tag:'LABEL',cls:String(promoted.className||'').slice(0,40),
+                      x:x,y:y,box:[lbr.left|0,lbr.top|0,lbr.width|0,lbr.height|0]});
+                  }
+                }
+
+                // 5) Rail chevron: Swiper API optional; BUTTON chevrons already returned above.
+                // Div-based swiper-button-* still handled here — trusted touch only (no synthetic).
                 function chevronOf(start){
                   var cn=start, hh=0;
                   while(cn&&hh<10){
                     try{
                       var ccls=String(cn.className||'')+' '+
                         (cn.getAttribute&&(cn.getAttribute('aria-label')||cn.getAttribute('title')||cn.getAttribute('class')||'')||'');
-                      var crole=(cn.getAttribute&&cn.getAttribute('role')||'').toLowerCase();
-                      var ctag=(cn.tagName||'').toUpperCase();
-                      if(/swiper-button-next|swiper-button-prev|slick-next|slick-prev|carousel-next|carousel-prev|carousel-control|chevron|arrow-right|arrow-left|slide-next|slide-prev|nav-next|nav-prev|keen-chevron/i.test(ccls)) return cn;
-                      var al=(cn.getAttribute&&(cn.getAttribute('aria-label')||cn.getAttribute('title'))||'');
-                      if(/^(next|previous|prev|forward|back)$/i.test(al.trim())||/next slide|previous slide|scroll right|scroll left/i.test(al)) return cn;
-                      if((ctag==='BUTTON'||crole==='button'||ctag==='A') && cn.querySelector){
-                        var hasSvg=!!cn.querySelector('svg,path,polyline,i,[class*="icon"],[class*="Icon"]');
-                        var txt=(cn.innerText||cn.textContent||'').trim();
-                        var br=cn.getBoundingClientRect();
-                        if(hasSvg&&!txt&&br.width>=16&&br.width<=80&&br.height>=16&&br.height<=80){
-                          // Edge-of-row chevrons sit near L/R of viewport or rail.
-                          var nearEdge=br.left<cssW*0.14||br.right>cssW*0.86;
-                          if(nearEdge||/next|prev|arrow|chevron|swiper-button/i.test(ccls)) return cn;
-                        }
-                        // Common glyph-only chevrons: ‹ › ◀ ▶
-                        if(/^[‹›<>〈〉◀▶◁▷«»]$/.test(txt)&&br.width<=80&&br.height<=80) return cn;
-                      }
-                      // Div-based swiper buttons
+                      if(/swiper-button-next|swiper-button-prev|slick-next|slick-prev|carousel-next|carousel-prev|carousel-control|keen-chevron/i.test(ccls)) return cn;
                       if(/swiper-button/i.test(ccls)) return cn;
                     }catch(e){}
                     cn=cn.parentElement; hh++;
                   }
                   return null;
                 }
-                var el0=st[0]||document.elementFromPoint(x,y);
-                var ch=chevronOf(el0);
+                var ch=chevronOf(el0)||(promoted?chevronOf(promoted):null);
                 if(ch){
                   var dir=1;
                   try{
@@ -2095,7 +2287,6 @@ class RemoteInputRouter(
                     var sw=null;
                     if(host){ sw=host.swiper||host.__swiper__||null; }
                     if(!sw){
-                      // Row host near the chevron Y band
                       var cand=document.querySelectorAll('.swiper,.swiper-container,[class*="swiper-initialized"]');
                       for(var si=0;si<cand.length&&si<30;si++){
                         var sh=cand[si];
@@ -2112,43 +2303,31 @@ class RemoteInputRouter(
                       }catch(e){}
                     }
                   }catch(e){}
-                  try{
-                    ch.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0,pointerType:'touch',isPrimary:true}));
-                    ch.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0}));
-                    ch.dispatchEvent(new MouseEvent('pointerup',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0,pointerType:'touch',isPrimary:true}));
-                    ch.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0}));
-                    ch.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0}));
-                  }catch(e){}
-                  try{ if(typeof ch.click==='function') ch.click(); }catch(e){}
+                  // No synthetic click — trusted touch only (prevents double activation).
                   var crb=ch.getBoundingClientRect?ch.getBoundingClientRect():{left:0,top:0,width:0,height:0};
-                  // Always request trusted touch — synthetic events alone often no-op on row arrows.
-                  return JSON.stringify({ok:true,method:via,play:false,href:'',needTouch:true,dir:dir,
+                  return JSON.stringify({ok:true,method:via,play:false,href:'',needTouch:true,synthetic:false,dir:dir,
                     text:(ch.innerText||ch.getAttribute('aria-label')||'chevron').trim().slice(0,40),
                     tag:ch.tagName||'',cls:String(ch.className||'').slice(0,40),x:x,y:y,
                     box:[crb.left|0,crb.top|0,crb.width|0,crb.height|0]});
                 }
 
-                // 5) Plain click on topmost element under pointer (SPA cards / player chrome).
+                // 6) Plain activate under pointer (SPA cards / player chrome / remaining).
                 var el=el0;
                 if(!el||el===document.documentElement||el===document.body){
-                  return JSON.stringify({ok:false,reason:'no_el',x:x,y:y,needTouch:true});
+                  return JSON.stringify({ok:false,reason:'no_el',x:x,y:y,needTouch:true,synthetic:false});
                 }
-                // Video player UI (Cineby etc.): icon buttons ignore synthetic click — need trusted touch.
-                // Timeline/seek already works via click; trusted touch is also safe there.
                 function hasMedia(){
                   try{ return !!document.querySelector('video,audio'); }catch(e){ return false; }
                 }
                 function inPlayerUi(){
                   if(!hasMedia()) return false;
                   try{
-                    // Bottom control deck (time bar + icon row).
                     if(y>cssH*0.52) return true;
                     var v=document.querySelector('video');
                     if(v){
                       var vr=v.getBoundingClientRect();
                       if(vr.height>48&&x>=vr.left-12&&x<=vr.right+12&&y>=vr.top-12&&y<=vr.bottom+56) return true;
                     }
-                    // Explicit player chrome classes.
                     var p=el, ph=0;
                     while(p&&ph<8){
                       var pc=String(p.className||'');
@@ -2158,79 +2337,104 @@ class RemoteInputRouter(
                   }catch(e){}
                   return false;
                 }
-                function iconControlOf(start){
-                  var n=start, h=0;
-                  while(n&&h<8){
-                    try{
-                      var tag=(n.tagName||'').toUpperCase();
-                      var cls=String(n.className||'');
-                      var role=(n.getAttribute&&n.getAttribute('role')||'').toLowerCase();
-                      var txt=(n.innerText||n.textContent||'').trim();
-                      var al=(n.getAttribute&&(n.getAttribute('aria-label')||n.getAttribute('title'))||'');
-                      if(tag==='VIDEO'||tag==='AUDIO') return n;
-                      if(tag==='INPUT'){
-                        var ty=(n.type||'').toLowerCase();
-                        if(ty==='range'||ty==='checkbox'||ty==='button'||ty==='submit') return n;
-                      }
-                      if(tag==='BUTTON'||role==='button'){
-                        if(/tabbable|rounded-full|player|control|vjs-|plyr|jwplayer|icon-btn|btn-icon/i.test(cls)) return n;
-                        if(/play|pause|mute|volume|fullscreen|settings|subtitle|caption|pip|cast|seek|skip/i.test(al+txt+cls)) return n;
-                        if(n.querySelector&&n.querySelector('svg,path,i,[class*="icon"]')&&txt.length<4){
-                          var br=n.getBoundingClientRect();
-                          if(br.width>=14&&br.width<=100&&br.height>=14&&br.height<=100) return n;
-                        }
-                      }
-                    }catch(e){}
-                    n=n.parentElement; h++;
-                  }
-                  return null;
-                }
                 var playerUi=inPlayerUi();
-                var icon=iconControlOf(el);
-                var t=el;
-                if(icon){
-                  t=icon;
-                }else if(playerUi){
-                  // Prefer real controls from the hit stack — never steal a movie card under the player.
-                  for(var si=0;si<st.length&&si<16;si++){
-                    var sn=st[si];
+                var t=promoted||el;
+                // If leaf is decorative and we somehow have no promotion, climb for control once more.
+                if((!promoted||isDecorativeLeaf(t))&&isDecorativeLeaf(el)){
+                  var climb=el, chh=0;
+                  while(climb&&chh<12){
+                    if(isInteractiveControl(climb)&&isPointerEligible(climb)){ t=climb; break; }
+                    climb=climb.parentElement; chh++;
+                  }
+                }
+                if(!promoted&&playerUi){
+                  for(var si2=0;si2<st.length&&si2<16;si2++){
+                    var sn=st[si2];
                     var stg=(sn.tagName||'').toUpperCase();
                     var srole=(sn.getAttribute&&sn.getAttribute('role')||'').toLowerCase();
                     if(stg==='BUTTON'||srole==='button'||stg==='INPUT'||stg==='VIDEO'||stg==='AUDIO'){ t=sn; break; }
                     if(stg==='A'&&goodHref(hrefOf(sn))){ t=sn; break; }
                   }
-                }else{
-                  // Browse: prefer card/button under point for SPA.
+                }else if(!promoted&&!playerUi){
                   try{
                     var card=el.closest&&el.closest('a,button,[role="button"],[class*="card"],[class*="poster"],[class*="movie"]');
                     if(card) t=card;
                   }catch(e){}
                 }
-                if(t.tagName==='A'&&t.target==='_blank') t.target='_self';
-                try{
-                  t.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0,pointerType:'touch',pointerId:1,isPrimary:true,pressure:0.5}));
-                }catch(e){
-                  try{ t.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0})); }catch(e2){}
+                // Final BUTTON / role=button guard — never synthetic-first.
+                var ftag=(t.tagName||'').toUpperCase();
+                var frole=(t.getAttribute&&t.getAttribute('role')||'').toLowerCase();
+                if(ftag==='BUTTON'||frole==='button'){
+                  var fbr=t.getBoundingClientRect();
+                  return JSON.stringify({ok:true,method:'trusted_button',play:false,href:'',
+                    needTouch:true,synthetic:false,promotedFrom:leafTag,
+                    text:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40),
+                    tag:ftag,role:frole,cls:String(t.className||'').slice(0,40),
+                    x:x,y:y,box:[fbr.left|0,fbr.top|0,fbr.width|0,fbr.height|0]});
                 }
+                if(t.tagName==='A'&&t.target==='_blank') t.target='_self';
+                // 6b) Clickable non-anchor row (SPA search-result rows / cards). These
+                // toggle or navigate on a REAL tap, not a synthetic MouseEvent, and the
+                // hit-test must land on the row itself — not the modal container above it.
+                // Find the innermost clickable under the pointer and let native dispatch a
+                // trusted touch at that exact pixel (same path a finger takes).
+                function keenIsClickable(node){
+                  if(!node||node===document.body||node===document.documentElement) return false;
+                  try{
+                    if(typeof node.onclick==='function') return true;
+                    if(node.getAttribute){
+                      var role=(node.getAttribute('role')||'').toLowerCase();
+                      if(role==='button'||role==='link'||role==='option'||role==='menuitem'||role==='menuitemradio'||role==='tab') return true;
+                      if(node.hasAttribute('onclick')) return true;
+                      var ti=node.getAttribute('tabindex'); if(ti!=null&&(+ti)>=0) return true;
+                    }
+                    var cs=getComputedStyle(node);
+                    if(cs&&cs.cursor==='pointer') return true;
+                  }catch(e){}
+                  return false;
+                }
+                if(ftag!=='VIDEO'&&ftag!=='AUDIO'&&!playerUi){
+                  var clk=el0, ch2=0, clickable=null;
+                  while(clk&&clk!==document.body&&clk!==document.documentElement&&ch2<10){
+                    if(keenIsClickable(clk)){
+                      var kr0=clk.getBoundingClientRect();
+                      // Never target a near-fullscreen container (that click does nothing).
+                      if(!(kr0.width>=cssW*0.9&&kr0.height>=cssH*0.9)){ clickable=clk; break; }
+                    }
+                    clk=clk.parentElement; ch2++;
+                  }
+                  if(clickable){
+                    var kbr=clickable.getBoundingClientRect();
+                    return JSON.stringify({ok:true,method:'trusted_clickable',play:false,href:'',
+                      needTouch:true,synthetic:false,promotedFrom:leafTag,
+                      text:(clickable.innerText||clickable.getAttribute('aria-label')||'').trim().slice(0,40),
+                      tag:clickable.tagName||'',cls:String(clickable.className||'').slice(0,40),
+                      x:x,y:y,box:[kbr.left|0,kbr.top|0,kbr.width|0,kbr.height|0]});
+                  }
+                }
+                // VIDEO / player chrome non-button: trusted touch without synthetic (avoids double fire).
+                if(ftag==='VIDEO'||ftag==='AUDIO'||playerUi){
+                  var vbr=t.getBoundingClientRect?t.getBoundingClientRect():{left:0,top:0,width:0,height:0};
+                  return JSON.stringify({ok:true,method:playerUi?'playerControl':'trusted_control',play:false,
+                    href:String(hrefOf(t)||'').slice(0,160),needTouch:true,synthetic:false,playerUi:!!playerUi,
+                    text:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40),
+                    tag:ftag,cls:String(t.className||'').slice(0,40),x:x,y:y,
+                    box:[vbr.left|0,vbr.top|0,vbr.width|0,vbr.height|0]});
+                }
+                // SPA card / remaining non-button: synthetic click is allowed (links already handled).
                 try{
                   t.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0}));
                   t.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0}));
                   t.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0}));
                 }catch(e){}
-                try{
-                  t.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0,pointerType:'touch',pointerId:1,isPrimary:true,pressure:0}));
-                }catch(e){}
                 try{ if(typeof t.click==='function') t.click(); }catch(e){}
                 var tr=t.getBoundingClientRect?t.getBoundingClientRect():{left:0,top:0,width:0,height:0};
-                var needTouch=!!(playerUi||icon||(t.tagName==='BUTTON')||(t.tagName==='VIDEO')||(t.tagName==='AUDIO')||
-                  /tabbable|rounded-full|player|control-bar/i.test(String(t.className||'')));
-                var method=needTouch?(playerUi||icon?'playerControl':'clickTouch'):'click';
-                return JSON.stringify({ok:true,method:method,play:false,href:String(hrefOf(t)||'').slice(0,160),
-                  needTouch:needTouch,playerUi:!!playerUi,
+                return JSON.stringify({ok:true,method:'click',play:false,href:String(hrefOf(t)||'').slice(0,160),
+                  needTouch:false,synthetic:true,playerUi:false,
                   text:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40),
                   tag:t.tagName||'',cls:String(t.className||'').slice(0,40),x:x,y:y,
                   box:[tr.left|0,tr.top|0,tr.width|0,tr.height|0]});
-              }catch(e){ return JSON.stringify({ok:false,reason:String(e),needTouch:true}); }
+              }catch(e){ return JSON.stringify({ok:false,reason:String(e),needTouch:true,synthetic:false}); }
             })($xi,$yi,$vw,$vh);""",
         ) { raw ->
             val s = unwrap(raw)
@@ -2256,6 +2460,12 @@ class RemoteInputRouter(
             if (focusInput) {
                 keyboardLikelyVisible = true
                 onShowKeyboard()
+                // Typing into a search field spawns a results overlay. Arm the modal-bind
+                // window so the next Up/Down grabs that list for hold-to-scroll — cineby &
+                // co. render live results with no explicit submit, so the IME-submit path
+                // that normally arms this never fires.
+                modalLikelyUntil = SystemClock.elapsedRealtime() + MODAL_LIKELY_WINDOW_MS
+                scheduleModalBindAttempts(webView)
             } else if (s != null && (
                     s.contains("location.assign") ||
                         (s.contains("\"method\":\"click\"") && !keyboardLikelyVisible)
@@ -2275,17 +2485,24 @@ class RemoteInputRouter(
                     s.contains("\"needTouch\":true") ||
                     s.contains("\"needTouch\": true") ||
                     s.contains("no_el") ||
+                    s.contains("trusted_button") ||
+                    s.contains("trusted_control") ||
+                    s.contains("trusted_clickable") ||
                     s.contains("chevronClick") ||
                     s.contains("chevronSwiper") ||
                     s.contains("playerControl") ||
                     s.contains("clickTouch") ||
-                    // Player icon buttons / chrome from prior sessions always need a real touch.
-                    (s.contains("\"method\":\"click\"") && (
-                        s.contains("tabbable") ||
-                            s.contains("rounded-full") ||
-                            s.contains("\"tag\":\"BUTTON\"") ||
-                            s.contains("\"tag\":\"VIDEO\"")
-                        ))
+                    ActivateHitTest.methodRequiresTrustedTouch(
+                        try {
+                            if (!s.isNullOrBlank() && s.startsWith("{")) {
+                                org.json.JSONObject(s).optString("method", "")
+                            } else {
+                                ""
+                            }
+                        } catch (_: Exception) {
+                            ""
+                        },
+                    )
                 )
             if (needTouch) {
                 webView.evaluateJavascript("window.__keenNativeIntent=Date.now();", null)
@@ -2329,10 +2546,10 @@ class RemoteInputRouter(
                     "KeenInput",
                     "activate trusted_touch local=$xi,$yi reason=${
                         when {
+                            s?.contains("trusted_button") == true -> "trusted_button"
+                            s?.contains("trusted_control") == true -> "trusted_control"
                             s?.contains("playerControl") == true -> "playerControl"
                             s?.contains("chevron") == true -> "chevron"
-                            s?.contains("tabbable") == true -> "tabbable"
-                            s?.contains("BUTTON") == true -> "button"
                             s?.contains("needTouch") == true -> "needTouch"
                             else -> "fallback"
                         }
@@ -2460,9 +2677,11 @@ class RemoteInputRouter(
         const val REBUILD_DEBOUNCE_MS = 280L
         const val TRACE_TAG = "KeenInput"
         /** Continuous pointer speed (dp/sec). Tuned for TV D-pad — smooth but not rushed. */
-        const val SPEED_MIN_DP = 120f
-        const val SPEED_MAX_DP = 480f
-        const val ACCEL_MS = 520f
+        const val SPEED_MIN_DP = 110f
+        const val SPEED_MAX_DP = 460f
+        const val ACCEL_MS = 700f
+        /** Held time at SPEED_MIN before acceleration starts (precision window). */
+        const val PRECISION_CRAWL_MS = 160f
         /** Edge-scroll speed while D-pad held in an edge zone (dp/sec). */
         const val EDGE_SCROLL_DP = 520f
         /** Edge band where page/rail scroll engages (dp). Wider = easier TV edge aim. */

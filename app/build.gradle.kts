@@ -25,8 +25,8 @@ android {
         // until a physical device model is confirmed and a deliberate floor change is approved.
         minSdk = 29
         targetSdk = 35
-        versionCode = 98
-        versionName = "0.1.78"
+        versionCode = 100
+        versionName = "0.1.80"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -48,7 +48,7 @@ android {
         create("universal") {
             dimension = "abiPolicy"
             isDefault = true
-            buildConfigField("String", "ABI_POLICY", "\"universal-java\"")
+            buildConfigField("String", "ABI_POLICY", "\"universal-with-armeabi-v7a-jni\"")
             buildConfigField("String", "PRIMARY_ABI", "\"armeabi-v7a\"")
         }
         create("armeabiV7a") {
@@ -57,8 +57,7 @@ android {
             versionNameSuffix = "-v7a"
             buildConfigField("String", "ABI_POLICY", "\"armeabi-v7a-first\"")
             buildConfigField("String", "PRIMARY_ABI", "\"armeabi-v7a\"")
-            // When jniLibs appear, lock this flavor:
-            // ndk { abiFilters += listOf("armeabi-v7a") }
+            ndk { abiFilters += listOf("armeabi-v7a") }
         }
     }
 
@@ -136,6 +135,14 @@ dependencies {
     implementation(libs.androidx.webkit)
     // Leanback presence is for TV device filtering / future leanback surfaces only.
     implementation(libs.androidx.leanback)
+    implementation(libs.nanohttpd)
+    // Native torrent playback: WebView <video> cannot decode E-AC-3/DTS audio;
+    // ExoPlayer reaches the platform (Amlogic) MediaCodec audio decoders.
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
+    // The MVP is intentionally v7a-first. This artifact contains the Java API and
+    // libtorrent JNI for the measured 32-bit Mi Box target.
+    implementation(libs.libtorrent4j.android.arm)
 
     testImplementation(libs.junit)
     // Real org.json for unit tests (Android stubs throw "not mocked").

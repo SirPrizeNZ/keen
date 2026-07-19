@@ -14,3 +14,4 @@
 -keepclassmembers class com.keenzero.app.diagnostics.** {
     <fields>;
 }
+-keep class org.libtorrent4j.swig.libtorrent_jni { *; }

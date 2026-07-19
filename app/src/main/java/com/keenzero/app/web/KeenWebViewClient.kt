@@ -23,10 +23,24 @@ class KeenWebViewClient(
     private val onUrlChanged: (String?) -> Unit,
     private val onRendererGone: (JSONObject) -> Boolean,
     private val onPageFinishedExtra: ((WebView, String?) -> Unit)? = null,
+    /** magnet: navigation → native torrent streaming (never a blocked scheme drop). */
+    private val onMagnet: ((String) -> Unit)? = null,
 ) : WebViewClient() {
 
     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
         val url = request?.url?.toString()
+        if (url != null && url.startsWith("magnet:?", ignoreCase = true)) {
+            onEvent(
+                NavigationEvent(
+                    t = System.currentTimeMillis(),
+                    type = "MAGNET_INTERCEPTED",
+                    url = url.take(300),
+                    detail = "gesture=${request.hasGesture()}",
+                ),
+            )
+            onMagnet?.invoke(url)
+            return true
+        }
         val decision = firewall.decide(request)
         onEvent(
             NavigationEvent(
@@ -112,6 +126,20 @@ class KeenWebViewClient(
         if (view != null) {
             onPageFinishedExtra?.invoke(view, url)
         }
+    }
+
+    override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+        super.doUpdateVisitedHistory(view, url, isReload)
+        onUrlChanged(url)
+        onEvent(
+            NavigationEvent(
+                t = System.currentTimeMillis(),
+                type = "visitedHistoryUpdated",
+                url = url,
+                detail = "reload=$isReload",
+                isMainFrame = true,
+            ),
+        )
     }
 
     override fun onReceivedError(

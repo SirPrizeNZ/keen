@@ -134,6 +134,10 @@ class RequestBlocker private constructor(
             "/sponsor",
             "/promo/",
             "clickunder",
+            "/tag.js",
+            "/tag.min.js",
+            "babymaker",
+            "ky6sbqy.png",
         )
 
         fun fromLines(

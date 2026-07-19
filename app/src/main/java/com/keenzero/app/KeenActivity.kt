@@ -3,6 +3,10 @@ package com.keenzero.app
 import android.os.Bundle
 import android.content.Intent
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.ComponentCallbacks2
+import android.content.IntentFilter
+import android.net.Uri
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
@@ -15,20 +19,35 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.content.ContextCompat
 import com.keenzero.app.continuity.ContinuityCheckpoint
 import com.keenzero.app.continuity.ContinuityStore
 import com.keenzero.app.databinding.ActivityKeenBinding
 import com.keenzero.app.diagnostics.DeviceDiagnostics
 import com.keenzero.app.diagnostics.EvidenceExporter
 import com.keenzero.app.diagnostics.NavigationEvent
+import com.keenzero.app.diagnostics.MemoryPressureDiagnostics
 import com.keenzero.app.playback.PlaybackJourneyState
+import com.keenzero.app.playback.PlaybackPriorityService
 import com.keenzero.app.web.WebViewHost
 import com.keenzero.app.blocking.BlockingRuntime
 import com.keenzero.app.sitepacks.SitePackRuntime
+import com.keenzero.app.torrent.TorrentStreamingService
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.webkit.WebViewFeature
 import androidx.webkit.WebViewCompat
 import org.json.JSONObject
 import java.util.ArrayDeque
+import java.util.UUID
 
 /**
  * Single-Activity runtime.
@@ -54,6 +73,53 @@ class KeenActivity : AppCompatActivity() {
     private var pendingRestore: ContinuityCheckpoint? = null
     private var restoreMetricEmitted: Boolean = false
     private var lastChromeUrl: String = ""
+    private var lastBrowsingCheckpointUrl: String? = null
+    private var torrentRequestId: String? = null
+    private var torrentPlayer: ExoPlayer? = null
+    private val torrentReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val id = intent?.getStringExtra(TorrentStreamingService.EXTRA_REQUEST_ID)
+            if (id.isNullOrBlank() || id != torrentRequestId) return
+            when (intent.action) {
+                TorrentStreamingService.ACTION_PROGRESS -> {
+                    updateTorrentOverlay(
+                        stage = intent.getStringExtra(TorrentStreamingService.EXTRA_STAGE).orEmpty(),
+                        percent = intent.getIntExtra(TorrentStreamingService.EXTRA_PERCENT, -1),
+                        peers = intent.getIntExtra(TorrentStreamingService.EXTRA_PEERS, -1),
+                        speedBps = intent.getLongExtra(TorrentStreamingService.EXTRA_SPEED_BPS, -1),
+                    )
+                }
+                TorrentStreamingService.ACTION_READY -> {
+                    val streamUrl = intent.getStringExtra(TorrentStreamingService.EXTRA_STREAM_URL) ?: return
+                    val title = intent.getStringExtra(TorrentStreamingService.EXTRA_TITLE)
+                    recordEvent(
+                        NavigationEvent(
+                            System.currentTimeMillis(),
+                            "torrent_ready",
+                            url = streamUrl,
+                            detail = "title=${title.orEmpty()}",
+                        ),
+                    )
+                    hideTorrentOverlay()
+                    showNativeTorrentPlayer(streamUrl, title.orEmpty())
+                }
+                TorrentStreamingService.ACTION_ERROR -> {
+                    val message = intent.getStringExtra(TorrentStreamingService.EXTRA_ERROR)
+                        ?: "Torrent streaming failed"
+                    recordEvent(
+                        NavigationEvent(
+                            System.currentTimeMillis(),
+                            "torrent_error",
+                            detail = message,
+                        ),
+                    )
+                    hideTorrentOverlay()
+                    Toast.makeText(this@KeenActivity, message, Toast.LENGTH_LONG).show()
+                    torrentRequestId = null
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,6 +127,25 @@ class KeenActivity : AppCompatActivity() {
         setContentView(binding.root)
         continuityStore = ContinuityStore(this)
         supervisor = com.keenzero.app.supervisor.KeenSupervisor(this)
+
+        ContextCompat.registerReceiver(
+            this,
+            torrentReceiver,
+            IntentFilter().apply {
+                addAction(TorrentStreamingService.ACTION_READY)
+                addAction(TorrentStreamingService.ACTION_ERROR)
+                addAction(TorrentStreamingService.ACTION_PROGRESS)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
+        // Reclaim torrent cache left behind if the :torrent process was killed
+        // mid-stream (its cleanup never ran). No session can be active this early.
+        stopService(Intent(this, TorrentStreamingService::class.java))
+        Thread({
+            val stale = java.io.File(cacheDir, "torrent")
+            if (stale.exists()) stale.deleteRecursively()
+        }, "keen-torrent-sweep").apply { isDaemon = true }.start()
 
         recordEvent(NavigationEvent(System.currentTimeMillis(), "activity_onCreate"))
         recordEvent(
@@ -126,9 +211,18 @@ class KeenActivity : AppCompatActivity() {
         // LAB_URL / harness extras allowed on release for physical TV validation.
         handleDebugIntent(intent)
         // Product default: open FMHY streaming section unless LAB_URL navigated first.
-        if (webHost == null && intent?.getStringExtra("com.keenzero.app.extra.LAB_URL").isNullOrBlank()) {
-            binding.urlInput.setText(getString(R.string.home_url))
-            openUrl(getString(R.string.home_url))
+        if (webHost == null &&
+            intent?.getStringExtra("com.keenzero.app.extra.LAB_URL").isNullOrBlank() &&
+            intent?.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) != true &&
+            intent?.getBooleanExtra(EXTRA_LAB_AUTO_JOURNEY, false) != true
+        ) {
+            val checkpoint = continuityStore.load()
+            if (checkpoint?.url != null) {
+                continueFromCheckpoint()
+            } else {
+                binding.urlInput.setText(getString(R.string.home_url))
+                openUrl(getString(R.string.home_url))
+            }
         }
     }
 
@@ -139,11 +233,22 @@ class KeenActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
-        webHost?.onBackground()
+        webHost?.onBackground {
+            latestCheckpoint?.let { continuityStore.save(it, force = true) }
+            continuityStore.flush()
+        }
         webHost?.flushSession()
         latestCheckpoint?.let { continuityStore.save(it, force = true) }
         continuityStore.flush()
         super.onPause()
+    }
+
+    override fun onStop() {
+        latestCheckpoint?.let { continuityStore.save(it, force = true) }
+        continuityStore.flush()
+        // Screen gone (HOME / screensaver): never keep decoding & playing audio.
+        torrentPlayer?.pause()
+        super.onStop()
     }
 
     override fun onResume() {
@@ -185,6 +290,21 @@ class KeenActivity : AppCompatActivity() {
 
     private fun continueFromCheckpoint() {
         val cp = continuityStore.load() ?: return
+        if (!cp.requiresMediaRestore()) {
+            pendingRestore = null
+            restoreMetricEmitted = false
+            supervisor.resetCrashLoopForUserAction()
+            recordEvent(
+                NavigationEvent(
+                    System.currentTimeMillis(),
+                    "continuity_browsing_restore",
+                    url = cp.url,
+                    detail = "journey=${cp.journeyState ?: "BROWSING"}",
+                ),
+            )
+            openUrl(cp.url!!, restore = false)
+            return
+        }
         pendingRestore = cp
         restoreMetricEmitted = false
         supervisor.resetCrashLoopForUserAction()
@@ -484,7 +604,11 @@ class KeenActivity : AppCompatActivity() {
             ?.let(::normalizeUrl)
             ?.let { url ->
                 val restore = intent.getBooleanExtra(EXTRA_LAB_RESTORE, false)
-                if (restore) {
+                if (url.startsWith("magnet:?", ignoreCase = true)) {
+                    // Same route as the URL bar — magnets start the torrent
+                    // pipeline, they are never a WebView document load.
+                    startTorrentStreaming(url)
+                } else if (restore) {
                     pendingRestore = continuityStore.load()
                     openUrl(url, restore = true)
                 } else {
@@ -889,7 +1013,7 @@ class KeenActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.invalid_url, Toast.LENGTH_SHORT).show()
             return
         }
-        openUrl(url)
+        openNavigation(url)
     }
 
     /** Commit address bar (Enter): navigate and fold keyboard. */
@@ -902,7 +1026,7 @@ class KeenActivity : AppCompatActivity() {
         }
         hideKeyboard(binding.browseUrlEdit)
         binding.browseUrlEdit.clearFocus()
-        openUrl(url)
+        openNavigation(url)
         // Return focus to web/pointer after load starts.
         binding.browserContainer.post {
             webHost?.webView?.requestFocus()
@@ -937,12 +1061,219 @@ class KeenActivity : AppCompatActivity() {
 
     private fun normalizeUrl(raw: String): String? = UrlNormalizer.normalize(raw)
 
-    private fun openUrl(url: String, restore: Boolean = false) {
+    private fun openNavigation(url: String) {
+        if (url.startsWith("magnet:?", ignoreCase = true)) {
+            startTorrentStreaming(url)
+        } else {
+            openUrl(url)
+        }
+    }
+
+    private fun startTorrentStreaming(magnet: String) {
+        startTorrentSession(originLabel = magnet) { intent ->
+            intent.putExtra(TorrentStreamingService.EXTRA_MAGNET, magnet)
+        }
+    }
+
+    private fun startTorrentFromFile(url: String, cookies: String?, userAgent: String?) {
+        startTorrentSession(originLabel = url) { intent ->
+            intent.putExtra(TorrentStreamingService.EXTRA_TORRENT_URL, url)
+                .putExtra(TorrentStreamingService.EXTRA_COOKIES, cookies)
+                .putExtra(TorrentStreamingService.EXTRA_USER_AGENT, userAgent)
+        }
+    }
+
+    private fun startTorrentSession(originLabel: String, configure: (Intent) -> Intent) {
+        stopTorrentStreaming()
+        val id = UUID.randomUUID().toString()
+        torrentRequestId = id
+        // Entry from home / URL bar has no page under the overlay — bring up the
+        // browse shell on a blank page. Entry from a site keeps the page visible
+        // beneath the loading overlay so cancel returns exactly where the user was.
+        if (webHost?.isCreated != true || binding.browseShell.visibility != View.VISIBLE) {
+            currentUrl = originLabel
+            lastChromeUrl = originLabel
+            binding.homeScroll.visibility = View.GONE
+            binding.browseShell.visibility = View.VISIBLE
+            binding.browserContainer.visibility = View.VISIBLE
+            binding.chromeBar.visibility = View.VISIBLE
+            refreshBrowseChrome()
+            ensureWebHost().load("about:blank")
+        }
+        showTorrentOverlay()
+        recordEvent(NavigationEvent(System.currentTimeMillis(), "torrent_start", url = originLabel))
+        startService(
+            configure(
+                Intent(this, TorrentStreamingService::class.java)
+                    .setAction(TorrentStreamingService.ACTION_START)
+                    .putExtra(TorrentStreamingService.EXTRA_REQUEST_ID, id),
+            ),
+        )
+    }
+
+    private fun stopTorrentStreaming() {
+        stopService(Intent(this, TorrentStreamingService::class.java))
+        torrentRequestId = null
+        hideTorrentOverlay()
+        hideNativeTorrentPlayer()
+    }
+
+    /** True while the native ExoPlayer surface owns the screen. */
+    private val nativeTorrentPlayerActive: Boolean
+        get() = binding.torrentPlayerContainer.visibility == View.VISIBLE
+
+    /**
+     * Torrent playback is native, not a WebView page: the WebView video stack has
+     * no E-AC-3/DTS decoders (silent playback), while ExoPlayer reaches the
+     * platform MediaCodec audio decoders. The source page stays loaded beneath.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun showNativeTorrentPlayer(streamUrl: String, title: String) {
+        hideNativeTorrentPlayer()
+        // The bridge blocks range reads until pieces arrive; a slow swarm can
+        // stall reads far past the 8 s default before data flows again.
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(TORRENT_HTTP_TIMEOUT_MS)
+            .setReadTimeoutMs(TORRENT_HTTP_TIMEOUT_MS)
+        val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
+            .build()
+        torrentPlayer = player
+        player.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build(),
+            true,
+        )
+        player.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "torrent_player_error",
+                        url = streamUrl,
+                        detail = "${error.errorCodeName}: ${error.message}",
+                    ),
+                )
+                Toast.makeText(
+                    this@KeenActivity,
+                    getString(R.string.torrent_playback_error),
+                    Toast.LENGTH_LONG,
+                ).show()
+                exitNativeTorrentPlayer("player_error")
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val name = when (playbackState) {
+                    Player.STATE_IDLE -> "idle"
+                    Player.STATE_BUFFERING -> "buffering"
+                    Player.STATE_READY -> "ready"
+                    Player.STATE_ENDED -> "ended"
+                    else -> playbackState.toString()
+                }
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "torrent_player_state",
+                        url = streamUrl,
+                        detail = name,
+                    ),
+                )
+            }
+        })
+        player.setMediaItem(
+            MediaItem.Builder()
+                .setUri(streamUrl)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
+                .build(),
+        )
+        player.playWhenReady = true
+        player.prepare()
+        binding.torrentPlayerView.player = player
+        binding.torrentPlayerContainer.visibility = View.VISIBLE
+        binding.torrentPlayerView.requestFocus()
+    }
+
+    private fun hideNativeTorrentPlayer() {
+        binding.torrentPlayerView.player = null
+        binding.torrentPlayerContainer.visibility = View.GONE
+        torrentPlayer?.release()
+        torrentPlayer = null
+    }
+
+    /** Leaving playback stops the session (deletes cache) and returns to the source page. */
+    private fun exitNativeTorrentPlayer(reason: String) {
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "torrent_player_exit",
+                url = currentUrl,
+                detail = reason,
+            ),
+        )
+        stopTorrentStreaming()
+        if (webHost?.isCreated == true && currentUrl != null && currentUrl != "about:blank") {
+            uiState = AppUiState.BROWSING
+            webHost?.webView?.requestFocus()
+        } else {
+            showHome(status = getString(R.string.status_home))
+            hydrateContinuitySurface()
+        }
+    }
+
+    /** True while the native loading overlay (magnet/.torrent startup) is up. */
+    private val torrentOverlayVisible: Boolean
+        get() = binding.torrentLoadingOverlay.visibility == View.VISIBLE
+
+    private fun showTorrentOverlay() {
+        binding.torrentLoadingTitle.text = getString(R.string.torrent_loading_title)
+        binding.torrentLoadingDetail.text = getString(R.string.torrent_stage_starting)
+        binding.torrentLoadingOverlay.visibility = View.VISIBLE
+        binding.torrentLoadingOverlay.bringToFront()
+        ensurePointerAboveContent()
+    }
+
+    private fun hideTorrentOverlay() {
+        binding.torrentLoadingOverlay.visibility = View.GONE
+    }
+
+    private fun updateTorrentOverlay(stage: String, percent: Int, peers: Int, speedBps: Long) {
+        if (!torrentOverlayVisible) return
+        val stageText = when (stage) {
+            TorrentStreamingService.STAGE_FETCHING_TORRENT -> getString(R.string.torrent_stage_fetching)
+            TorrentStreamingService.STAGE_CONNECTING,
+            TorrentStreamingService.STAGE_METADATA,
+            -> getString(R.string.torrent_stage_metadata)
+            TorrentStreamingService.STAGE_BUFFERING ->
+                getString(R.string.torrent_stage_buffering, percent.coerceIn(0, 100))
+            else -> getString(R.string.torrent_loading_title)
+        }
+        val extras = buildList {
+            if (peers >= 0) add(getString(R.string.torrent_peers, peers))
+            if (speedBps > 0) add(formatSpeed(speedBps))
+        }
+        binding.torrentLoadingTitle.text = stageText
+        binding.torrentLoadingDetail.text = if (extras.isEmpty()) {
+            getString(R.string.torrent_cancel_hint)
+        } else {
+            extras.joinToString("   ·   ") + "\n" + getString(R.string.torrent_cancel_hint)
+        }
+    }
+
+    private fun formatSpeed(bps: Long): String = when {
+        bps >= 1_048_576 -> String.format(java.util.Locale.US, "%.1f MB/s", bps / 1_048_576.0)
+        else -> String.format(java.util.Locale.US, "%d KB/s", bps / 1024)
+    }
+
+    private fun openUrl(url: String, restore: Boolean = false, stopTorrent: Boolean = true) {
+        if (stopTorrent) stopTorrentStreaming()
         recordEvent(NavigationEvent(System.currentTimeMillis(), "user_open_url", url = url))
         val host = ensureWebHost()
         webViewEverCreated = true
         // Session root: Back should not return to FMHY chooser until we leave this site stack.
-        browseEntryUrl = url
+        // The torrent player (stopTorrent=false) is an overlay page, not a new session root.
+        if (stopTorrent) browseEntryUrl = url
         currentUrl = url
         val restoreCp = pendingRestore
         if (restore && restoreCp != null) {
@@ -958,6 +1289,7 @@ class KeenActivity : AppCompatActivity() {
         refreshBrowseChrome()
         setLoadProgress(0)
         uiState = if (restore) AppUiState.RESTORING else AppUiState.BROWSING
+        if (!restore) persistBrowsingCheckpoint(url, force = true)
         binding.statusLine.text = getString(R.string.status_webview_created)
         hideKeyboard(binding.browseUrlEdit)
         binding.browseUrlEdit.clearFocus()
@@ -1096,6 +1428,11 @@ class KeenActivity : AppCompatActivity() {
             },
             onUrlChanged = { url ->
                 currentUrl = url
+                if (!url.isNullOrBlank() &&
+                    uiState == AppUiState.BROWSING
+                ) {
+                    persistBrowsingCheckpoint(url, force = url != lastBrowsingCheckpointUrl)
+                }
                 runOnUiThread {
                     if (uiState == AppUiState.BROWSING || uiState == AppUiState.WEB_FULLSCREEN ||
                         uiState == AppUiState.PLAYBACK_MODE || uiState == AppUiState.RESTORING
@@ -1139,6 +1476,9 @@ class KeenActivity : AppCompatActivity() {
                     ensurePointerAboveContent()
                 }
             },
+            onPlaybackActive = { active ->
+                PlaybackPriorityService.setPlaybackActive(this, active)
+            },
             onJourneyState = { state ->
                 runOnUiThread {
                     recordEvent(
@@ -1176,10 +1516,10 @@ class KeenActivity : AppCompatActivity() {
                         binding.continueStatus.text = getString(R.string.continue_status_recovery)
                         showHome(status = getString(R.string.renderer_gone_restore))
                         hydrateContinuitySurface()
-                        pendingRestore = cp
+                        pendingRestore = cp.takeIf { it.requiresMediaRestore() }
                         restoreMetricEmitted = false
                         // Automatic recovery: recreate and restore checkpoint.
-                        openUrl(cp.url, restore = true)
+                        openUrl(cp.url!!, restore = cp.requiresMediaRestore())
                         recordEvent(
                             NavigationEvent(
                                 System.currentTimeMillis(),
@@ -1229,6 +1569,12 @@ class KeenActivity : AppCompatActivity() {
                 runOnUiThread {
                     showNavigationConfirm(url, host, reason)
                 }
+            },
+            onMagnetIntent = { magnet ->
+                runOnUiThread { startTorrentStreaming(magnet) }
+            },
+            onTorrentFileIntent = { url, cookies, userAgent ->
+                runOnUiThread { startTorrentFromFile(url, cookies, userAgent) }
             },
             onCheckpoint = { cp ->
                 latestCheckpoint = cp
@@ -1367,6 +1713,22 @@ class KeenActivity : AppCompatActivity() {
      * mirrored in [uiState]; peel it whenever leaving fullscreen *or* playback.
      */
     private fun handleBack() {
+        // Torrent startup overlay: Back cancels the download and stays put.
+        if (torrentOverlayVisible) {
+            recordEvent(NavigationEvent(System.currentTimeMillis(), "torrent_cancel", url = currentUrl))
+            stopTorrentStreaming()
+            if (webHost?.isCreated != true || currentUrl == null || currentUrl == "about:blank") {
+                showHome(status = getString(R.string.status_home))
+                hydrateContinuitySurface()
+            }
+            return
+        }
+        // Native torrent player: leaving must stop the session so the cache
+        // (video + .torrent) is deleted. The source page is still loaded beneath.
+        if (nativeTorrentPlayerActive) {
+            exitNativeTorrentPlayer("back")
+            return
+        }
         val surface = when (uiState) {
             AppUiState.HOME -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.HOME
             AppUiState.BROWSING -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.BROWSING
@@ -1477,6 +1839,10 @@ class KeenActivity : AppCompatActivity() {
             }
             return super.dispatchKeyEvent(event)
         }
+        // Native torrent playback: PlayerView owns DPAD/media keys, not the web cursor.
+        if (nativeTorrentPlayerActive) {
+            return super.dispatchKeyEvent(event)
+        }
         if ((uiState == AppUiState.BROWSING || uiState == AppUiState.WEB_FULLSCREEN ||
                 uiState == AppUiState.PLAYBACK_MODE || uiState == AppUiState.RESTORING) &&
             webHost?.handleRemoteKey(event) == true
@@ -1554,6 +1920,7 @@ class KeenActivity : AppCompatActivity() {
     }
 
     private fun showHome(status: String) {
+        stopTorrentStreaming()
         uiState = AppUiState.HOME
         exitImmersive()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1701,12 +2068,72 @@ class KeenActivity : AppCompatActivity() {
     @Synchronized
     private fun eventSnapshot(): List<NavigationEvent> = events.toList()
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        val pressure = MemoryPressureDiagnostics.record(this, level, "activity")
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "MEMORY_PRESSURE",
+                url = currentUrl,
+                detail = pressure.detail,
+            ),
+        )
+        webHost?.trimMemory(level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        val pressure = MemoryPressureDiagnostics.recordLowMemory(this, "activity")
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "MEMORY_PRESSURE",
+                url = currentUrl,
+                detail = pressure.detail,
+            ),
+        )
+        webHost?.trimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
+    }
+
     override fun onDestroy() {
         latestCheckpoint?.let { continuityStore.save(it, force = true) }
         webHost?.flushSession()
         webHost?.destroy("activity_destroy")
         webHost = null
+        stopTorrentStreaming()
+        unregisterReceiver(torrentReceiver)
         super.onDestroy()
+    }
+
+    private fun persistBrowsingCheckpoint(url: String, force: Boolean) {
+        if (url.isBlank()) return
+        val uri = try {
+            Uri.parse(url)
+        } catch (_: Throwable) {
+            null
+        }
+        val origin = uri?.let { parsed ->
+            if (parsed.scheme.isNullOrBlank() || parsed.host.isNullOrBlank()) null
+            else "${parsed.scheme}://${parsed.host}${if (parsed.port >= 0) ":${parsed.port}" else ""}"
+        }
+        val checkpoint = ContinuityCheckpoint(
+            origin = origin,
+            url = url,
+            title = binding.browseUrlEdit.text?.toString()?.takeIf { it.isNotBlank() },
+            journeyState = PlaybackJourneyState.BROWSING.name,
+        )
+        latestCheckpoint = checkpoint
+        lastBrowsingCheckpointUrl = url
+        continuityStore.save(checkpoint, force = force)
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "CONTINUITY_CHECKPOINT",
+                url = url,
+                detail = "journey=BROWSING reason=url_change durable=$force",
+            ),
+        )
     }
 
     private fun formatTime(sec: Double): String {
@@ -1743,6 +2170,8 @@ class KeenActivity : AppCompatActivity() {
         const val REMOTE_FIXTURE_URL =
             "https://appassets.androidplatform.net/assets/lab/remote_control_fixture.html"
         private const val MAX_EVENTS = 400
+        /** Bridge reads block on missing pieces; allow slow swarms before failing. */
+        private const val TORRENT_HTTP_TIMEOUT_MS = 60_000
 
         /** Peel document/webkit fullscreen from OPTIONAL_FULLSCREEN_JS path. */
         private val EXIT_DOCUMENT_FULLSCREEN_JS = """

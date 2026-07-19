@@ -7,271 +7,113 @@
 </p>
 
 <p align="center">
-  <strong>A tiny, fast Android TV browser built for the hostile streaming web.</strong>
+  <strong>A lightweight Android TV browser built for the hostile streaming web.</strong>
 </p>
 
 <p align="center">
-  <a href="releases/keen-0.1.78-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.78%20·%2032--bit-111111?style=for-the-badge" alt="Download APK 32-bit"></a>
+  <a href="https://github.com/SirPrizeNZ/keen/releases/download/v0.1.80/keen-0.1.80-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.80%20%C2%B7%2032--bit-111111?style=for-the-badge" alt="Download Keen v0.1.80 APK"></a>
   &nbsp;
-  <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="Releases"></a>
+  <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="GitHub Releases"></a>
   &nbsp;
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="License MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="MIT License"></a>
 </p>
 
 ---
 
-## Built lightweight
+## Stream from the browser — now including torrents
 
-Keen is roughly **3 MB** and deliberately engineered to stay lightweight.
+Keen turns touch-first, popup-heavy streaming sites into a remote-controlled TV journey. Open a site, choose what you want, block the junk and play.
 
-- ✅ Zero bundled Chrome bloat  
-- ✅ No second browser engine  
-- ✅ No tabs  
-- ✅ No sync  
-- ✅ No extensions  
-- ✅ No desktop-browser clutter  
+**New in v0.1.80:** activate a magnet link or `.torrent` download in the browser and Keen starts streaming the largest video directly in its TV-native player. You can also paste a magnet URI into the address bar.
 
-Keen uses the Android System WebView already on your device and adds only what matters on a television.
+The torrent engine runs in a separate process, downloads sequentially, serves only over a loopback HTTP bridge and deletes its cache when playback ends. A loading screen reports peers, speed and buffering progress while the stream starts.
 
-**Less overhead. Fewer moving parts. Faster startup. A browser built to stay out of the way.**
+> Only stream content you are legally permitted to access. Keen does not bypass DRM or access controls.
 
-One job:
+## Lightweight by design
 
-**Get from website to playback with a TV remote — without popups, redirects and hostile overlays taking over the screen.**
+Keen does not bundle Chromium or a second browser engine. It uses Android System WebView already on the device and adds a focused TV control, blocking and playback layer.
 
----
+The signed v0.1.80 ARMv7 APK is **18.3 MiB**. Most of the increase from earlier ~3 MB builds is the bundled native ARMv7 torrent engine; the browser architecture remains deliberately small.
+
+- one Activity and one live WebView
+- no tabs, sync, extensions or account ecosystem
+- no bundled desktop-browser engine
+- a separate torrent process so the browsing heap stays lean
+- continuity checkpoints and memory-pressure cleanup for low-memory TV hardware
 
 ## Download
 
 | | |
 |:--|:--|
-| **Version** | v0.1.78 |
-| **Platform** | Android TV / Google TV · API 29+ |
-| **ABI** | **32-bit ARM (`armeabi-v7a`)** — primary release |
-| **APK** | **[keen-0.1.78-32bit-armeabi-v7a.apk](releases/keen-0.1.78-32bit-armeabi-v7a.apk)** |
-| **Checksums** | [`SHA256SUMS`](releases/SHA256SUMS) |
-| **Release page** | [github.com/SirPrizeNZ/keen/releases](https://github.com/SirPrizeNZ/keen/releases/latest) |
+| **Version** | v0.1.80 (`versionCode` 100) |
+| **Platform** | Android TV / Google TV · Android 10+ (API 29+) |
+| **ABI** | **32-bit ARM (`armeabi-v7a`)** |
+| **APK** | **[keen-0.1.80-32bit-armeabi-v7a.apk](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.80/keen-0.1.80-32bit-armeabi-v7a.apk)** |
+| **Checksum** | [`SHA256SUMS`](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.80/SHA256SUMS) |
+| **Release notes** | [Keen v0.1.80](https://github.com/SirPrizeNZ/keen/releases/tag/v0.1.80) |
 
-**Install over Wi‑Fi**
+**Install over Wi-Fi**
 
-1. On the TV: **Settings → Device → Developer options** → enable **USB debugging** and **Network debugging** / **Wireless debugging** (wording varies by device).  
-2. Note the TV’s IP (often under **Network & Internet** or the wireless-debugging screen).  
-3. From your computer:
+1. On the TV, enable USB debugging and network/wireless debugging in Developer options.
+2. Note the TV's IP address and debugging port.
+3. From a computer with Android platform tools:
 
 ```bash
 adb connect <tv-ip>:5555
-adb install -r releases/keen-0.1.78-32bit-armeabi-v7a.apk
+adb install -r keen-0.1.80-32bit-armeabi-v7a.apk
 ```
 
-Accept the debugging prompt on the TV if it appears. Port is usually `5555`; wireless debugging may show a different port — use that if so.
+Accept the debugging prompt on the TV if it appears. Wireless debugging may show a port other than `5555`; use the port displayed by the TV.
 
-No dedicated arm64 package yet. The published build is the **32-bit** ARMv7 APK for classic Android TV hardware.
+The published build is the 32-bit ARMv7 APK for classic Android TV hardware. There is no dedicated arm64 package yet.
 
----
+## Ad blocking that protects the whole journey
 
-<h2 align="center">Why Keen?</h2>
-
-<p align="center">
-  <a href="#01"><img src="https://img.shields.io/badge/01-Tiny%20by%20design-111111?style=for-the-badge" alt="01"></a>
-  &nbsp;
-  <a href="#02"><img src="https://img.shields.io/badge/02-Popup%20quarantine-111111?style=for-the-badge" alt="02"></a>
-  &nbsp;
-  <a href="#03"><img src="https://img.shields.io/badge/03-Hostile%20journey-111111?style=for-the-badge" alt="03"></a>
-  &nbsp;
-  <a href="#04"><img src="https://img.shields.io/badge/04-Remote%20first-111111?style=for-the-badge" alt="04"></a>
-</p>
-
-<br>
-
-<a id="01"></a>
-
-<table>
-  <tr>
-    <td width="120" align="center" valign="top">
-      <br>
-      <img src="https://img.shields.io/badge/01-111111?style=for-the-badge&labelColor=111111" alt="01">
-      <br><br>
-      <sub><b>SIZE</b></sub>
-    </td>
-    <td valign="top">
-
-### Tiny by design
-
-Keen does not ship an entire browser ecosystem just to open a webpage.
-
-**One Activity. One live WebView. One session. Around 3 MB.**
-
-Everything that does not support the core TV journey is removed.
-
-- No bundled Chrome browser
-- No tab-management machinery
-- No account ecosystem
-- No unnecessary background services
-
-**Just an incredibly lightweight layer between you, the web and your TV.**
-
-</td>
-  </tr>
-</table>
-
-<br>
-
-<a id="02"></a>
-
-<table>
-  <tr>
-    <td width="120" align="center" valign="top">
-      <br>
-      <img src="https://img.shields.io/badge/02-111111?style=for-the-badge&labelColor=111111" alt="02">
-      <br><br>
-      <sub><b>CONTROL</b></sub>
-    </td>
-    <td valign="top">
-
-### Popups never get your screen
-
-Keen does more than ordinary ad blocking.
-
-When a website tries to open a new window, Keen can place it inside an invisible **popup quarantine** before it ever reaches your TV.
-
-The destination is inspected first.
-
-**Unwanted popup? Destroyed.**  
-**Legitimate playback or login flow? Continued in the main session.**
-
-The popup never gets your screen.
-
-</td>
-  </tr>
-</table>
-
-<br>
-
-<a id="03"></a>
-
-<table>
-  <tr>
-    <td width="120" align="center" valign="top">
-      <br>
-      <img src="https://img.shields.io/badge/03-111111?style=for-the-badge&labelColor=111111" alt="03">
-      <br><br>
-      <sub><b>LAYERS</b></sub>
-    </td>
-    <td valign="top">
-
-### It blocks the whole hostile journey
-
-Keen combines multiple layers of protection:
+Keen combines several layers rather than relying on a single request filter:
 
 - network ad and tracker blocking
 - service-worker request interception
-- popup quarantine
+- popup quarantine before a new window reaches the screen
 - hostile redirect containment
 - external-app escape prevention
 - intrusive overlay removal
-- site-specific repairs
+- site-specific playback and navigation repairs
 
-Traditional blockers mainly ask:
+Traditional blockers mainly ask, "Should this request load?" Keen also asks, "Did the user actually choose to go there?"
 
-**Should this request load?**
+Legitimate playback and login flows can continue in the main session. Unwanted popups are destroyed without ever taking over the television.
 
-Keen also asks:
+## Built for a remote
 
-**Did the user actually choose to go there?**
+Keen finds interactive elements, moves between them directionally, reaches content outside the visible screen and scrolls targets into view.
 
-That difference matters on a television.
+Long-press **OK** to switch between D-pad navigation and touch-style pointer control. Use directional navigation when the page behaves; use the pointer when it does not.
 
-</td>
-  </tr>
-</table>
+Playback uses D-pad and media controls, supports fullscreen, and returns cleanly to the page underneath.
 
-<br>
+## What v0.1.80 includes
 
-<a id="04"></a>
+- direct magnet and `.torrent` streaming in the browser
+- native TV playback through Media3/ExoPlayer
+- layered ad, popup, redirect and overlay defence
+- improved pointer precision and horizontal/vertical remote scrolling
+- playback priority plus durable session restoration after low-memory kills
+- Android TV launcher support for API 29+ ARMv7 devices
 
-<table>
-  <tr>
-    <td width="120" align="center" valign="top">
-      <br>
-      <img src="https://img.shields.io/badge/04-111111?style=for-the-badge&labelColor=111111" alt="04">
-      <br><br>
-      <sub><b>INPUT</b></sub>
-    </td>
-    <td valign="top">
-
-### Built for a remote, with touch when you need it
-
-Most websites were designed for a mouse or touchscreen.
-
-Keen was built around the TV remote.
-
-It finds interactive elements, moves between them directionally, reaches content outside the visible screen and scrolls targets into view.
-
-Need more direct control?
-
-**Long-press OK to switch between D-pad navigation and touch-style pointer control.**
-
-Use D-pad navigation when the page behaves.
-
-Switch to touch control when it does not.
-
-**One remote. Two ways to control the web.**
-
-</td>
-  </tr>
-</table>
-
----
+The v0.1.80 torrent path has passed clean local builds and unit tests. Physical-device torrent playback validation is still pending.
 
 ## One screen. One session. One job.
-
-Keen is not trying to recreate Chrome on a television.
-
-The journey is simple:
 
 ```text
 Open → navigate → choose → block the junk → play → fullscreen → return cleanly
 ```
 
-No browser circus.
-
-No endless tabs.
-
-**No popup bullshit.**
-
-Just a cleaner, faster path to what you actually wanted to watch.
-
----
-
-## Current status
-
-Keen is under active development.
-
-**v0.1.78** (physical TV):
-
-- lightweight ~3 MB APK
-- pointer remote + edge movie-row H-scroll
-- player chrome OK (timeline + icon controls)
-- popup quarantine / hostile overlay defence
-- fullscreen playback + clean back stack
-- Android TV launcher · API 29+ · armeabi-v7a
-
----
-
-## The goal
-
-Browsing the web from a television should not feel like fighting the web.
-
-**You chose where you wanted to go.  
-Keen helps you get there.**
-
-<br>
+Keen is not trying to recreate Chrome on a television. It is a cleaner, faster path to what you actually wanted to watch.
 
 <p align="center">
   <strong>Less browser. Better television.</strong>
 </p>
-
----
 
 ## License
 

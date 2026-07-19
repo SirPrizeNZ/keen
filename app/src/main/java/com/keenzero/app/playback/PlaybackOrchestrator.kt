@@ -30,6 +30,7 @@ class PlaybackOrchestrator(
     private val onCheckpoint: (ContinuityCheckpoint) -> Unit,
     private val onPlaybackConfirmed: (PlaybackSnapshot) -> Unit,
     private val onPlaybackMode: (enter: Boolean) -> Unit,
+    private val onPlaybackActive: (active: Boolean) -> Unit = {},
     private val onJourneyState: (PlaybackJourneyState) -> Unit = {},
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
@@ -48,6 +49,7 @@ class PlaybackOrchestrator(
     private var audioFocusGranted = false
     private var unmuteRequested = false
     private var audibleConfirmed = false
+    private var playbackPriorityActive = false
 
     private val machine = PlaybackJourneyMachine { from, to, reason ->
         onEvent(
@@ -92,6 +94,7 @@ class PlaybackOrchestrator(
     }
 
     fun onPlayIntent(intent: PlayIntent) {
+        updatePlaybackPriority(false)
         activeIntent = intent
         confirmed = false
         playbackModeEntered = false
@@ -154,6 +157,7 @@ class PlaybackOrchestrator(
     }
 
     fun beginRestore(checkpoint: ContinuityCheckpoint) {
+        updatePlaybackPriority(false)
         machine.force(PlaybackJourneyState.RESTORING, "continuity_restore")
         session = PlaybackSession(
             sessionId = UUID.randomUUID().toString(),
@@ -236,6 +240,23 @@ class PlaybackOrchestrator(
 
     fun onBackground() {
         checkpointNow(reason = "app_background")
+    }
+
+    fun checkpointFresh(reason: String, onComplete: () -> Unit) {
+        val wv = webView
+        if (wv == null || session == null) {
+            checkpointNow(reason = "$reason:fallback")
+            onComplete()
+            return
+        }
+        sample(wv) { snapshot ->
+            if (snapshot != null) {
+                checkpointNow(snapshot = snapshot, reason = reason)
+            } else {
+                checkpointNow(reason = "$reason:fallback")
+            }
+            onComplete()
+        }
     }
 
     fun onPageSettled(webView: WebView, url: String?) {
@@ -427,6 +448,7 @@ class PlaybackOrchestrator(
 
     fun destroy() {
         checkpointNow(reason = "orchestrator_destroy")
+        updatePlaybackPriority(false)
         stopPolling()
         releaseAudioFocus()
         webView = null
@@ -462,9 +484,16 @@ class PlaybackOrchestrator(
         pollRunnable = null
     }
 
-    private fun sample(webView: WebView) {
+    private fun sample(
+        webView: WebView,
+        onSampled: ((PlaybackSnapshot?) -> Unit)? = null,
+    ) {
         webView.evaluateJavascript(SAMPLE_JS) { raw ->
-            val json = unwrapJs(raw) ?: return@evaluateJavascript
+            val json = unwrapJs(raw)
+            if (json == null) {
+                onSampled?.invoke(null)
+                return@evaluateJavascript
+            }
             try {
                 val o = JSONObject(json)
                 val playing = o.optBoolean("playing", false)
@@ -534,6 +563,7 @@ class PlaybackOrchestrator(
                 }
 
                 if (playing) {
+                    updatePlaybackPriority(true)
                     if (!playbackModeEntered && confirmed) {
                         enterPlaybackMode(webView, snapshot, reason = "playing_reassert")
                     }
@@ -557,9 +587,11 @@ class PlaybackOrchestrator(
                     }
                     maybeCheckpoint(snapshot)
                 } else if (ended && confirmed) {
+                    updatePlaybackPriority(false)
                     machine.transition(PlaybackJourneyState.ENDED, "ended")
                     checkpointNow(snapshot = snapshot, reason = "ended")
                 } else if (paused && confirmed && !ended) {
+                    updatePlaybackPriority(false)
                     if (machine.state != PlaybackJourneyState.PAUSED) {
                         machine.transition(PlaybackJourneyState.PAUSED, "paused")
                         checkpointNow(snapshot = snapshot, reason = "paused")
@@ -585,9 +617,25 @@ class PlaybackOrchestrator(
                     season = snapshot.season,
                     episode = snapshot.episode,
                 )
+                onSampled?.invoke(snapshot)
             } catch (_: Exception) {
+                onSampled?.invoke(null)
             }
         }
+    }
+
+    private fun updatePlaybackPriority(active: Boolean) {
+        if (playbackPriorityActive == active) return
+        playbackPriorityActive = active
+        onPlaybackActive(active)
+        onEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "PLAYBACK_PRIORITY",
+                url = webView?.url,
+                detail = if (active) "foreground_service_start" else "foreground_service_stop",
+            ),
+        )
     }
 
     private fun enterPlaybackMode(
@@ -693,6 +741,7 @@ class PlaybackOrchestrator(
                     else -> "paused"
                 }
             } ?: sess?.playbackState,
+            journeyState = machine.state.name,
             subtitleTrack = snap?.subtitleTrack ?: sess?.subtitleTrack,
             audioTrack = snap?.audioTrack ?: sess?.audioTrack,
             qualityPreference = snap?.qualityPreference ?: sess?.qualityPreference,
