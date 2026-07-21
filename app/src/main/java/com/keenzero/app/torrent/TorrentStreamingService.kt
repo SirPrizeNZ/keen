@@ -1,9 +1,15 @@
 package com.keenzero.app.torrent
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
+import com.keenzero.app.R
 import org.libtorrent4j.AlertListener
 import org.libtorrent4j.Priority
 import org.libtorrent4j.SessionManager
@@ -40,11 +46,28 @@ class TorrentStreamingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Streaming", NotificationManager.IMPORTANCE_LOW),
+        )
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Foreground for the whole stream: a background service loses its process
+        // priority ~30 min in and the cached-app freezer SIGSTOPs this process —
+        // download and HTTP bridge stall mid-movie with nothing but a spinner
+        // (verified on the Mi Box: am_freeze at 20:38/21:12, playback died ~60 s
+        // later each time when the player's buffer ran out).
+        startForeground(
+            NOTIFICATION_ID,
+            streamingNotification(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+        )
         val magnet = intent?.getStringExtra(EXTRA_MAGNET)
         val torrentUrl = intent?.getStringExtra(EXTRA_TORRENT_URL)
         val id = intent?.getStringExtra(EXTRA_REQUEST_ID)
@@ -228,6 +251,8 @@ class TorrentStreamingService : Service() {
         val mediaPath = files.filePath(largestIndex, root.absolutePath)
         val mediaFile = File(mediaPath)
         val title = mediaFile.name.ifBlank { "Torrent video" }
+        val firstPiece = (files.fileOffset(largestIndex) / info.pieceLength()).toInt()
+        val lastPiece = ((files.fileOffset(largestIndex) + mediaSize - 1) / info.pieceLength()).toInt()
         val server = TorrentHttpBridge(
             mediaFile = mediaFile,
             mediaSize = mediaSize,
@@ -237,6 +262,10 @@ class TorrentStreamingService : Service() {
             pieceLength = info.pieceLength(),
             pieceCount = info.numPieces(),
             handle = handle,
+            // Player seeked past the downloaded window and reads are blocked:
+            // surface buffering progress over the playhead window so the UI can
+            // bring the loader back until playback can resume.
+            onStall = { piece -> sendSeekBufferProgress(id, piece, lastPiece) },
         )
         bridge = server
         server.startBridge()
@@ -245,8 +274,6 @@ class TorrentStreamingService : Service() {
         // Head pieces must exist before the player opens or the video element sits
         // on a black frame with no feedback. Tail pieces cover mp4 moov-at-end /
         // mkv cues that players fetch immediately via a range request.
-        val firstPiece = (files.fileOffset(largestIndex) / info.pieceLength()).toInt()
-        val lastPiece = ((files.fileOffset(largestIndex) + mediaSize - 1) / info.pieceLength()).toInt()
         val headCount = ((HEAD_BUFFER_BYTES + info.pieceLength() - 1) / info.pieceLength())
             .toInt().coerceIn(1, lastPiece - firstPiece + 1)
         val bufferPieces = buildList {
@@ -255,6 +282,29 @@ class TorrentStreamingService : Service() {
         }
         bufferPieces.forEachIndexed { i, piece -> handle.setPieceDeadline(piece, i * 250) }
         startBufferLoop(id, server, title, bufferPieces)
+    }
+
+    /** Mid-playback seek stall: buffering percent over the deadline window at [piece]. */
+    private fun sendSeekBufferProgress(id: String, piece: Int, lastPiece: Int) {
+        try {
+            val handle = mediaHandle ?: return
+            if (id != requestId || !handle.isValid) return
+            val windowEnd = minOf(lastPiece + 1, piece + TorrentHttpBridge.DEADLINE_WINDOW_PIECES)
+            val window = piece until windowEnd
+            val have = window.count { handle.havePiece(it) }
+            val size = (windowEnd - piece).coerceAtLeast(1)
+            val status = handle.status()
+            sendProgress(
+                id,
+                STAGE_BUFFERING,
+                percent = (have * 100) / size,
+                peers = status.numPeers(),
+                seeds = status.numSeeds(),
+                speedBps = status.downloadRate().toLong(),
+            )
+        } catch (error: Throwable) {
+            Log.w(TAG, "Seek buffer progress failed", error)
+        }
     }
 
     /** Pre-metadata (magnet): report peer discovery so the wait never looks dead. */
@@ -282,6 +332,7 @@ class TorrentStreamingService : Service() {
                         STAGE_BUFFERING,
                         percent = (have * 100) / bufferPieces.size,
                         peers = status.numPeers(),
+                        seeds = status.numSeeds(),
                         speedBps = status.downloadRate().toLong(),
                     )
                 }
@@ -326,6 +377,7 @@ class TorrentStreamingService : Service() {
         stage: String,
         percent: Int,
         peers: Int = -1,
+        seeds: Int = -1,
         speedBps: Long = -1,
     ) {
         sendBroadcast(
@@ -335,6 +387,7 @@ class TorrentStreamingService : Service() {
                 .putExtra(EXTRA_STAGE, stage)
                 .putExtra(EXTRA_PERCENT, percent)
                 .putExtra(EXTRA_PEERS, peers)
+                .putExtra(EXTRA_SEEDS, seeds)
                 .putExtra(EXTRA_SPEED_BPS, speedBps),
         )
     }
@@ -367,10 +420,32 @@ class TorrentStreamingService : Service() {
     }
 
     override fun onDestroy() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
         cleanup()
         ticker.shutdownNow()
         worker.shutdownNow()
         super.onDestroy()
+    }
+
+    private fun streamingNotification(): Notification {
+        val launch = packageManager.getLeanbackLaunchIntentForPackage(packageName)
+            ?: packageManager.getLaunchIntentForPackage(packageName)
+        val contentIntent = launch?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+        return Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("Streaming video")
+            .apply { contentIntent?.let { setContentIntent(it) } }
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setOngoing(true)
+            .build()
     }
 
     private fun mimeType(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
@@ -399,6 +474,7 @@ class TorrentStreamingService : Service() {
         const val EXTRA_STAGE = "stage"
         const val EXTRA_PERCENT = "percent"
         const val EXTRA_PEERS = "peers"
+        const val EXTRA_SEEDS = "seeds"
         const val EXTRA_SPEED_BPS = "speed_bps"
 
         const val STAGE_FETCHING_TORRENT = "fetching_torrent"
@@ -411,6 +487,8 @@ class TorrentStreamingService : Service() {
         )
 
         private const val TAG = "KeenTorrent"
+        private const val CHANNEL_ID = "keen_torrent_streaming"
+        private const val NOTIFICATION_ID = 1002
         private const val CONNECTION_LIMIT = 60
         private const val ACTIVE_DOWNLOADS = 1
         private const val DISK_QUEUE_BYTES = 24 * 1024 * 1024

@@ -16,6 +16,12 @@ class TorrentHttpBridge(
     private val pieceLength: Int,
     private val pieceCount: Int,
     private val handle: TorrentHandle,
+    /**
+     * A read has been blocked waiting for [piece] longer than the notify
+     * threshold (player seeked past the downloaded window). Fires roughly
+     * every 750 ms until the piece arrives; used to surface buffering UI.
+     */
+    private val onStall: ((piece: Int) -> Unit)? = null,
 ) : NanoHTTPD(LOOPBACK, 0) {
 
     private val closed = AtomicBoolean(false)
@@ -69,6 +75,7 @@ class TorrentHttpBridge(
                     pieceCount = pieceCount,
                     handle = handle,
                     closed = closed,
+                    onStall = onStall,
                 ),
                 range.length,
             )
@@ -91,6 +98,7 @@ class TorrentHttpBridge(
         private val pieceCount: Int,
         private val handle: TorrentHandle,
         private val closed: AtomicBoolean,
+        private val onStall: ((piece: Int) -> Unit)?,
     ) : InputStream() {
         private val source = RandomAccessFile(file, "r")
         private var position = start
@@ -120,13 +128,34 @@ class TorrentHttpBridge(
 
         private fun awaitCurrentPiece() {
             val firstPiece = ((torrentOffset + position) / pieceLength).toInt()
+            if (!handle.havePiece(firstPiece)) {
+                // Seek past the downloaded window: stale deadlines keep the swarm
+                // busy at the old playhead — drop them so bandwidth moves here now.
+                try {
+                    handle.clearPieceDeadlines()
+                } catch (_: Throwable) {
+                }
+            }
             // Refresh the playhead window on every HTTP seek/range read.
             val deadlineEnd = minOf(pieceCount, firstPiece + DEADLINE_WINDOW_PIECES)
             for (piece in firstPiece until deadlineEnd) {
                 handle.setPieceDeadline(piece, (piece - firstPiece) * DEADLINE_STEP_MS)
             }
+            var waitedMs = 0L
+            var nextNotifyMs = STALL_NOTIFY_FIRST_MS
             while (!closed.get() && handle.isValid() && !handle.havePiece(firstPiece)) {
                 Thread.sleep(PIECE_POLL_MS)
+                waitedMs += PIECE_POLL_MS
+                if (waitedMs >= nextNotifyMs) {
+                    onStall?.invoke(firstPiece)
+                    nextNotifyMs = waitedMs + STALL_NOTIFY_EVERY_MS
+                }
+                // A reader the player abandoned after a far seek must not poll
+                // forever with its deadlines cleared; the active request re-arms
+                // its own window and is never near this bound.
+                if (waitedMs > MAX_PIECE_WAIT_MS) {
+                    throw java.io.IOException("Timed out waiting for torrent piece $firstPiece")
+                }
             }
             if (closed.get() || !handle.isValid()) throw java.io.IOException("Torrent stream closed")
         }
@@ -139,8 +168,12 @@ class TorrentHttpBridge(
 
     companion object {
         private const val LOOPBACK = "127.0.0.1"
-        private const val DEADLINE_WINDOW_PIECES = 12
+        /** Shared with the service's stall-progress window computation. */
+        const val DEADLINE_WINDOW_PIECES = 12
         private const val DEADLINE_STEP_MS = 250
         private const val PIECE_POLL_MS = 75L
+        private const val STALL_NOTIFY_FIRST_MS = 450L
+        private const val STALL_NOTIFY_EVERY_MS = 750L
+        private const val MAX_PIECE_WAIT_MS = 5 * 60 * 1000L
     }
 }

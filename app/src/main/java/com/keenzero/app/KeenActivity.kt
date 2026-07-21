@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.net.Uri
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -76,22 +77,51 @@ class KeenActivity : AppCompatActivity() {
     private var lastBrowsingCheckpointUrl: String? = null
     private var torrentRequestId: String? = null
     private var torrentPlayer: ExoPlayer? = null
+    /** Identity of the active magnet/.torrent for resume-point persistence. */
+    private var torrentOriginKey: String? = null
+    /** Raw magnet / .torrent URL of the active session — the Continue card re-activates it. */
+    private var torrentOriginLabel: String? = null
+    /** Display title from the torrent service (file name), for the Continue card. */
+    private var torrentTitle: String? = null
+    /** Pending hold-to-seek target while DPAD left/right is held in the torrent player. */
+    private var torrentSeekTargetMs: Long = -1L
+    private var torrentSeekLastEventMs: Long = 0L
+    /** Frame grab for the Continue card: retries while playback hasn't produced a usable frame. */
+    private var torrentFrameAttempts = 0
+    private val torrentFrameCaptureRunnable = Runnable { captureTorrentFrame("scheduled") }
+    /** og:image / poster of the current page — attached to media checkpoints. */
+    private var currentPagePosterUrl: String? = null
+    private var posterProbeUrl: String? = null
+    private val torrentResumeStore by lazy { com.keenzero.app.torrent.TorrentResumeStore(this) }
+    private val favouritesStore by lazy { com.keenzero.app.favourites.FavouritesStore(this) }
     private val torrentReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val id = intent?.getStringExtra(TorrentStreamingService.EXTRA_REQUEST_ID)
             if (id.isNullOrBlank() || id != torrentRequestId) return
             when (intent.action) {
                 TorrentStreamingService.ACTION_PROGRESS -> {
+                    val stage = intent.getStringExtra(TorrentStreamingService.EXTRA_STAGE).orEmpty()
+                    // Timeline seek past the downloaded window: the bridge reports
+                    // buffering while the player is stalled — bring the loader back
+                    // over the player until enough pieces arrive to resume.
+                    if (!torrentOverlayVisible && nativeTorrentPlayerActive &&
+                        stage == TorrentStreamingService.STAGE_BUFFERING &&
+                        torrentPlayer?.playbackState == Player.STATE_BUFFERING
+                    ) {
+                        showTorrentOverlay()
+                    }
                     updateTorrentOverlay(
-                        stage = intent.getStringExtra(TorrentStreamingService.EXTRA_STAGE).orEmpty(),
+                        stage = stage,
                         percent = intent.getIntExtra(TorrentStreamingService.EXTRA_PERCENT, -1),
                         peers = intent.getIntExtra(TorrentStreamingService.EXTRA_PEERS, -1),
+                        seeds = intent.getIntExtra(TorrentStreamingService.EXTRA_SEEDS, -1),
                         speedBps = intent.getLongExtra(TorrentStreamingService.EXTRA_SPEED_BPS, -1),
                     )
                 }
                 TorrentStreamingService.ACTION_READY -> {
                     val streamUrl = intent.getStringExtra(TorrentStreamingService.EXTRA_STREAM_URL) ?: return
                     val title = intent.getStringExtra(TorrentStreamingService.EXTRA_TITLE)
+                    torrentTitle = title?.takeIf { it.isNotBlank() }
                     recordEvent(
                         NavigationEvent(
                             System.currentTimeMillis(),
@@ -100,7 +130,7 @@ class KeenActivity : AppCompatActivity() {
                             detail = "title=${title.orEmpty()}",
                         ),
                     )
-                    hideTorrentOverlay()
+                    hideTorrentOverlayWithCollapse()
                     showNativeTorrentPlayer(streamUrl, title.orEmpty())
                 }
                 TorrentStreamingService.ACTION_ERROR -> {
@@ -156,25 +186,41 @@ class KeenActivity : AppCompatActivity() {
             ),
         )
 
-        binding.btnLoad.requestFocus()
-
-        binding.btnLoad.setOnClickListener { openUrlFromInput() }
-        binding.btnStandards.setOnClickListener {
-            binding.urlInput.setText(getString(R.string.home_url))
-            openUrl(getString(R.string.home_url))
+        binding.continueCard.setOnClickListener { resumeContinueCard() }
+        binding.continueCard.clipToOutline = true
+        binding.continueCard.outlineProvider = ViewOutlineProvider.BACKGROUND
+        binding.continueCard.setOnFocusChangeListener { v, hasFocus ->
+            val scale = if (hasFocus) 1.05f else 1f
+            v.animate()
+                .scaleX(scale).scaleY(scale)
+                .setDuration(if (hasFocus) 220 else 150)
+                .setInterpolator(
+                    if (hasFocus) {
+                        android.view.animation.OvershootInterpolator(1.8f)
+                    } else {
+                        android.view.animation.DecelerateInterpolator()
+                    },
+                )
+                .start()
+            // A slightly faster inner zoom than the outer card creates a subtle
+            // parallax "push in" — clipped by continueCard's own outline.
+            val posterScale = if (hasFocus) 1.08f else 1f
+            binding.continuePoster.animate()
+                .scaleX(posterScale).scaleY(posterScale)
+                .setDuration(if (hasFocus) 260 else 180)
+                .start()
+            binding.continueCardTitle.animate()
+                .alpha(if (hasFocus) 1f else 0.75f)
+                .setDuration(160)
+                .start()
         }
-        binding.btnVerticalSlice.setOnClickListener {
-            openUrl(VERTICAL_SLICE_URL)
-        }
-        binding.btnContinue.setOnClickListener { continueFromCheckpoint() }
-        binding.btnDiagnostics.setOnClickListener { showDiagnosticsPreview() }
-        binding.btnExport.setOnClickListener { exportEvidence() }
+        binding.chromeFavButton.setOnClickListener { toggleFavourite() }
 
-        binding.urlInput.setOnEditorActionListener { _, actionId, event ->
+        binding.homeUrlInput.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_GO ||
                 (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
             ) {
-                openUrlFromInput()
+                commitHomeUrl()
                 true
             } else {
                 false
@@ -195,6 +241,18 @@ class KeenActivity : AppCompatActivity() {
         binding.browseUrlEdit.setOnFocusChangeListener { _, hasFocus ->
             if (!hasFocus) hideKeyboard(binding.browseUrlEdit)
         }
+        // EditText normally eats DPAD_RIGHT to move the text cursor and only hands off to
+        // nextFocusRight once the cursor is already at the end — on a remote that reads as
+        // "the star button doesn't work." Jump straight to it instead of letting text-cursor
+        // navigation swallow the press.
+        binding.browseUrlEdit.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && event.action == KeyEvent.ACTION_DOWN) {
+                binding.chromeFavButton.requestFocus()
+                true
+            } else {
+                false
+            }
+        }
 
         onBackPressedDispatcher.addCallback(
             this,
@@ -206,22 +264,20 @@ class KeenActivity : AppCompatActivity() {
         )
 
         showHome(status = getString(R.string.status_home))
-        hydrateContinuitySurface()
         recordEvent(NavigationEvent(System.currentTimeMillis(), "native_home_ready"))
         // LAB_URL / harness extras allowed on release for physical TV validation.
         handleDebugIntent(intent)
-        // Product default: open FMHY streaming section unless LAB_URL navigated first.
-        if (webHost == null &&
+        // Cold start lands exactly where the user left off (page or playback).
+        // Only a deliberate back-out to home (at_home flag) keeps the launch on
+        // the Continue watching surface.
+        if (webHost == null && torrentRequestId == null &&
             intent?.getStringExtra("com.keenzero.app.extra.LAB_URL").isNullOrBlank() &&
             intent?.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) != true &&
             intent?.getBooleanExtra(EXTRA_LAB_AUTO_JOURNEY, false) != true
         ) {
             val checkpoint = continuityStore.load()
-            if (checkpoint?.url != null) {
+            if (checkpoint?.url != null && !continuityStore.wasAtHome()) {
                 continueFromCheckpoint()
-            } else {
-                binding.urlInput.setText(getString(R.string.home_url))
-                openUrl(getString(R.string.home_url))
             }
         }
     }
@@ -248,6 +304,10 @@ class KeenActivity : AppCompatActivity() {
         continuityStore.flush()
         // Screen gone (HOME / screensaver): never keep decoding & playing audio.
         torrentPlayer?.pause()
+        // Surface still holds the last frame — refresh the Continue card art.
+        if (nativeTorrentPlayerActive) captureTorrentFrame("tv_off")
+        // The process may die in the background; keep the resume point current.
+        saveTorrentResumePoint()
         super.onStop()
     }
 
@@ -257,39 +317,303 @@ class KeenActivity : AppCompatActivity() {
         webHost?.onForeground()
     }
 
+    /**
+     * Home surface has two states: first-run / nothing watched (faded K mark +
+     * address line with the IME up) and Continue watching (Netflix-style card
+     * for the last played title). adjustResize keeps the centered group clear
+     * of the keyboard.
+     */
     private fun hydrateContinuitySurface() {
-        val cp = continuityStore.load()
-        latestCheckpoint = cp
-        if (cp == null || cp.url.isNullOrBlank()) {
-            binding.continuePanel.visibility = View.GONE
+        latestCheckpoint = continuityStore.load()
+        val cp = continuityStore.loadMedia()?.takeIf { !it.url.isNullOrBlank() }
+        val hasContinue = cp != null
+
+        val favs = favouritesStore.list()
+        binding.favsGroup.visibility = if (favs.isNotEmpty()) View.VISIBLE else View.GONE
+        binding.favsRow.removeAllViews()
+        favs.forEachIndexed { index, fav ->
+            val roundel = buildFavRoundel(fav)
+            roundel.alpha = 0f
+            roundel.translationY = 10f * resources.displayMetrics.density
+            binding.favsRow.addView(roundel)
+            roundel.animate()
+                .alpha(1f).translationY(0f)
+                .setStartDelay(50L * index)
+                .setDuration(280)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        }
+
+        val hasContent = hasContinue || favs.isNotEmpty()
+        binding.continueGroup.visibility = if (hasContinue) View.VISIBLE else View.GONE
+        binding.homeCenterGroup.visibility = if (hasContent) View.GONE else View.VISIBLE
+        if (hasContinue) {
+            binding.continueGroup.alpha = 0f
+            binding.continueGroup.translationY = 14f * resources.displayMetrics.density
+            binding.continueGroup.animate()
+                .alpha(1f).translationY(0f)
+                .setStartDelay(60L * favs.size)
+                .setDuration(320)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        }
+        if (!hasContent) {
+            binding.homeUrlInput.requestFocus()
+            binding.homeUrlInput.post {
+                if (uiState == AppUiState.HOME && binding.homeShell.visibility == View.VISIBLE) {
+                    showKeyboard(binding.homeUrlInput)
+                }
+            }
             return
         }
-        binding.continuePanel.visibility = View.VISIBLE
-        val progress = if (cp.durationSec > 0) {
-            ((cp.playbackPositionSec / cp.durationSec) * 100).toInt().coerceIn(0, 100)
-        } else {
-            0
+        if (cp == null) {
+            // Favourites exist but nothing to continue — land focus on the first roundel.
+            binding.favsRow.getChildAt(0)?.requestFocus()
+            return
         }
-        binding.continueTitle.text = cp.title ?: cp.contentId ?: getString(R.string.continue_unknown_title)
-        binding.continueMeta.text = getString(
-            R.string.continue_meta,
-            formatTime(cp.playbackPositionSec),
-            formatTime(cp.durationSec),
-            progress,
-        )
-        binding.continueStatus.text = getString(R.string.continue_status_ready)
+        binding.continueCardTitle.text = prettyMediaTitle(cp.title)
+            ?: cp.contentId
+            ?: getString(R.string.continue_unknown_title)
+        val fraction = if (cp.durationSec > 0) {
+            (cp.playbackPositionSec / cp.durationSec).toFloat().coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        applyContinueProgress(fraction)
+        loadContinuePoster(cp.posterUrl)
+        binding.continueCard.requestFocus()
         recordEvent(
             NavigationEvent(
                 System.currentTimeMillis(),
                 "continuity_surface_shown",
                 url = cp.url,
-                detail = "pos=${cp.playbackPositionSec}",
+                detail = "pos=${cp.playbackPositionSec} poster=${!cp.posterUrl.isNullOrBlank()}",
             ),
         )
     }
 
+    /** One roundel (icon + label) per favourite, added to `favsRow` in code. */
+    private fun buildFavRoundel(fav: com.keenzero.app.favourites.FavouritesStore.Fav): View {
+        fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+        val letter = android.widget.TextView(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+            text = fav.label.take(1).uppercase()
+            textSize = 24f
+            setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_text))
+            alpha = 0.85f
+            gravity = android.view.Gravity.CENTER
+        }
+        val icon = android.widget.ImageView(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            visibility = View.GONE
+        }
+        val roundel = android.widget.FrameLayout(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(dp(64), dp(64), android.view.Gravity.CENTER)
+            setBackgroundResource(R.drawable.fav_roundel_bg)
+            isDuplicateParentStateEnabled = true
+            clipToOutline = true
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            addView(letter)
+            addView(icon)
+        }
+        // Soft translucent aura behind the roundel — fades in on focus instead of
+        // a hard ring, since a real drop shadow is invisible on a black surface.
+        val halo = View(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(dp(80), dp(80), android.view.Gravity.CENTER)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(0x1AFFFFFF)
+            }
+            alpha = 0f
+        }
+        val roundelWrap = android.widget.FrameLayout(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(dp(84), dp(84))
+            addView(halo)
+            addView(roundel)
+        }
+        val label = android.widget.TextView(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(8) }
+            text = fav.label
+            textSize = 12f
+            setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_muted))
+            gravity = android.view.Gravity.CENTER
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            alpha = 0.7f
+        }
+        val item = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                dp(84),
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginEnd = dp(20) }
+            isFocusable = true
+            isFocusableInTouchMode = true
+            addView(roundelWrap)
+            addView(label)
+            setOnClickListener { v ->
+                // Quick press-in/out so OK feels acknowledged before navigation kicks in.
+                v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70)
+                    .withEndAction {
+                        val restScale = if (v.hasFocus()) 1.1f else 1f
+                        v.animate().scaleX(restScale).scaleY(restScale).setDuration(110).start()
+                    }
+                    .start()
+                openNavigation(fav.url)
+            }
+            setOnFocusChangeListener { v, hasFocus ->
+                val scale = if (hasFocus) 1.1f else 1f
+                v.animate()
+                    .scaleX(scale).scaleY(scale)
+                    .translationY(if (hasFocus) -2f * resources.displayMetrics.density else 0f)
+                    .setDuration(if (hasFocus) 200 else 140)
+                    .setInterpolator(
+                        if (hasFocus) {
+                            android.view.animation.OvershootInterpolator(2.4f)
+                        } else {
+                            android.view.animation.DecelerateInterpolator()
+                        },
+                    )
+                    .start()
+                halo.animate().alpha(if (hasFocus) 1f else 0f).setDuration(if (hasFocus) 260 else 160).start()
+                label.animate().alpha(if (hasFocus) 1f else 0.7f).setDuration(160).start()
+            }
+        }
+        loadFavIcon(fav.host, icon, letter)
+        return item
+    }
+
+    /**
+     * Favicon for a favourite roundel: single-file disk cache keyed by host,
+     * then apple-touch-icon → favicon.ico. Letter fallback stays visible until
+     * (and unless) a usable icon is decoded.
+     */
+    private fun loadFavIcon(host: String, into: android.widget.ImageView, fallback: View) {
+        Thread({
+            try {
+                val dir = java.io.File(filesDir, "favs")
+                dir.mkdirs()
+                val cacheFile = java.io.File(dir, "$host.img")
+                val bitmap = if (cacheFile.exists()) {
+                    android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)
+                } else {
+                    // Real-world favicons carry brand colour (HN orange, etc.) — desaturate
+                    // before caching so the roundel row stays strictly black & white.
+                    val fetched = (
+                        fetchIconBitmap("https://$host/apple-touch-icon.png")
+                            ?: fetchIconBitmap("https://$host/favicon.ico")
+                        )?.let(::toGrayscale)
+                    fetched?.also { bmp ->
+                        java.io.FileOutputStream(cacheFile).use { out ->
+                            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                        }
+                    }
+                }
+                if (bitmap != null && bitmap.width >= 16) {
+                    runOnUiThread {
+                        into.setImageBitmap(bitmap)
+                        into.alpha = 0f
+                        into.visibility = View.VISIBLE
+                        into.animate().alpha(1f).setDuration(220).start()
+                        fallback.animate().alpha(0f).setDuration(220)
+                            .withEndAction { fallback.visibility = View.GONE }
+                            .start()
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }, "keen-favicon").apply { isDaemon = true }.start()
+    }
+
+    private fun toGrayscale(src: android.graphics.Bitmap): android.graphics.Bitmap {
+        val out = android.graphics.Bitmap.createBitmap(
+            src.width,
+            src.height,
+            android.graphics.Bitmap.Config.ARGB_8888,
+        )
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            colorFilter = android.graphics.ColorMatrixColorFilter(
+                android.graphics.ColorMatrix().apply { setSaturation(0f) },
+            )
+        }
+        android.graphics.Canvas(out).drawBitmap(src, 0f, 0f, paint)
+        return out
+    }
+
+    private fun fetchIconBitmap(url: String): android.graphics.Bitmap? {
+        val conn = java.net.URL(url).openConnection() as? java.net.HttpURLConnection ?: return null
+        return try {
+            conn.connectTimeout = 4_000
+            conn.readTimeout = 6_000
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 9) Keen")
+            if (conn.responseCode !in 200..299) return null
+            val bytes = conn.inputStream.use { it.readBytes() }
+            if (bytes.size !in 100..2_000_000) return null
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (_: Throwable) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun applyContinueProgress(fraction: Float) {
+        binding.continueProgressTrack.weightSum = 1f
+        val lp = binding.continueProgressFill.layoutParams as android.widget.LinearLayout.LayoutParams
+        // Fill draws from empty and eases up to the saved position — a still bar
+        // reads as "broken", a filling one reads as "resuming".
+        android.animation.ValueAnimator.ofFloat(0f, fraction).apply {
+            duration = 700
+            startDelay = 200
+            interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener { anim ->
+                lp.weight = anim.animatedValue as Float
+                binding.continueProgressFill.layoutParams = lp
+            }
+        }.start()
+    }
+
+    /** Continue card press: resume the last *played* title from its saved position. */
+    private fun resumeContinueCard() {
+        val cp = continuityStore.loadMedia() ?: continuityStore.load() ?: return
+        resumeCheckpoint(cp)
+    }
+
     private fun continueFromCheckpoint() {
         val cp = continuityStore.load() ?: return
+        resumeCheckpoint(cp)
+    }
+
+    private fun resumeCheckpoint(cp: ContinuityCheckpoint) {
+        val url = cp.url ?: return
+        // Torrent resume: openNavigation routes magnets into the torrent
+        // pipeline; the playhead comes from TorrentResumeStore (info-hash keyed).
+        if (url.startsWith("magnet:?", ignoreCase = true)) {
+            supervisor.resetCrashLoopForUserAction()
+            recordEvent(
+                NavigationEvent(
+                    System.currentTimeMillis(),
+                    "continuity_torrent_restore",
+                    url = url,
+                    detail = "pos=${cp.playbackPositionSec}",
+                ),
+            )
+            startTorrentStreaming(url)
+            return
+        }
         if (!cp.requiresMediaRestore()) {
             pendingRestore = null
             restoreMetricEmitted = false
@@ -308,7 +632,6 @@ class KeenActivity : AppCompatActivity() {
         pendingRestore = cp
         restoreMetricEmitted = false
         supervisor.resetCrashLoopForUserAction()
-        binding.continueStatus.text = getString(R.string.continue_status_restoring)
         recordEvent(
             NavigationEvent(
                 System.currentTimeMillis(),
@@ -467,6 +790,64 @@ class KeenActivity : AppCompatActivity() {
                 "export" to intent.getBooleanExtra(EXTRA_EXPORT_EVIDENCE, false),
             ),
         )
+        if (intent.getBooleanExtra(EXTRA_LAB_UI_PREVIEW, false)) {
+            recordEvent(NavigationEvent(System.currentTimeMillis(), "debug_ui_preview"))
+            listOf(
+                "https://github.com/",
+                "https://en.wikipedia.org/",
+                "https://news.ycombinator.com/",
+                "https://www.nasa.gov/",
+            ).forEach { url -> if (!favouritesStore.isFavourite(url)) favouritesStore.toggle(url) }
+            continuityStore.save(
+                ContinuityCheckpoint(
+                    url = "https://example.com/watch/preview",
+                    contentId = "keen-ui-preview",
+                    title = "Nocturne S02E06 1080p WEB-DL x264",
+                    playerType = "web",
+                    playbackPositionSec = 1584.0,
+                    durationSec = 2880.0,
+                    posterUrl = "https://picsum.photos/seed/keenpreview/608/342",
+                    playbackMode = true,
+                ),
+                force = true,
+            )
+            // This is a home-surface preview, not a real session — do not let the
+            // cold-start auto-resume check (below, in onCreate) navigate into it.
+            continuityStore.markAtHome(true)
+            binding.root.post {
+                hydrateContinuitySurface()
+                if (intent.getBooleanExtra(EXTRA_LAB_UI_PREVIEW_SPINNER, false)) {
+                    binding.root.postDelayed({
+                        showTorrentOverlay()
+                        // Simulate a real buffering sweep — bloom, spin through several
+                        // ticks, then finish and collapse — so the "keep spinning until
+                        // told to stop" contract can be eyeballed without a live session.
+                        binding.root.postDelayed({
+                            var pct = 0
+                            val step = object : Runnable {
+                                override fun run() {
+                                    updateTorrentOverlay(
+                                        stage = TorrentStreamingService.STAGE_BUFFERING,
+                                        percent = pct,
+                                        peers = 47,
+                                        seeds = 31,
+                                        speedBps = 1_400_000L,
+                                    )
+                                    pct += 8
+                                    if (pct <= 100) {
+                                        binding.root.postDelayed(this, 420L)
+                                    } else {
+                                        hideTorrentOverlayWithCollapse()
+                                    }
+                                }
+                            }
+                            step.run()
+                        }, 1200L)
+                    }, 500L)
+                }
+            }
+            return
+        }
         if (intent.getBooleanExtra(EXTRA_EXPORT_EVIDENCE, false)) {
             recordEvent(NavigationEvent(System.currentTimeMillis(), "debug_export_request"))
             exportEvidence()
@@ -1006,13 +1387,16 @@ class KeenActivity : AppCompatActivity() {
         return arr
     }
 
-    private fun openUrlFromInput() {
-        val raw = binding.urlInput.text?.toString()?.trim().orEmpty()
+    /** Commit home address line (Enter/Go): navigate and fold the keyboard. */
+    private fun commitHomeUrl() {
+        val raw = binding.homeUrlInput.text?.toString()?.trim().orEmpty()
         val url = normalizeUrl(raw)
         if (url == null) {
             Toast.makeText(this, R.string.invalid_url, Toast.LENGTH_SHORT).show()
             return
         }
+        hideKeyboard(binding.homeUrlInput)
+        binding.homeUrlInput.clearFocus()
         openNavigation(url)
     }
 
@@ -1085,15 +1469,19 @@ class KeenActivity : AppCompatActivity() {
 
     private fun startTorrentSession(originLabel: String, configure: (Intent) -> Intent) {
         stopTorrentStreaming()
+        continuityStore.markAtHome(false)
         val id = UUID.randomUUID().toString()
         torrentRequestId = id
+        torrentOriginKey = com.keenzero.app.torrent.TorrentResumeStore.keyOf(originLabel)
+        torrentOriginLabel = originLabel
+        torrentTitle = null
         // Entry from home / URL bar has no page under the overlay — bring up the
         // browse shell on a blank page. Entry from a site keeps the page visible
         // beneath the loading overlay so cancel returns exactly where the user was.
         if (webHost?.isCreated != true || binding.browseShell.visibility != View.VISIBLE) {
             currentUrl = originLabel
             lastChromeUrl = originLabel
-            binding.homeScroll.visibility = View.GONE
+            binding.homeShell.visibility = View.GONE
             binding.browseShell.visibility = View.VISIBLE
             binding.browserContainer.visibility = View.VISIBLE
             binding.chromeBar.visibility = View.VISIBLE
@@ -1102,7 +1490,10 @@ class KeenActivity : AppCompatActivity() {
         }
         showTorrentOverlay()
         recordEvent(NavigationEvent(System.currentTimeMillis(), "torrent_start", url = originLabel))
-        startService(
+        // Foreground service: the :torrent process must survive the cached-app
+        // freezer for streams longer than ~30 min.
+        ContextCompat.startForegroundService(
+            this,
             configure(
                 Intent(this, TorrentStreamingService::class.java)
                     .setAction(TorrentStreamingService.ACTION_START)
@@ -1180,30 +1571,233 @@ class KeenActivity : AppCompatActivity() {
                         detail = name,
                     ),
                 )
+                // Playback resumed (or finished) — drop the seek-buffering loader.
+                if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
+                    if (torrentOverlayVisible && nativeTorrentPlayerActive) {
+                        hideTorrentOverlay()
+                    }
+                }
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                // Pause = a deliberate moment; snapshot it for the Continue card.
+                if (!isPlaying && torrentPlayer?.playbackState == Player.STATE_READY) {
+                    captureTorrentFrame("pause")
+                }
             }
         })
-        player.setMediaItem(
-            MediaItem.Builder()
-                .setUri(streamUrl)
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
-                .build(),
-        )
+        val mediaItem = MediaItem.Builder()
+            .setUri(streamUrl)
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
+            .build()
+        // Same magnet/.torrent watched before: resume where the user left off
+        // (the media file itself was deleted on exit; only the position survives).
+        val resumeMs = torrentOriginKey?.let { torrentResumeStore.positionMs(it) } ?: 0L
+        if (resumeMs > 0) {
+            player.setMediaItem(mediaItem, resumeMs)
+            recordEvent(
+                NavigationEvent(
+                    System.currentTimeMillis(),
+                    "torrent_resume",
+                    url = streamUrl,
+                    detail = "positionMs=$resumeMs",
+                ),
+            )
+        } else {
+            player.setMediaItem(mediaItem)
+        }
         player.playWhenReady = true
         player.prepare()
+        // A keyboard left open by an in-page search must not sit over playback,
+        // and the URL bar must not keep focus or OK would reopen the IME.
+        currentFocus?.let { hideKeyboard(it) }
+        binding.browseUrlEdit.clearFocus()
         binding.torrentPlayerView.player = player
         binding.torrentPlayerContainer.visibility = View.VISIBLE
         binding.torrentPlayerView.requestFocus()
+        // Card artwork: grab a real frame ~75s in (retries until the stream
+        // has actually produced one), then keep it fresh with a rolling
+        // 5-minute refresh plus grabs on pause/exit/TV-off.
+        torrentFrameAttempts = 0
+        binding.root.removeCallbacks(torrentFrameCaptureRunnable)
+        binding.root.postDelayed(torrentFrameCaptureRunnable, TORRENT_FRAME_FIRST_DELAY_MS)
     }
 
     private fun hideNativeTorrentPlayer() {
+        binding.root.removeCallbacks(torrentFrameCaptureRunnable)
+        saveTorrentResumePoint()
+        torrentSeekTargetMs = -1L
+        binding.torrentSeekPreview.visibility = View.GONE
         binding.torrentPlayerView.player = null
         binding.torrentPlayerContainer.visibility = View.GONE
         torrentPlayer?.release()
         torrentPlayer = null
     }
 
+    /** Persist the playhead for this magnet so re-activating it resumes there. */
+    private fun saveTorrentResumePoint() {
+        val player = torrentPlayer ?: return
+        val key = torrentOriginKey ?: return
+        torrentResumeStore.savePosition(key, player.currentPosition, player.duration)
+        persistTorrentCheckpoint(player)
+    }
+
+    /**
+     * Media checkpoint for torrent playback: feeds the Continue watching card
+     * and lets a cold start resume the magnet (position via TorrentResumeStore).
+     */
+    private fun persistTorrentCheckpoint(player: ExoPlayer) {
+        val origin = torrentOriginLabel ?: return
+        val durationMs = player.duration
+        val checkpoint = ContinuityCheckpoint(
+            url = origin,
+            title = torrentTitle,
+            playerType = "torrent",
+            playbackPositionSec = player.currentPosition.coerceAtLeast(0L) / 1000.0,
+            durationSec = if (durationMs > 0) durationMs / 1000.0 else 0.0,
+            posterUrl = capturedFrameKey(),
+            playbackState = if (player.isPlaying) "playing" else "paused",
+            journeyState = PlaybackJourneyState.PLAYING.name,
+        )
+        latestCheckpoint = checkpoint
+        continuityStore.save(checkpoint, force = true)
+    }
+
+    /** "frame:<info-hash>" when the poster cache currently holds this torrent's captured frame. */
+    private fun capturedFrameKey(): String? {
+        val frameKey = torrentOriginKey?.let { "frame:$it" } ?: return null
+        val stored = getSharedPreferences(POSTER_PREFS, MODE_PRIVATE).getString(POSTER_SRC_KEY, null)
+        return frameKey.takeIf { it == stored }
+    }
+
+    /**
+     * Card artwork for torrents: copy a real frame off the video surface
+     * (PixelCopy — adb screencap can't see this plane, but an in-process copy
+     * usually can). Validated against all-black output and retried while the
+     * stream warms up; falls back to the branded card if the plane is opaque.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun captureTorrentFrame(reason: String) {
+        val player = torrentPlayer ?: return
+        val key = torrentOriginKey ?: return
+        if (player.playbackState != Player.STATE_READY ||
+            player.currentPosition < TORRENT_FRAME_MIN_POS_MS
+        ) {
+            scheduleTorrentFrameRetry()
+            return
+        }
+        val surfaceView = binding.torrentPlayerView.videoSurfaceView as? android.view.SurfaceView
+        if (surfaceView == null || !surfaceView.holder.surface.isValid) {
+            scheduleTorrentFrameRetry()
+            return
+        }
+        val bitmap = android.graphics.Bitmap.createBitmap(
+            TORRENT_FRAME_WIDTH_PX,
+            TORRENT_FRAME_HEIGHT_PX,
+            android.graphics.Bitmap.Config.ARGB_8888,
+        )
+        try {
+            android.view.PixelCopy.request(
+                surfaceView,
+                bitmap,
+                { result ->
+                    if (result == android.view.PixelCopy.SUCCESS && !looksBlack(bitmap)) {
+                        recordEvent(
+                            NavigationEvent(
+                                System.currentTimeMillis(),
+                                "torrent_frame_captured",
+                                detail = "reason=$reason pos=${torrentPlayer?.currentPosition}",
+                            ),
+                        )
+                        persistTorrentFrame(bitmap, key)
+                    } else {
+                        bitmap.recycle()
+                        scheduleTorrentFrameRetry()
+                    }
+                },
+                android.os.Handler(android.os.Looper.getMainLooper()),
+            )
+        } catch (_: Throwable) {
+            bitmap.recycle()
+            scheduleTorrentFrameRetry()
+        }
+    }
+
+    private fun scheduleTorrentFrameRetry() {
+        if (torrentPlayer == null) return
+        if (torrentFrameAttempts >= TORRENT_FRAME_MAX_ATTEMPTS) return
+        torrentFrameAttempts++
+        binding.root.removeCallbacks(torrentFrameCaptureRunnable)
+        binding.root.postDelayed(torrentFrameCaptureRunnable, TORRENT_FRAME_RETRY_MS)
+    }
+
+    /** Amlogic video planes sometimes read back opaque — treat those grabs as failures. */
+    private fun looksBlack(bitmap: android.graphics.Bitmap): Boolean {
+        val stepX = (bitmap.width / 16).coerceAtLeast(1)
+        val stepY = (bitmap.height / 9).coerceAtLeast(1)
+        var y = 0
+        while (y < bitmap.height) {
+            var x = 0
+            while (x < bitmap.width) {
+                val p = bitmap.getPixel(x, y)
+                val luma = maxOf((p shr 16) and 0xFF, (p shr 8) and 0xFF, p and 0xFF)
+                if (luma > TORRENT_FRAME_BLACK_LUMA) return false
+                x += stepX
+            }
+            y += stepY
+        }
+        return true
+    }
+
+    private fun persistTorrentFrame(bitmap: android.graphics.Bitmap, originKey: String) {
+        Thread({
+            try {
+                val dir = java.io.File(filesDir, "continue")
+                dir.mkdirs()
+                val tmp = java.io.File(dir, "poster.tmp")
+                val dst = java.io.File(dir, "poster.img")
+                java.io.FileOutputStream(tmp).use { out ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
+                }
+                tmp.renameTo(dst)
+                val frameKey = "frame:$originKey"
+                getSharedPreferences(POSTER_PREFS, MODE_PRIVATE)
+                    .edit()
+                    .putString(POSTER_SRC_KEY, frameKey)
+                    .commit()
+                runOnUiThread {
+                    val player = torrentPlayer
+                    if (player != null) {
+                        persistTorrentCheckpoint(player)
+                        torrentFrameAttempts = 0
+                        binding.root.removeCallbacks(torrentFrameCaptureRunnable)
+                        binding.root.postDelayed(torrentFrameCaptureRunnable, TORRENT_FRAME_REFRESH_MS)
+                    } else {
+                        // Exit-refresh landed after teardown: stamp the frame onto
+                        // the stored media checkpoint if it is still this torrent.
+                        continuityStore.loadMedia()?.let { cp ->
+                            val sameTorrent = cp.playerType == "torrent" &&
+                                com.keenzero.app.torrent.TorrentResumeStore.keyOf(cp.url.orEmpty()) == originKey
+                            if (sameTorrent && cp.posterUrl != frameKey) {
+                                continuityStore.save(cp.copy(posterUrl = frameKey), force = true)
+                            }
+                        }
+                        // Card may already be on screen with the fallback — swap in the frame.
+                        if (uiState == AppUiState.HOME) hydrateContinuitySurface()
+                    }
+                }
+            } catch (_: Throwable) {
+            } finally {
+                bitmap.recycle()
+            }
+        }, "keen-frame").apply { isDaemon = true }.start()
+    }
+
     /** Leaving playback stops the session (deletes cache) and returns to the source page. */
     private fun exitNativeTorrentPlayer(reason: String) {
+        // Best-effort art refresh with the exact frame the user left on; the
+        // scheduled mid-playback grab already covered the common case.
+        captureTorrentFrame("exit")
         recordEvent(
             NavigationEvent(
                 System.currentTimeMillis(),
@@ -1217,8 +1811,10 @@ class KeenActivity : AppCompatActivity() {
             uiState = AppUiState.BROWSING
             webHost?.webView?.requestFocus()
         } else {
+            // Backing out of a home-launched playback is a deliberate return to
+            // the Continue surface — a cold start should land here too.
+            if (reason == "back") continuityStore.markAtHome(true)
             showHome(status = getString(R.string.status_home))
-            hydrateContinuitySurface()
         }
     }
 
@@ -1227,30 +1823,94 @@ class KeenActivity : AppCompatActivity() {
         get() = binding.torrentLoadingOverlay.visibility == View.VISIBLE
 
     private fun showTorrentOverlay() {
+        currentFocus?.let { hideKeyboard(it) }
         binding.torrentLoadingTitle.text = getString(R.string.torrent_loading_title)
         binding.torrentLoadingDetail.text = getString(R.string.torrent_stage_starting)
+        // No real percent yet on a fresh session — the jumbo watermark only makes sense
+        // once there's a real number behind it, so it stays hidden until buffering starts.
+        // INVISIBLE, not GONE: keeps it participating in layout so its width/height are
+        // already known (not 0) the instant the first buffering percent needs to size against it.
+        binding.torrentLoadingPercentGiant.animate().cancel()
+        binding.torrentLoadingPercentGiant.visibility = View.INVISIBLE
+        binding.torrentLoadingPercentGiant.alpha = 0f
+        binding.torrentLoadingOverlay.animate().cancel()
+        binding.torrentLoadingOverlay.alpha = 0f
         binding.torrentLoadingOverlay.visibility = View.VISIBLE
         binding.torrentLoadingOverlay.bringToFront()
+        binding.torrentLoadingOverlay.animate().alpha(1f).setDuration(200).start()
+        // Content pops in a beat after the scrim so the eye lands on the ring, not a flash.
+        binding.torrentLoadingContent.animate().cancel()
+        binding.torrentLoadingContent.alpha = 0f
+        binding.torrentLoadingContent.scaleX = 0.9f
+        binding.torrentLoadingContent.scaleY = 0.9f
+        binding.torrentLoadingContent.animate()
+            .alpha(1f).scaleX(1f).scaleY(1f)
+            .setStartDelay(60)
+            .setDuration(260)
+            .setInterpolator(android.view.animation.DecelerateInterpolator())
+            .start()
+        // Fresh session: no real percent yet (still fetching/connecting/resolving
+        // metadata), so the ring loops indeterminately until buffering starts.
+        binding.torrentLoadingSpinner.startIndeterminate()
         ensurePointerAboveContent()
     }
 
     private fun hideTorrentOverlay() {
-        binding.torrentLoadingOverlay.visibility = View.GONE
+        binding.torrentLoadingOverlay.animate().cancel()
+        binding.torrentLoadingOverlay.animate()
+            .alpha(0f)
+            .setDuration(160)
+            .withEndAction {
+                binding.torrentLoadingOverlay.visibility = View.GONE
+                binding.torrentLoadingOverlay.alpha = 1f
+                binding.torrentLoadingSpinner.stop()
+                binding.torrentLoadingPercentGiant.visibility = View.INVISIBLE
+                binding.torrentLoadingPercentGiant.alpha = 0f
+            }
+            .start()
     }
 
-    private fun updateTorrentOverlay(stage: String, percent: Int, peers: Int, speedBps: Long) {
+    /**
+     * Successful finish only: the bar chase keeps running through the whole load, then this
+     * triggers its collapse (fade out) and holds the (already-fading-in-behind-it) player
+     * under the loading scrim for just long enough to watch it happen, instead of the
+     * spinner being cut off mid-cycle the instant the stream is ready.
+     */
+    private fun hideTorrentOverlayWithCollapse() {
+        binding.torrentLoadingSpinner.collapse()
+        binding.root.postDelayed({ hideTorrentOverlay() }, TORRENT_COLLAPSE_HOLD_MS)
+    }
+
+    private fun updateTorrentOverlay(stage: String, percent: Int, peers: Int, seeds: Int, speedBps: Long) {
         if (!torrentOverlayVisible) return
         val stageText = when (stage) {
             TorrentStreamingService.STAGE_FETCHING_TORRENT -> getString(R.string.torrent_stage_fetching)
             TorrentStreamingService.STAGE_CONNECTING,
             TorrentStreamingService.STAGE_METADATA,
             -> getString(R.string.torrent_stage_metadata)
-            TorrentStreamingService.STAGE_BUFFERING ->
-                getString(R.string.torrent_stage_buffering, percent.coerceIn(0, 100))
+            TorrentStreamingService.STAGE_BUFFERING -> getString(R.string.torrent_stage_buffering)
             else -> getString(R.string.torrent_loading_title)
         }
+        // Real percent means real progress. The number itself now lives in the jumbo
+        // watermark behind everything instead of the small title, so the bar chase doesn't
+        // need to encode it geometrically — it just keeps running throughout.
+        if (stage == TorrentStreamingService.STAGE_BUFFERING && percent >= 0) {
+            val clamped = percent.coerceIn(0, 100)
+            binding.torrentLoadingSpinner.setProgress(clamped / 100f)
+            binding.torrentLoadingPercentGiant.setPercentText(getString(R.string.torrent_percent_giant, clamped))
+            if (binding.torrentLoadingPercentGiant.visibility != View.VISIBLE) {
+                binding.torrentLoadingPercentGiant.visibility = View.VISIBLE
+                binding.torrentLoadingPercentGiant.animate().alpha(1f).setDuration(320).start()
+            }
+        } else {
+            binding.torrentLoadingSpinner.startIndeterminate()
+        }
         val extras = buildList {
-            if (peers >= 0) add(getString(R.string.torrent_peers, peers))
+            if (seeds >= 0 && peers >= 0) {
+                add(getString(R.string.torrent_seeds_leechers, seeds, (peers - seeds).coerceAtLeast(0)))
+            } else if (peers >= 0) {
+                add(getString(R.string.torrent_peers, peers))
+            }
             if (speedBps > 0) add(formatSpeed(speedBps))
         }
         binding.torrentLoadingTitle.text = stageText
@@ -1268,6 +1928,7 @@ class KeenActivity : AppCompatActivity() {
 
     private fun openUrl(url: String, restore: Boolean = false, stopTorrent: Boolean = true) {
         if (stopTorrent) stopTorrentStreaming()
+        continuityStore.markAtHome(false)
         recordEvent(NavigationEvent(System.currentTimeMillis(), "user_open_url", url = url))
         val host = ensureWebHost()
         webViewEverCreated = true
@@ -1281,7 +1942,7 @@ class KeenActivity : AppCompatActivity() {
         } else {
             restoreCp?.let { host.setRestorePosition(it.playbackPositionSec) }
         }
-        binding.homeScroll.visibility = View.GONE
+        binding.homeShell.visibility = View.GONE
         binding.browseShell.visibility = View.VISIBLE
         binding.browserContainer.visibility = View.VISIBLE
         binding.chromeBar.visibility = View.VISIBLE
@@ -1290,7 +1951,6 @@ class KeenActivity : AppCompatActivity() {
         setLoadProgress(0)
         uiState = if (restore) AppUiState.RESTORING else AppUiState.BROWSING
         if (!restore) persistBrowsingCheckpoint(url, force = true)
-        binding.statusLine.text = getString(R.string.status_webview_created)
         hideKeyboard(binding.browseUrlEdit)
         binding.browseUrlEdit.clearFocus()
         host.load(url)
@@ -1301,6 +1961,48 @@ class KeenActivity : AppCompatActivity() {
         if (!binding.browseUrlEdit.hasFocus()) {
             binding.browseUrlEdit.setText(lastChromeUrl)
         }
+        updateFavIcon()
+    }
+
+    private fun updateFavIcon() {
+        val fav = favouritesStore.isFavourite(currentUrl ?: lastChromeUrl)
+        // Star and K logo are the same white vector already — matching the logo's own
+        // 0.9 alpha (chromeLogo) makes a favourited star render as literally the same
+        // colour as the logo, not just visually close.
+        binding.chromeFavButton.alpha = if (fav) 0.9f else 0.35f
+    }
+
+    private fun toggleFavourite() {
+        val url = currentUrl ?: lastChromeUrl
+        val host = com.keenzero.app.favourites.FavouritesStore.hostOf(url) ?: return
+        val nowFav = favouritesStore.toggle(url)
+        updateFavIcon()
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "favourite_toggle",
+                url = url,
+                detail = "host=$host fav=$nowFav",
+            ),
+        )
+    }
+
+    /**
+     * Star's current bounds in the same shell coordinate space as the pointer cursor
+     * (both are ultimately window-relative, computed the same way regardless of view
+     * hierarchy depth), so [RemoteInputRouter] can tell "pointer OK on the star" apart
+     * from "pointer OK anywhere else in the chrome bar."
+     */
+    private fun favouriteStarRectPx(): android.graphics.RectF? {
+        val star = binding.chromeFavButton
+        if (star.visibility != View.VISIBLE) return null
+        val starLoc = IntArray(2)
+        star.getLocationInWindow(starLoc)
+        val rootLoc = IntArray(2)
+        binding.root.getLocationInWindow(rootLoc)
+        val left = (starLoc[0] - rootLoc[0]).toFloat()
+        val top = (starLoc[1] - rootLoc[1]).toFloat()
+        return android.graphics.RectF(left, top, left + star.width, top + star.height)
     }
 
     private fun setLoadProgress(percent: Int) {
@@ -1442,6 +2144,9 @@ class KeenActivity : AppCompatActivity() {
                             refreshBrowseChrome()
                         }
                     }
+                    // SPA route changes never hit onProgress(100); give the new
+                    // route a beat to render its meta tags, then re-probe.
+                    binding.root.postDelayed({ capturePagePoster() }, 1_500L)
                 }
             },
             onFullscreen = { fullscreen ->
@@ -1502,7 +2207,6 @@ class KeenActivity : AppCompatActivity() {
                     val cp = latestCheckpoint ?: continuityStore.load()
                     if (!allowAuto) {
                         showHome(status = getString(R.string.renderer_gone) + " (crash-loop)")
-                        hydrateContinuitySurface()
                         recordEvent(
                             NavigationEvent(
                                 System.currentTimeMillis(),
@@ -1513,9 +2217,7 @@ class KeenActivity : AppCompatActivity() {
                         return@runOnUiThread
                     }
                     if (cp?.url != null) {
-                        binding.continueStatus.text = getString(R.string.continue_status_recovery)
                         showHome(status = getString(R.string.renderer_gone_restore))
-                        hydrateContinuitySurface()
                         pendingRestore = cp.takeIf { it.requiresMediaRestore() }
                         restoreMetricEmitted = false
                         // Automatic recovery: recreate and restore checkpoint.
@@ -1554,7 +2256,10 @@ class KeenActivity : AppCompatActivity() {
                 }
             },
             onProgress = { percent ->
-                runOnUiThread { setLoadProgress(percent) }
+                runOnUiThread {
+                    setLoadProgress(percent)
+                    if (percent >= 100) capturePagePoster()
+                }
             },
             chromeHeightPx = {
                 // GONE chrome still reports last height on some devices — only count when visible.
@@ -1564,6 +2269,10 @@ class KeenActivity : AppCompatActivity() {
             },
             onUrlBarActivate = {
                 runOnUiThread { focusBrowseUrlBar() }
+            },
+            starButtonRectPx = { favouriteStarRectPx() },
+            onFavouriteActivate = {
+                runOnUiThread { toggleFavourite() }
             },
             onConfirmNavigation = { url, host, reason ->
                 runOnUiThread {
@@ -1576,7 +2285,13 @@ class KeenActivity : AppCompatActivity() {
             onTorrentFileIntent = { url, cookies, userAgent ->
                 runOnUiThread { startTorrentFromFile(url, cookies, userAgent) }
             },
-            onCheckpoint = { cp ->
+            onCheckpoint = { rawCp ->
+                // Attach the playing page's artwork for the Continue card.
+                val cp = if (rawCp.posterUrl.isNullOrBlank() && !currentPagePosterUrl.isNullOrBlank()) {
+                    rawCp.copy(posterUrl = currentPagePosterUrl)
+                } else {
+                    rawCp
+                }
                 latestCheckpoint = cp
                 // Periodic checkpoints debounce on background thread (ContinuityStore).
                 continuityStore.save(cp, force = false)
@@ -1713,20 +2428,20 @@ class KeenActivity : AppCompatActivity() {
      * mirrored in [uiState]; peel it whenever leaving fullscreen *or* playback.
      */
     private fun handleBack() {
+        // Native torrent player (including seek re-buffering with the loader up):
+        // leaving must stop the session so the cache (video + .torrent) is deleted.
+        if (nativeTorrentPlayerActive) {
+            exitNativeTorrentPlayer("back")
+            return
+        }
         // Torrent startup overlay: Back cancels the download and stays put.
         if (torrentOverlayVisible) {
             recordEvent(NavigationEvent(System.currentTimeMillis(), "torrent_cancel", url = currentUrl))
             stopTorrentStreaming()
             if (webHost?.isCreated != true || currentUrl == null || currentUrl == "about:blank") {
+                continuityStore.markAtHome(true)
                 showHome(status = getString(R.string.status_home))
-                hydrateContinuitySurface()
             }
-            return
-        }
-        // Native torrent player: leaving must stop the session so the cache
-        // (video + .torrent) is deleted. The source page is still loaded beneath.
-        if (nativeTorrentPlayerActive) {
-            exitNativeTorrentPlayer("back")
             return
         }
         val surface = when (uiState) {
@@ -1808,8 +2523,9 @@ class KeenActivity : AppCompatActivity() {
                 webHost?.destroy("return_home")
                 webHost = null
                 browseEntryUrl = null
+                // Deliberate back-out to home: cold starts stay here (Continue card).
+                continuityStore.markAtHome(true)
                 showHome(status = getString(R.string.status_home) + " (returned)")
-                hydrateContinuitySurface()
             }
             com.keenzero.app.navigation.BrowsingBackPolicy.Action.DISMISS_OVERLAY -> {
                 binding.diagnosticsPreview.visibility = View.GONE
@@ -1829,6 +2545,29 @@ class KeenActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Native torrent playback: PlayerView owns DPAD/media keys — checked BEFORE
+        // the URL bar so a stale EditText/IME focus can never eat OK into a keyboard.
+        if (nativeTorrentPlayerActive) {
+            if (binding.browseUrlEdit.hasFocus()) {
+                hideKeyboard(binding.browseUrlEdit)
+                binding.browseUrlEdit.clearFocus()
+            }
+            if (binding.torrentPlayerView.findFocus() == null) {
+                binding.torrentPlayerView.requestFocus()
+            }
+            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                return super.dispatchKeyEvent(event)
+            }
+            // Timeline seeking is Keen-owned: short taps step gently, holding
+            // accelerates with hold time, and the single seek commits on release
+            // (one piece-deadline reset instead of one per repeat).
+            if (handleTorrentSeekKey(event)) {
+                return true
+            }
+            // Deliver to the PlayerView regardless of focus: OK/DPAD shows the
+            // controller, media keys act, remaining keys fall through normally.
+            return binding.torrentPlayerView.dispatchKeyEvent(event) || super.dispatchKeyEvent(event)
+        }
         // While typing in the address bar, let the EditText / IME own keys.
         if (binding.browseUrlEdit.hasFocus()) {
             if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
@@ -1837,10 +2576,6 @@ class KeenActivity : AppCompatActivity() {
                 webHost?.webView?.requestFocus()
                 return true
             }
-            return super.dispatchKeyEvent(event)
-        }
-        // Native torrent playback: PlayerView owns DPAD/media keys, not the web cursor.
-        if (nativeTorrentPlayerActive) {
             return super.dispatchKeyEvent(event)
         }
         if ((uiState == AppUiState.BROWSING || uiState == AppUiState.WEB_FULLSCREEN ||
@@ -1853,6 +2588,99 @@ class KeenActivity : AppCompatActivity() {
     }
 
     /**
+     * Hold-to-seek for the native torrent player.
+     *
+     * A tap moves ±10 s. Holding accumulates a pending target whose rate grows
+     * with hold time (up to ~4 min of media per held second), with live feedback
+     * in [showTorrentSeekPreview]; the player only seeks once, on key release —
+     * far kinder to the torrent bridge than a seek per key repeat.
+     */
+    private fun handleTorrentSeekKey(event: KeyEvent): Boolean {
+        val player = torrentPlayer ?: return false
+        val forward = when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> true
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> false
+            else -> return false
+        }
+        val durationMs = player.duration
+        if (durationMs == C.TIME_UNSET || durationMs <= 0) return false
+        // With the controller up and focus on a button row, left/right must keep
+        // navigating controls (subtitles etc.); seek owns the keys otherwise.
+        val focused = binding.torrentPlayerView.findFocus()
+        if (binding.torrentPlayerView.isControllerFullyVisible &&
+            focused != null && focused !is androidx.media3.ui.DefaultTimeBar
+        ) {
+            return false
+        }
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                // Seeking with the controller hidden should still show the real timeline
+                // (scrubber + elapsed/total time), not just our own target-time preview —
+                // this also resets Media3's auto-hide timer so it stays up while scrubbing.
+                binding.torrentPlayerView.showController()
+                val now = event.eventTime
+                if (torrentSeekTargetMs < 0) torrentSeekTargetMs = player.currentPosition
+                val stepMs = if (event.repeatCount == 0) {
+                    TORRENT_SEEK_TAP_MS
+                } else {
+                    // Steady base rate for the first few seconds (fine control), then
+                    // rate (media-seconds per held second) keeps climbing with hold
+                    // time; each repeat advances by rate × time since the last repeat.
+                    val heldSec = (now - event.downTime) / 1000.0
+                    val accelSec = (heldSec - TORRENT_SEEK_ACCEL_DELAY_SEC).coerceAtLeast(0.0)
+                    val rate = (TORRENT_SEEK_RATE_BASE + TORRENT_SEEK_RATE_GROWTH * accelSec)
+                        .coerceAtMost(TORRENT_SEEK_RATE_MAX)
+                    val dtMs = (now - torrentSeekLastEventMs).coerceIn(16L, 250L)
+                    (rate * dtMs).toLong()
+                }
+                torrentSeekLastEventMs = now
+                torrentSeekTargetMs = (torrentSeekTargetMs + if (forward) stepMs else -stepMs)
+                    .coerceIn(0L, durationMs)
+                showTorrentSeekPreview(forward)
+                return true
+            }
+            KeyEvent.ACTION_UP -> {
+                if (torrentSeekTargetMs < 0) return false
+                commitTorrentSeek()
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun showTorrentSeekPreview(forward: Boolean) {
+        val player = torrentPlayer ?: return
+        val deltaMs = torrentSeekTargetMs - player.currentPosition
+        val sign = if (deltaMs >= 0) "+" else "−"
+        binding.torrentSeekPreview.text = String.format(
+            java.util.Locale.US,
+            "%s  %s   (%s%s)",
+            if (forward) "»" else "«",
+            formatClock(torrentSeekTargetMs / 1000),
+            sign,
+            formatClock(kotlin.math.abs(deltaMs) / 1000),
+        )
+        binding.torrentSeekPreview.visibility = View.VISIBLE
+    }
+
+    private fun commitTorrentSeek() {
+        binding.torrentSeekPreview.visibility = View.GONE
+        val target = torrentSeekTargetMs
+        torrentSeekTargetMs = -1L
+        val player = torrentPlayer ?: return
+        if (target >= 0 && kotlin.math.abs(target - player.currentPosition) > 250L) {
+            recordEvent(
+                NavigationEvent(
+                    System.currentTimeMillis(),
+                    "torrent_seek_commit",
+                    detail = "from=${player.currentPosition} to=$target",
+                ),
+            )
+            player.seekTo(target)
+        }
+    }
+
+    /**
      * Keen pointer is a root sibling — always above browse shell and HTML custom-view host.
      * Never parent the cursor into the WebView or fullscreen custom view.
      */
@@ -1860,8 +2688,8 @@ class KeenActivity : AppCompatActivity() {
         binding.pointerLayer.elevation = 32f
         binding.pointerLayer.bringToFront()
         // Confirmation / system overlays may sit higher; keep home under pointer while browsing.
-        if (binding.homeScroll.visibility == View.VISIBLE) {
-            binding.homeScroll.bringToFront()
+        if (binding.homeShell.visibility == View.VISIBLE) {
+            binding.homeShell.bringToFront()
         }
     }
 
@@ -1873,7 +2701,7 @@ class KeenActivity : AppCompatActivity() {
         if (enter) {
             uiState = AppUiState.PLAYBACK_MODE
             binding.chromeBar.visibility = View.GONE
-            binding.homeScroll.visibility = View.GONE
+            binding.homeShell.visibility = View.GONE
             binding.browseShell.visibility = View.VISIBLE
             binding.browserContainer.visibility = View.VISIBLE
             enterImmersive()
@@ -1928,46 +2756,12 @@ class KeenActivity : AppCompatActivity() {
         binding.browserContainer.visibility = View.GONE
         binding.fullscreenContainer.visibility = View.GONE
         binding.chromeBar.visibility = View.GONE
-        binding.homeScroll.visibility = View.VISIBLE
-        binding.statusLine.text = status
-        binding.urlInput.setText(getString(R.string.home_url))
-        binding.btnLoad.requestFocus()
-    }
-
-    private fun showDiagnosticsPreview() {
-        uiState = if (uiState == AppUiState.HOME) AppUiState.NATIVE_OVERLAY else uiState
-        val json = buildEvidencePayload()
-        val preview = buildString {
-            appendLine("build: ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})")
-            appendLine("buildId: ${BuildConfig.BUILD_ID}")
-            appendLine("git: ${BuildConfig.GIT_SHA}")
-            appendLine("debuggable: ${BuildConfig.DEBUG}")
-            appendLine()
-            val device = json.getJSONObject("device")
-            appendLine("device: ${device.getString("manufacturer")} ${device.getString("model")}")
-            appendLine("android: ${device.getString("androidVersion")} (API ${device.getInt("api")})")
-            appendLine("abis: ${device.getJSONArray("abis")}")
-            appendLine("memoryClassMb: ${device.getInt("memoryClassMb")} lowRam=${device.getBoolean("lowRam")}")
-            appendLine()
-            val wv = json.getJSONObject("webview")
-            appendLine("webview.package: ${wv.opt("packageName")}")
-            appendLine("webview.version: ${wv.opt("versionName")}")
-            appendLine()
-            val runtime = json.getJSONObject("runtime")
-            appendLine("uiState: ${runtime.getString("uiState")}")
-            appendLine("webViewCreated: ${runtime.getBoolean("webViewCreated")}")
-            appendLine("currentUrl: ${runtime.opt("currentUrl")}")
-            appendLine("events: ${json.getJSONArray("events").length()}")
-            appendLine("rendererTerminations: ${json.getJSONArray("rendererTerminations").length()}")
-            val cont = json.optJSONObject("continuity")
-            if (cont != null) {
-                appendLine("continuity.url: ${cont.opt("url")}")
-                appendLine("continuity.pos: ${cont.opt("playbackPositionSec")}")
-            }
-        }
-        binding.diagnosticsPreview.visibility = View.VISIBLE
-        binding.diagnosticsPreview.text = preview
-        recordEvent(NavigationEvent(System.currentTimeMillis(), "diagnostics_preview"))
+        binding.homeShell.visibility = View.VISIBLE
+        binding.homeUrlInput.setText("")
+        hydrateContinuitySurface()
+        recordEvent(
+            NavigationEvent(System.currentTimeMillis(), "home_shown", detail = status),
+        )
     }
 
     private fun exportEvidence() {
@@ -2136,12 +2930,128 @@ class KeenActivity : AppCompatActivity() {
         )
     }
 
-    private fun formatTime(sec: Double): String {
-        if (sec <= 0 || sec.isNaN()) return "0:00"
-        val total = sec.toInt()
-        val m = total / 60
-        val s = total % 60
-        return "%d:%02d".format(m, s)
+    private fun formatClock(totalSec: Long): String {
+        val s = totalSec.coerceAtLeast(0L)
+        val h = s / 3600
+        val m = (s % 3600) / 60
+        val sec = s % 60
+        return if (h > 0) {
+            String.format(java.util.Locale.US, "%d:%02d:%02d", h, m, sec)
+        } else {
+            String.format(java.util.Locale.US, "%d:%02d", m, sec)
+        }
+    }
+
+    /**
+     * Human title for the Continue card: strips release-name noise
+     * ("Show.S03E04.1080p.x265-GRP.mkv" → "Show S03E04").
+     */
+    private fun prettyMediaTitle(raw: String?): String? {
+        var t = raw?.trim().orEmpty()
+        if (t.isBlank()) return null
+        t = t.replace(Regex("""\.(mkv|mp4|avi|m4v|ts|webm|mov)$""", RegexOption.IGNORE_CASE), "")
+        if (!t.contains(' ')) t = t.replace('.', ' ').replace('_', ' ')
+        val cut = Regex(
+            """\b(2160p|1080p|720p|480p|WEB[- ]?DL|WEBRip|BluRay|BDRip|BRRip|HDR(10)?|HDTV|x264|x265|[Hh][ .]?26[45]|HEVC|AVC|AAC|DDP?[0-9.]*|Atmos|10bit|REPACK|PROPER|iNTERNAL|AMZN|NF|DSNP)\b""",
+        ).find(t)?.range?.first
+        if (cut != null && cut > 3) t = t.substring(0, cut)
+        return t.trim(' ', '-', '.', '[', '(').ifBlank { raw?.trim() }
+    }
+
+    /**
+     * Poster for the Continue card. Single-slot disk cache so the artwork
+     * survives cold starts and offline launches; falls back to the branded
+     * placeholder already in the layout when there is nothing to show.
+     */
+    private fun loadContinuePoster(posterUrl: String?) {
+        binding.continuePoster.animate().cancel()
+        binding.continuePosterFallback.animate().cancel()
+        binding.continuePoster.alpha = 1f
+        binding.continuePoster.visibility = View.GONE
+        binding.continuePosterFallback.alpha = 0.22f
+        binding.continuePosterFallback.visibility = View.VISIBLE
+        if (posterUrl.isNullOrBlank()) return
+        val cacheFile = java.io.File(filesDir, "continue/poster.img")
+        val prefs = getSharedPreferences(POSTER_PREFS, MODE_PRIVATE)
+        Thread({
+            try {
+                val cached = prefs.getString(POSTER_SRC_KEY, null) == posterUrl && cacheFile.exists()
+                val bitmap = if (cached) {
+                    android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)
+                } else if (posterUrl.startsWith("frame:")) {
+                    // Captured frames exist only in the cache slot — nothing to fetch.
+                    null
+                } else {
+                    fetchPosterBitmap(posterUrl)?.also { fetched ->
+                        cacheFile.parentFile?.mkdirs()
+                        java.io.FileOutputStream(cacheFile).use { out ->
+                            fetched.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                        }
+                        prefs.edit().putString(POSTER_SRC_KEY, posterUrl).apply()
+                    }
+                }
+                if (bitmap != null) {
+                    runOnUiThread {
+                        if (binding.continueGroup.visibility == View.VISIBLE) {
+                            binding.continuePoster.setImageBitmap(bitmap)
+                            binding.continuePoster.alpha = 0f
+                            binding.continuePoster.visibility = View.VISIBLE
+                            binding.continuePoster.animate().alpha(1f).setDuration(260).start()
+                            binding.continuePosterFallback.animate().alpha(0f).setDuration(260)
+                                .withEndAction { binding.continuePosterFallback.visibility = View.GONE }
+                                .start()
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }, "keen-poster").apply { isDaemon = true }.start()
+    }
+
+    private fun fetchPosterBitmap(url: String): android.graphics.Bitmap? {
+        val conn = java.net.URL(url).openConnection() as? java.net.HttpURLConnection ?: return null
+        return try {
+            conn.connectTimeout = 5_000
+            conn.readTimeout = 8_000
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 9) Keen")
+            if (conn.responseCode !in 200..299) return null
+            val bytes = conn.inputStream.use { it.readBytes() }
+            if (bytes.isEmpty() || bytes.size > POSTER_MAX_BYTES) return null
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= POSTER_MAX_WIDTH_PX) sample *= 2
+            android.graphics.BitmapFactory.decodeByteArray(
+                bytes,
+                0,
+                bytes.size,
+                android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
+            )
+        } catch (_: Throwable) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Grab the page's og:image / video poster once per URL — attached to media
+     * checkpoints so the Continue card has artwork.
+     */
+    private fun capturePagePoster() {
+        val wv = webHost?.webView ?: return
+        val pageUrl = currentUrl ?: return
+        if (pageUrl == posterProbeUrl) return
+        posterProbeUrl = pageUrl
+        wv.evaluateJavascript(PAGE_POSTER_JS) { raw ->
+            val value = raw?.trim()?.trim('"')?.takeIf {
+                it.isNotBlank() && it != "null" &&
+                    (it.startsWith("https://") || it.startsWith("http://"))
+            }
+            // The playing page's own artwork (or none) — never a stale carry-over.
+            currentPagePosterUrl = value
+        }
     }
 
     companion object {
@@ -2163,6 +3073,13 @@ class KeenActivity : AppCompatActivity() {
         const val EXTRA_LAB_RESTORE = "com.keenzero.app.extra.LAB_RESTORE"
         /** Debug/lab: dump interaction candidates + focus for remote journey harness. */
         const val EXTRA_LAB_DUMP_REMOTE = "com.keenzero.app.extra.LAB_DUMP_REMOTE"
+        /** Debug/lab: seed fake Favs + a Continue watching checkpoint to preview home UI. */
+        const val EXTRA_LAB_UI_PREVIEW = "com.keenzero.app.extra.LAB_UI_PREVIEW"
+        /** Debug/lab: also pop the torrent-loading spinner overlay for a few seconds. */
+        const val EXTRA_LAB_UI_PREVIEW_SPINNER = "com.keenzero.app.extra.LAB_UI_PREVIEW_SPINNER"
+        /** How long the loading scrim holds after collapse() starts, so the spinner's
+         * wind-down is actually visible instead of the overlay vanishing mid-motion. */
+        const val TORRENT_COLLAPSE_HOLD_MS = 650L
         const val VERTICAL_SLICE_URL =
             "https://appassets.androidplatform.net/assets/lab/vertical_slice.html"
         const val STRESS_URL =
@@ -2170,8 +3087,61 @@ class KeenActivity : AppCompatActivity() {
         const val REMOTE_FIXTURE_URL =
             "https://appassets.androidplatform.net/assets/lab/remote_control_fixture.html"
         private const val MAX_EVENTS = 400
-        /** Bridge reads block on missing pieces; allow slow swarms before failing. */
-        private const val TORRENT_HTTP_TIMEOUT_MS = 60_000
+        /**
+         * Bridge reads block on missing pieces; allow slow swarms before failing.
+         * Far timeline seeks restart buffering at the new position with the
+         * loader up — the wait must outlive a slow swarm refilling the window.
+         */
+        private const val TORRENT_HTTP_TIMEOUT_MS = 120_000
+
+        /** Single DPAD tap in the torrent player: gentle 10 s step. */
+        private const val TORRENT_SEEK_TAP_MS = 10_000L
+        /** Hold-to-seek rate for the first [TORRENT_SEEK_ACCEL_DELAY_SEC] of a hold
+         * (media-seconds per held second) — steady scrubbing, no acceleration yet. */
+        private const val TORRENT_SEEK_RATE_BASE = 30.0
+        /** How long a hold stays at the base rate before it starts accelerating. */
+        private const val TORRENT_SEEK_ACCEL_DELAY_SEC = 5.0
+        /** Rate growth per second once past the delay — keeps getting faster the longer
+         * the hold continues, not an instant ramp-to-ceiling. */
+        private const val TORRENT_SEEK_RATE_GROWTH = 45.0
+        /** Rate ceiling (~8 min of media per held second), reached after ~10s of
+         * acceleration (~15s total hold). */
+        private const val TORRENT_SEEK_RATE_MAX = 480.0
+
+        private const val POSTER_PREFS = "keen_continue_card"
+        private const val POSTER_SRC_KEY = "poster_src"
+        private const val POSTER_MAX_BYTES = 8_000_000
+        private const val POSTER_MAX_WIDTH_PX = 1280
+
+        /**
+         * First grab lands ~75s into playback, then a rolling refresh every 5
+         * minutes, plus grabs on pause/exit/TV-off — so the Continue card
+         * always shows a recent scene, not a stale first-minute frame.
+         */
+        private const val TORRENT_FRAME_FIRST_DELAY_MS = 75_000L
+        private const val TORRENT_FRAME_REFRESH_MS = 300_000L
+        private const val TORRENT_FRAME_RETRY_MS = 90_000L
+        private const val TORRENT_FRAME_MAX_ATTEMPTS = 6
+        /** Don't snapshot title cards / warm-up: need at least this much watched. */
+        private const val TORRENT_FRAME_MIN_POS_MS = 45_000L
+        /** 2× the card footprint keeps the JPEG small but crisp. */
+        private const val TORRENT_FRAME_WIDTH_PX = 608
+        private const val TORRENT_FRAME_HEIGHT_PX = 342
+        /** Max channel value at or below this across the sample grid = failed grab. */
+        private const val TORRENT_FRAME_BLACK_LUMA = 24
+
+        /** og:image / twitter:image / <video poster> of the current document. */
+        private val PAGE_POSTER_JS = """
+            (function(){
+              try{
+                var m=document.querySelector('meta[property="og:image"],meta[name="og:image"],meta[name="twitter:image"],meta[property="twitter:image"]');
+                if(m&&m.content)return m.content;
+                var v=document.querySelector('video[poster]');
+                if(v)return v.getAttribute('poster');
+                return null;
+              }catch(e){return null;}
+            })();
+        """.trimIndent()
 
         /** Peel document/webkit fullscreen from OPTIONAL_FULLSCREEN_JS path. */
         private val EXIT_DOCUMENT_FULLSCREEN_JS = """

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -27,24 +28,60 @@
                 android:orientation="vertical"
                 android:paddingTop="6dp">
 
-                <!-- Editable address bar (pointer can focus this). -->
-                <EditText
-                    android:id="@+id/browseUrlEdit"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:background="#FF000000"
-                    android:ellipsize="middle"
-                    android:hint="@string/url_hint"
-                    android:imeOptions="actionGo"
-                    android:inputType="textUri"
-                    android:paddingHorizontal="16dp"
-                    android:paddingTop="8dp"
-                    android:paddingBottom="4dp"
-                    android:singleLine="true"
-                    android:textColor="#FFE8E8E8"
-                    android:textColorHint="#FF666666"
-                    android:textSize="14sp"
-                    android:importantForAutofill="no" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ImageView
+                        android:id="@+id/chromeLogo"
+                        android:layout_width="16dp"
+                        android:layout_height="14dp"
+                        android:layout_marginStart="16dp"
+                        android:layout_marginTop="3dp"
+                        android:alpha="0.9"
+                        android:contentDescription="@string/app_name"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/keen_mark" />
+
+                    <!-- Editable address bar (pointer can focus this). -->
+                    <EditText
+                        android:id="@+id/browseUrlEdit"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="#FF000000"
+                        android:ellipsize="middle"
+                        android:hint="@string/url_hint"
+                        android:imeOptions="actionGo"
+                        android:inputType="textUri"
+                        android:nextFocusRight="@id/chromeFavButton"
+                        android:paddingHorizontal="12dp"
+                        android:paddingTop="8dp"
+                        android:paddingBottom="4dp"
+                        android:singleLine="true"
+                        android:textColor="#FFE8E8E8"
+                        android:textColorHint="#FF666666"
+                        android:textSize="14sp"
+                        android:importantForAutofill="no" />
+
+                    <!-- Favourite the current site (top-right of the address row). -->
+                    <ImageView
+                        android:id="@+id/chromeFavButton"
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:layout_marginEnd="12dp"
+                        android:layout_marginTop="3dp"
+                        android:alpha="0.35"
+                        android:background="@drawable/focusable_icon"
+                        android:clickable="true"
+                        android:contentDescription="@string/fav_toggle"
+                        android:focusable="true"
+                        android:padding="7dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_star" />
+                </LinearLayout>
 
                 <!-- browseChrome kept for binding/progress layout; hidden (no mode callouts). -->
                 <TextView
@@ -104,9 +141,24 @@
             android:layout_height="match_parent"
             android:focusable="true"
             app:resize_mode="fit"
-            app:show_buffering="when_playing"
+            app:show_buffering="never"
             app:show_subtitle_button="true"
             app:surface_type="surface_view" />
+
+        <!-- Hold-to-seek feedback: target time + delta while DPAD left/right is held. -->
+        <TextView
+            android:id="@+id/torrentSeekPreview"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal|bottom"
+            android:layout_marginBottom="96dp"
+            android:background="@drawable/seek_preview_bg"
+            android:fontFamily="sans-serif-medium"
+            android:paddingHorizontal="20dp"
+            android:paddingVertical="10dp"
+            android:textColor="#FFF2F4F8"
+            android:textSize="22sp"
+            android:visibility="gone" />
     </FrameLayout>
 
     <!-- Torrent startup feedback: covers the page from click to first playable pieces. -->
@@ -114,30 +166,44 @@
         android:id="@+id/torrentLoadingOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#E6000000"
+        android:background="#FF000000"
         android:clickable="true"
         android:focusable="false"
         android:elevation="24dp"
         android:visibility="gone">
 
+        <!-- Jumbo watermark: the real number, huge and faded, behind everything else.
+             JumboPercentView draws from actual glyph ink bounds so the digits run edge to
+             edge — a TextView (even autoSize) centers on font-metrics line height, which
+             reserves dead space for ascenders/descenders these digits never use and can
+             never truly touch the edges. "invisible" (not "gone") from the start so it's
+             already laid out with real width/height the instant the first buffering percent
+             arrives. Faded so it reads as texture, not competing with what's drawn on top. -->
+        <com.keenzero.app.home.JumboPercentView
+            android:id="@+id/torrentLoadingPercentGiant"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center"
+            android:visibility="invisible" />
+
         <LinearLayout
+            android:id="@+id/torrentLoadingContent"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:gravity="center_horizontal"
             android:orientation="vertical">
 
-            <ProgressBar
+            <com.keenzero.app.home.SpinnerBarsView
                 android:id="@+id/torrentLoadingSpinner"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
-                android:indeterminate="true" />
+                android:layout_width="220dp"
+                android:layout_height="44dp" />
 
             <TextView
                 android:id="@+id/torrentLoadingTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
+                android:layout_marginTop="4dp"
                 android:text="@string/torrent_loading_title"
                 android:textColor="@color/keen_text"
                 android:textSize="18sp"
@@ -165,214 +231,200 @@
         android:focusableInTouchMode="false"
         android:elevation="32dp" />
 
-    <!-- Native home — first frame independent of WebView. -->
-    <ScrollView
-        android:id="@+id/homeScroll"
+    <!-- Native home — first frame independent of WebView. Clean black canvas:
+         first run shows the faded K + address entry (IME auto-opens; adjustResize
+         keeps the centered group above the keyboard); after playback it becomes
+         the Continue watching surface. -->
+    <FrameLayout
+        android:id="@+id/homeShell"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true">
+        android:background="#FF000000">
 
+        <!-- Address row, pinned top-left: tiny mark + left-aligned input on one
+             line, well clear of the bottom IME. Always reachable on home. -->
         <LinearLayout
-            android:id="@+id/homePanel"
+            android:id="@+id/homeTopBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingHorizontal="32dp"
-            android:paddingVertical="20dp">
+            android:layout_gravity="top"
+            android:layout_marginStart="32dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginEnd="32dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/title"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/home_title"
-                android:textColor="@color/keen_text"
-                android:textSize="28sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/subtitle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/home_subtitle"
-                android:textColor="@color/keen_muted"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/statusLine"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="@string/status_home"
-                android:textColor="@color/keen_accent"
-                android:textSize="13sp" />
-
-            <LinearLayout
-                android:id="@+id/continuePanel"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:background="@drawable/focusable_field"
-                android:orientation="vertical"
-                android:padding="12dp"
-                android:visibility="gone">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/continue_heading"
-                    android:textColor="@color/keen_accent"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/continueTitle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:textColor="@color/keen_text"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/continueMeta"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:textColor="@color/keen_muted"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/continueStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:textColor="@color/keen_muted"
-                    android:textSize="12sp" />
-
-                <Button
-                    android:id="@+id/btnContinue"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/focusable_button"
-                    android:focusable="true"
-                    android:text="@string/continue_watch"
-                    android:textAllCaps="false"
-                    android:textColor="@color/keen_text" />
-            </LinearLayout>
+            <ImageView
+                android:id="@+id/homeBarLogo"
+                android:layout_width="14dp"
+                android:layout_height="12dp"
+                android:alpha="0.7"
+                android:contentDescription="@string/app_name"
+                android:scaleType="fitCenter"
+                android:src="@drawable/keen_mark" />
 
             <EditText
-                android:id="@+id/urlInput"
-                android:layout_width="match_parent"
+                android:id="@+id/homeUrlInput"
+                android:layout_width="480dp"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:background="@drawable/focusable_field"
+                android:background="@android:color/transparent"
                 android:hint="@string/url_hint"
                 android:imeOptions="actionGo"
                 android:inputType="textUri"
-                android:nextFocusDown="@id/btnLoad"
-                android:padding="12dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:paddingVertical="6dp"
                 android:singleLine="true"
-                android:text="@string/home_url"
                 android:textColor="@color/keen_text"
-                android:textColorHint="@color/keen_muted"
-                android:textSize="16sp" />
+                android:textColorHint="#FF4A4F58"
+                android:textSize="14sp"
+                android:importantForAutofill="no" />
+        </LinearLayout>
 
+        <!-- First-run / empty state: faded centered mark. adjustResize keeps it
+             centered in the space left above the auto-opened keyboard. -->
+        <FrameLayout
+            android:id="@+id/homeCenterGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center">
+
+            <ImageView
+                android:id="@+id/homeLogo"
+                android:layout_width="176dp"
+                android:layout_height="145dp"
+                android:alpha="0.4"
+                android:contentDescription="@string/app_name"
+                android:scaleType="fitCenter"
+                android:src="@drawable/keen_mark" />
+        </FrameLayout>
+
+        <!-- Home content column: Favs roundels above the Continue watching card.
+             clipChildren/clipToPadding=false throughout this column: focus-scale
+             microinteractions grow tiles a few % past their laid-out box, and a
+             LinearLayout's default clip would silently crop that growth away. -->
+        <LinearLayout
+            android:id="@+id/homeContentColumn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="start|center_vertical"
+            android:layout_marginStart="56dp"
+            android:layout_marginTop="48dp"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/favsGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="64dp"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <!-- Roundels are added in code (one per favourite). -->
             <LinearLayout
-                android:layout_width="match_parent"
+                android:id="@+id/favsRow"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:orientation="horizontal">
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:orientation="horizontal" />
+        </LinearLayout>
 
-                <Button
-                    android:id="@+id/btnLoad"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="10dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/focusable_button"
-                    android:focusable="true"
-                    android:nextFocusUp="@id/urlInput"
-                    android:nextFocusRight="@id/btnStandards"
-                    android:nextFocusDown="@id/btnDiagnostics"
-                    android:text="@string/load"
-                    android:textAllCaps="false"
-                    android:textColor="@color/keen_text" />
-
-                <Button
-                    android:id="@+id/btnStandards"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:background="@drawable/focusable_button"
-                    android:focusable="true"
-                    android:nextFocusLeft="@id/btnLoad"
-                    android:nextFocusUp="@id/urlInput"
-                    android:nextFocusDown="@id/btnVerticalSlice"
-                    android:text="@string/load_standards"
-                    android:textAllCaps="false"
-                    android:textColor="@color/keen_text" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/btnVerticalSlice"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/focusable_button"
-                android:focusable="true"
-                android:nextFocusUp="@id/btnLoad"
-                android:nextFocusDown="@id/btnDiagnostics"
-                android:text="@string/load_vertical_slice"
-                android:textAllCaps="false"
-                android:textColor="@color/keen_text" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:orientation="horizontal">
-
-                <Button
-                    android:id="@+id/btnDiagnostics"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="10dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/focusable_button"
-                    android:focusable="true"
-                    android:nextFocusUp="@id/btnLoad"
-                    android:nextFocusRight="@id/btnExport"
-                    android:text="@string/diagnostics"
-                    android:textAllCaps="false"
-                    android:textColor="@color/keen_text" />
-
-                <Button
-                    android:id="@+id/btnExport"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:background="@drawable/focusable_button"
-                    android:focusable="true"
-                    android:nextFocusLeft="@id/btnDiagnostics"
-                    android:nextFocusUp="@id/btnStandards"
-                    android:text="@string/export_diagnostics"
-                    android:textAllCaps="false"
-                    android:textColor="@color/keen_text" />
-            </LinearLayout>
+        <!-- Continue watching: left-aligned heading + Netflix-style card. -->
+        <LinearLayout
+            android:id="@+id/continueGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="vertical"
+            android:visibility="gone">
 
             <TextView
-                android:id="@+id/diagnosticsPreview"
-                android:layout_width="match_parent"
+                android:id="@+id/continueHeading"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:fontFamily="monospace"
-                android:lineSpacingExtra="2dp"
+                android:fontFamily="sans-serif-black"
+                android:letterSpacing="-0.015"
+                android:text="@string/continue_watching"
+                android:textColor="@color/keen_text"
+                android:textSize="30sp" />
+
+            <FrameLayout
+                android:id="@+id/continueCard"
+                android:layout_width="236dp"
+                android:layout_height="133dp"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/continue_card_bg"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:padding="3dp">
+
+                <ImageView
+                    android:id="@+id/continuePoster"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:contentDescription="@string/continue_watching"
+                    android:scaleType="centerCrop"
+                    android:visibility="gone" />
+
+                <!-- No artwork available (e.g. torrent): quiet branded fallback. -->
+                <ImageView
+                    android:id="@+id/continuePosterFallback"
+                    android:layout_width="88dp"
+                    android:layout_height="72dp"
+                    android:layout_gravity="center"
+                    android:alpha="0.22"
+                    android:contentDescription="@string/continue_watching"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/keen_mark" />
+
+                <LinearLayout
+                    android:id="@+id/continueProgressTrack"
+                    android:layout_width="match_parent"
+                    android:layout_height="4dp"
+                    android:layout_gravity="bottom"
+                    android:background="#33FFFFFF"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/continueProgressFill"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="0"
+                        android:background="#E6FFFFFF" />
+                </LinearLayout>
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/continueCardTitle"
+                android:layout_width="236dp"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:ellipsize="end"
+                android:fontFamily="sans-serif"
+                android:maxLines="1"
                 android:textColor="@color/keen_muted"
-                android:textIsSelectable="true"
-                android:textSize="12sp"
-                android:visibility="gone" />
+                android:textSize="15sp" />
         </LinearLayout>
-    </ScrollView>
+        </LinearLayout>
+
+        <!-- Hidden diagnostics surface (populated by evidence export intents). -->
+        <TextView
+            android:id="@+id/diagnosticsPreview"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:fontFamily="monospace"
+            android:lineSpacingExtra="2dp"
+            android:padding="24dp"
+            android:textColor="@color/keen_muted"
+            android:textIsSelectable="true"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    </FrameLayout>
 </FrameLayout>

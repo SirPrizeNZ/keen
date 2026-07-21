@@ -74,6 +74,12 @@ object ActivateHitTest {
     fun isHttpHref(h: String?): Boolean =
         h != null && Regex("""^https?://""", RegexOption.IGNORE_CASE).containsMatchIn(h)
 
+    fun isMagnetHref(h: String?): Boolean =
+        h != null && h.trim().startsWith("magnet:", ignoreCase = true)
+
+    /** Hrefs the primary anchor path may navigate: http(s) pages and magnet links. */
+    fun isNavigableHref(h: String?): Boolean = isHttpHref(h) || isMagnetHref(h)
+
     fun isRailSized(rect: Rect, cssW: Double, cssH: Double, className: String = ""): Boolean {
         if (rect.width > cssW * 0.55) return true
         if (rect.width > cssW * 0.38 && rect.height > cssH * 0.42) return true
@@ -113,9 +119,9 @@ object ActivateHitTest {
             return PickResult(bestContent, Method.LOCATION_ASSIGN, "content_link")
         }
 
-        // 2) Smallest any good http(s) link
+        // 2) Smallest any good http(s)/magnet link
         val anyLinks = under.filter {
-            it.tag.equals("A", true) && isGoodHref(it.href) && isHttpHref(it.href)
+            it.tag.equals("A", true) && isGoodHref(it.href) && isNavigableHref(it.href)
         }
         val bestLink = anyLinks.minWithOrNull(
             compareBy<Node> { it.rect.area }.thenByDescending { it.depth },

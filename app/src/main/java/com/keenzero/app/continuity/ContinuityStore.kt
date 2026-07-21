@@ -41,9 +41,15 @@ class ContinuityStore(context: Context) {
     private fun writePending() {
         val checkpoint = pendingCheckpoint.getAndSet(null) ?: return
         val t0 = System.currentTimeMillis()
-        val ok = prefs.edit()
+        val editor = prefs.edit()
             .putString(KEY_CHECKPOINT, checkpoint.toJson().toString())
-            .commit()
+        // Media checkpoints also land in a dedicated slot: browsing checkpoints
+        // overwrite "latest" constantly, but the Continue watching card must keep
+        // pointing at the last thing the user actually played.
+        if (!checkpoint.url.isNullOrBlank() && checkpoint.requiresMediaRestore()) {
+            editor.putString(KEY_MEDIA_CHECKPOINT, checkpoint.toJson().toString())
+        }
+        val ok = editor.commit()
         val duration = System.currentTimeMillis() - t0
         Log.d("KeenContinuity", "Persisted checkpoint. duration=${duration}ms status=$ok")
         if (ok) {
@@ -63,6 +69,21 @@ class ContinuityStore(context: Context) {
 
     fun load(): ContinuityCheckpoint? =
         ContinuityCheckpoint.fromJson(prefs.getString(KEY_CHECKPOINT, null))
+
+    /** Last checkpoint that involved actual playback — feeds the Continue watching card. */
+    fun loadMedia(): ContinuityCheckpoint? =
+        ContinuityCheckpoint.fromJson(prefs.getString(KEY_MEDIA_CHECKPOINT, null))
+
+    /**
+     * True when the user deliberately backed all the way out to the home surface.
+     * A cold start then lands on home (with the Continue card) instead of
+     * auto-restoring the last page/playback.
+     */
+    fun wasAtHome(): Boolean = prefs.getBoolean(KEY_AT_HOME, false)
+
+    fun markAtHome(atHome: Boolean) {
+        prefs.edit().putBoolean(KEY_AT_HOME, atHome).apply()
+    }
 
     fun clear() {
         pendingCheckpoint.set(null)
@@ -90,6 +111,8 @@ class ContinuityStore(context: Context) {
     companion object {
         private const val PREFS = "keen_continuity"
         private const val KEY_CHECKPOINT = "latest"
+        private const val KEY_MEDIA_CHECKPOINT = "latest_media"
+        private const val KEY_AT_HOME = "at_home"
         private const val MIN_INTERVAL_MS = 1_200L
         private const val MIN_POS_DELTA_SEC = 0.75
     }

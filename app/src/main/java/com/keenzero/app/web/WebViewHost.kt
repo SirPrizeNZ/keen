@@ -51,6 +51,11 @@ class WebViewHost(
     /** Height of URL chrome in px (for pointer hit-test / web touch offset). */
     private val chromeHeightPx: () -> Int = { 0 },
     private val onUrlBarActivate: () -> Unit = {},
+    /** Star's current bounds in shell coordinates, or null when it isn't showing —
+     * lets RemoteInputRouter tell "pointer OK on the star" apart from the rest of
+     * the chrome bar, which otherwise always opens the URL bar's keyboard. */
+    private val starButtonRectPx: () -> android.graphics.RectF? = { null },
+    private val onFavouriteActivate: () -> Unit = {},
     /** High-risk deliberate navigation: show Open host? (never silent drop). */
     private val onConfirmNavigation: ((url: String, host: String, reason: String) -> Unit)? = null,
     /** magnet: link activated in-page → start native torrent streaming. */
@@ -269,6 +274,8 @@ class WebViewHost(
             },
             chromeHeightPx = chromeHeightPx,
             onUrlBarActivate = onUrlBarActivate,
+            starButtonRectPx = starButtonRectPx,
+            onFavouriteActivate = onFavouriteActivate,
             onDeliberateActivation = { fingerprintJson ->
                 recordDeliberateActivation(fingerprintJson, firewall)
             },

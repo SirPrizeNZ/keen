@@ -19,6 +19,8 @@ data class ContinuityCheckpoint(
     val selectedSource: String? = null,
     val playbackPositionSec: Double = 0.0,
     val durationSec: Double = 0.0,
+    /** Artwork for the Continue watching card (og:image / video poster). */
+    val posterUrl: String? = null,
     val fullscreen: Boolean = false,
     val playbackMode: Boolean = false,
     val playbackState: String? = null,
@@ -44,6 +46,7 @@ data class ContinuityCheckpoint(
         .put("selectedSource", selectedSource)
         .put("playbackPositionSec", playbackPositionSec)
         .put("durationSec", durationSec)
+        .put("posterUrl", posterUrl)
         .put("fullscreen", fullscreen)
         .put("playbackMode", playbackMode)
         .put("playbackState", playbackState)
@@ -85,6 +88,7 @@ data class ContinuityCheckpoint(
                     selectedSource = o.nullableString("selectedSource"),
                     playbackPositionSec = o.optDouble("playbackPositionSec", 0.0),
                     durationSec = o.optDouble("durationSec", 0.0),
+                    posterUrl = o.nullableString("posterUrl"),
                     fullscreen = o.optBoolean("fullscreen", false),
                     playbackMode = o.optBoolean("playbackMode", o.optBoolean("fullscreen", false)),
                     playbackState = o.nullableString("playbackState"),

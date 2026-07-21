@@ -1,5 +1,6 @@
 package com.keenzero.app.input
 
+import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -34,6 +35,14 @@ class RemoteInputRouter(
     private val onIndexStats: ((statsJson: String) -> Unit)? = null,
     private val chromeHeightPx: () -> Int = { 0 },
     private val onUrlBarActivate: () -> Unit = {},
+    /** Current on-screen bounds of the favourite star in the same shell coordinate
+     * space as [CursorOverlay]'s cursorX/cursorY, or null when it isn't showing.
+     * Pressing OK anywhere in the chrome bar used to always open the URL bar's
+     * keyboard, even with the pointer sitting right on the star — this lets
+     * activate() tell the two apart. */
+    private val starButtonRectPx: () -> RectF? = { null },
+    /** Pointer OK on (or near) the star: toggle the favourite instead of opening the keyboard. */
+    private val onFavouriteActivate: () -> Unit = {},
     /** Record single-use activation before synthetic click / DOM activate. */
     private val onDeliberateActivation: ((fingerprintJson: String?) -> Unit)? = null,
     /** HTML custom-view surface while fullscreen (pointer click/hover target). */
@@ -1999,6 +2008,17 @@ class RemoteInputRouter(
         val chromeH = chromeHeightPx().coerceAtLeast(0)
         val yShell = cursor.cursorY
         if (yShell <= chromeH + 4f && !imeEnter) {
+            // The star sits inside this same chrome band — without this check, OK anywhere
+            // in the band (star included) always opened the URL bar's keyboard and the star
+            // was never reachable at all.
+            val star = starButtonRectPx()
+            if (star != null &&
+                cursor.cursorX >= star.left - STAR_HIT_PAD_PX && cursor.cursorX <= star.right + STAR_HIT_PAD_PX &&
+                cursor.cursorY >= star.top - STAR_HIT_PAD_PX && cursor.cursorY <= star.bottom + STAR_HIT_PAD_PX
+            ) {
+                onFavouriteActivate()
+                return
+            }
             onUrlBarActivate()
             return
         }
@@ -2042,6 +2062,8 @@ class RemoteInputRouter(
                 }
                 function isContentHref(h){ return ${ActivateHitTest.CONTENT_HREF_JS_REGEX}.test(h||''); }
                 function isHttpHref(h){ return /^https?:/i.test(h||''); }
+                function isMagnetHref(h){ return /^magnet:/i.test(h||''); }
+                function isNavigableHref(h){ return isHttpHref(h)||isMagnetHref(h); }
                 function hrefOf(el){
                   try{
                     return el.href||(el.getAttribute&&(el.getAttribute('href')||el.getAttribute('data-href')||el.getAttribute('data-link')))||'';
@@ -2122,7 +2144,9 @@ class RemoteInputRouter(
                   try{ var a3=document.createElement('a'); a3.href=go; same=a3.hostname===location.hostname; }catch(e){}
                   var pathCh=true;
                   try{ var a4=document.createElement('a'); a4.href=go; pathCh=a4.pathname!==location.pathname||a4.search!==location.search; }catch(e){}
-                  if(isHttpHref(go)&&(isContentHref(go)||!same||pathCh)){
+                  // magnet: anchors navigate via the same primary path — location.assign
+                  // hands them to shouldOverrideUrlLoading → native torrent streaming.
+                  if(isNavigableHref(go)&&(isContentHref(go)||isMagnetHref(go)||!same||pathCh)){
                     try{ location.assign(go); }catch(e){ try{ location.href=go; }catch(e2){} }
                     var br=bestA.getBoundingClientRect();
                     return JSON.stringify({ok:true,method:'location.assign',play:false,href:String(go).slice(0,160),
@@ -2444,7 +2468,8 @@ class RemoteInputRouter(
                     val o = org.json.JSONObject(s)
                     val href = o.optString("href", "")
                     "good=${ActivateHitTest.isGoodHref(href)} content=${ActivateHitTest.isContentHref(href)} " +
-                        "http=${ActivateHitTest.isHttpHref(href)} method=${o.optString("method")}"
+                        "http=${ActivateHitTest.isHttpHref(href)} magnet=${ActivateHitTest.isMagnetHref(href)} " +
+                        "method=${o.optString("method")}"
                 } else {
                     "no_json"
                 }
@@ -2674,6 +2699,9 @@ class RemoteInputRouter(
             KeyEvent.KEYCODE_NUMPAD_ENTER,
         )
         const val LONG_PRESS_MS = 450L
+        /** "Hover over the star or next to it, close to it" — the star is a small
+         * target, so OK is accepted a little outside its literal bounds too. */
+        const val STAR_HIT_PAD_PX = 28f
         const val REBUILD_DEBOUNCE_MS = 280L
         const val TRACE_TAG = "KeenInput"
         /** Continuous pointer speed (dp/sec). Tuned for TV D-pad — smooth but not rushed. */

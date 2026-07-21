@@ -2,14 +2,13 @@
 <resources>
     <string name="app_name">Keen</string>
     <string name="home_title">Keen</string>
-    <string name="home_subtitle">Remote-first streaming browser — FMHY home</string>
     <string name="open_url">Open URL</string>
-    <string name="url_hint">https://fmhy.net/video</string>
+    <string name="url_hint">Enter address or magnet link</string>
     <string name="load">Load</string>
     <string name="diagnostics">Diagnostics</string>
     <string name="export_diagnostics">Export evidence</string>
     <string name="back_home">Home</string>
-    <string name="status_home">Opening FMHY streaming…</string>
+    <string name="status_home">Ready</string>
     <string name="status_browsing">Browsing</string>
     <string name="status_webview_created">WebView created lazily</string>
     <string name="renderer_gone">Renderer process gone — recovered to home</string>
@@ -17,20 +16,12 @@
     <string name="invalid_url">Enter an https URL</string>
     <string name="export_ok">Evidence written:\n%1$s</string>
     <string name="export_fail">Export failed: %1$s</string>
-    <string name="load_standards">Open FMHY video</string>
     <string name="load_vertical_slice">Vertical slice journey</string>
-    <!-- Product default front page: FMHY streaming section. -->
-    <string name="home_url">https://fmhy.net/video</string>
-    <string name="standards_url">https://fmhy.net/video</string>
     <string name="mode_dom_hint">DOM · long-press OK = pointer</string>
     <string name="mode_pointer_hint">Pointer · long-press OK = DOM</string>
-    <string name="continue_heading">CONTINUE</string>
-    <string name="continue_watch">Continue watching</string>
+    <string name="continue_watching">Continue watching</string>
+    <string name="fav_toggle">Favourite this site</string>
     <string name="continue_unknown_title">Previous session</string>
-    <string name="continue_meta">Position %1$s / %2$s · %3$d%%</string>
-    <string name="continue_status_ready">Ready to restore from last checkpoint</string>
-    <string name="continue_status_restoring">Restoring…</string>
-    <string name="continue_status_recovery">Renderer recovery — reloading checkpoint</string>
     <string name="nav_confirm_title">Open link?</string>
     <string name="nav_confirm_message">Open %1$s?</string>
     <string name="nav_confirm_open">Open</string>
@@ -39,8 +30,10 @@
     <string name="torrent_stage_starting">Setting up…</string>
     <string name="torrent_stage_fetching">Downloading torrent info…</string>
     <string name="torrent_stage_metadata">Connecting to peers…</string>
-    <string name="torrent_stage_buffering">Buffering %1$d%%</string>
+    <string name="torrent_stage_buffering">Buffering</string>
+    <string name="torrent_percent_giant">%1$02d</string>
     <string name="torrent_peers">%1$d peers</string>
+    <string name="torrent_seeds_leechers">%1$d seeders  ·  %2$d leechers</string>
     <string name="torrent_cancel_hint">Press Back to cancel</string>
     <string name="torrent_playback_error">Playback failed — the stream stopped or this file cannot be played</string>
 </resources>
