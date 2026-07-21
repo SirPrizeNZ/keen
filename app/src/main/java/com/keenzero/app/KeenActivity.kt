@@ -189,26 +189,11 @@ class KeenActivity : AppCompatActivity() {
         binding.continueCard.setOnClickListener { resumeContinueCard() }
         binding.continueCard.clipToOutline = true
         binding.continueCard.outlineProvider = ViewOutlineProvider.BACKGROUND
+        binding.continueCard.foreground = focusBorder(cornerDp = 10f, oval = false)
         binding.continueCard.setOnFocusChangeListener { v, hasFocus ->
-            val scale = if (hasFocus) 1.05f else 1f
-            v.animate()
-                .scaleX(scale).scaleY(scale)
-                .setDuration(if (hasFocus) 220 else 150)
-                .setInterpolator(
-                    if (hasFocus) {
-                        android.view.animation.OvershootInterpolator(1.8f)
-                    } else {
-                        android.view.animation.DecelerateInterpolator()
-                    },
-                )
-                .start()
-            // A slightly faster inner zoom than the outer card creates a subtle
-            // parallax "push in" — clipped by continueCard's own outline.
-            val posterScale = if (hasFocus) 1.08f else 1f
-            binding.continuePoster.animate()
-                .scaleX(posterScale).scaleY(posterScale)
-                .setDuration(if (hasFocus) 260 else 180)
-                .start()
+            // No scale/parallax — the focus cue is a border that eases inward.
+            (v.foreground as? com.keenzero.app.home.BorderDrawable)
+                ?.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
             binding.continueCardTitle.animate()
                 .alpha(if (hasFocus) 1f else 0.75f)
                 .setDuration(160)
@@ -392,6 +377,14 @@ class KeenActivity : AppCompatActivity() {
         )
     }
 
+    /** Focus-border drawable at 50% white, used as an animated foreground cue. */
+    private fun focusBorder(cornerDp: Float, oval: Boolean) =
+        com.keenzero.app.home.BorderDrawable(
+            android.graphics.Color.argb(128, 255, 255, 255),
+            cornerDp * resources.displayMetrics.density,
+            oval,
+        )
+
     /** One roundel (icon + label) per favourite, added to `favsRow` in code. */
     private fun buildFavRoundel(fav: com.keenzero.app.favourites.FavouritesStore.Fav): View {
         fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -402,7 +395,7 @@ class KeenActivity : AppCompatActivity() {
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
             )
             text = fav.label.take(1).uppercase()
-            textSize = 24f
+            textSize = 20f
             setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_text))
             alpha = 0.85f
             gravity = android.view.Gravity.CENTER
@@ -415,19 +408,23 @@ class KeenActivity : AppCompatActivity() {
             scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
             visibility = View.GONE
         }
+        val roundelBorder = focusBorder(cornerDp = 0f, oval = true)
         val roundel = android.widget.FrameLayout(this).apply {
-            layoutParams = android.widget.FrameLayout.LayoutParams(dp(64), dp(64), android.view.Gravity.CENTER)
+            layoutParams = android.widget.FrameLayout.LayoutParams(dp(52), dp(52), android.view.Gravity.CENTER)
             setBackgroundResource(R.drawable.fav_roundel_bg)
+            foreground = roundelBorder
             isDuplicateParentStateEnabled = true
-            clipToOutline = true
-            outlineProvider = ViewOutlineProvider.BACKGROUND
+            // No clipToOutline here: clipping a *circle* via the outline is low quality
+            // on Android — it facets the curve. The oval background renders smoothly and
+            // the focus border is an antialiased BorderDrawable; the favicon is clipped to
+            // a circle in loadFavIcon via a circular drawable instead.
             addView(letter)
             addView(icon)
         }
         // Soft translucent aura behind the roundel — fades in on focus instead of
         // a hard ring, since a real drop shadow is invisible on a black surface.
         val halo = View(this).apply {
-            layoutParams = android.widget.FrameLayout.LayoutParams(dp(80), dp(80), android.view.Gravity.CENTER)
+            layoutParams = android.widget.FrameLayout.LayoutParams(dp(64), dp(64), android.view.Gravity.CENTER)
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
                 setColor(0x1AFFFFFF)
@@ -435,7 +432,7 @@ class KeenActivity : AppCompatActivity() {
             alpha = 0f
         }
         val roundelWrap = android.widget.FrameLayout(this).apply {
-            layoutParams = android.widget.LinearLayout.LayoutParams(dp(84), dp(84))
+            layoutParams = android.widget.LinearLayout.LayoutParams(dp(68), dp(68))
             addView(halo)
             addView(roundel)
         }
@@ -456,37 +453,18 @@ class KeenActivity : AppCompatActivity() {
             orientation = android.widget.LinearLayout.VERTICAL
             gravity = android.view.Gravity.CENTER_HORIZONTAL
             layoutParams = android.widget.LinearLayout.LayoutParams(
-                dp(84),
+                dp(68),
                 android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { marginEnd = dp(20) }
+            ).apply { marginEnd = dp(16) }
             isFocusable = true
             isFocusableInTouchMode = true
             addView(roundelWrap)
             addView(label)
-            setOnClickListener { v ->
-                // Quick press-in/out so OK feels acknowledged before navigation kicks in.
-                v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70)
-                    .withEndAction {
-                        val restScale = if (v.hasFocus()) 1.1f else 1f
-                        v.animate().scaleX(restScale).scaleY(restScale).setDuration(110).start()
-                    }
-                    .start()
-                openNavigation(fav.url)
-            }
-            setOnFocusChangeListener { v, hasFocus ->
-                val scale = if (hasFocus) 1.1f else 1f
-                v.animate()
-                    .scaleX(scale).scaleY(scale)
-                    .translationY(if (hasFocus) -2f * resources.displayMetrics.density else 0f)
-                    .setDuration(if (hasFocus) 200 else 140)
-                    .setInterpolator(
-                        if (hasFocus) {
-                            android.view.animation.OvershootInterpolator(2.4f)
-                        } else {
-                            android.view.animation.DecelerateInterpolator()
-                        },
-                    )
-                    .start()
+            setOnClickListener { openNavigation(fav.url) }
+            setOnFocusChangeListener { _, hasFocus ->
+                // No scaling — the focus cue is a border easing inward on the roundel,
+                // plus a soft aura and the label brightening.
+                roundelBorder.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
                 halo.animate().alpha(if (hasFocus) 1f else 0f).setDuration(if (hasFocus) 260 else 160).start()
                 label.animate().alpha(if (hasFocus) 1f else 0.7f).setDuration(160).start()
             }
@@ -509,12 +487,18 @@ class KeenActivity : AppCompatActivity() {
                 val bitmap = if (cacheFile.exists()) {
                     android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)
                 } else {
-                    // Real-world favicons carry brand colour (HN orange, etc.) — desaturate
-                    // before caching so the roundel row stays strictly black & white.
-                    val fetched = (
-                        fetchIconBitmap("https://$host/apple-touch-icon.png")
-                            ?: fetchIconBitmap("https://$host/favicon.ico")
-                        )?.let(::toGrayscale)
+                    // Prefer a large, high-res icon (apple-touch-icon is typically
+                    // 180 px) over the tiny favicon.ico. Walk common high-res paths,
+                    // keep the biggest that decodes, and stop early once one is large
+                    // enough. Real-world favicons carry brand colour — desaturate so the
+                    // roundel row stays strictly black & white.
+                    var best: android.graphics.Bitmap? = null
+                    for (path in FAVICON_CANDIDATE_PATHS) {
+                        val candidate = fetchIconBitmap("https://$host$path") ?: continue
+                        if (best == null || candidate.width > best!!.width) best = candidate
+                        if ((best?.width ?: 0) >= 128) break
+                    }
+                    val fetched = best?.let(::toGrayscale)
                     fetched?.also { bmp ->
                         java.io.FileOutputStream(cacheFile).use { out ->
                             bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
@@ -523,7 +507,12 @@ class KeenActivity : AppCompatActivity() {
                 }
                 if (bitmap != null && bitmap.width >= 16) {
                     runOnUiThread {
-                        into.setImageBitmap(bitmap)
+                        // Circular drawable clips the square favicon to the roundel's
+                        // circle without clipToOutline (which would facet the edge).
+                        into.setImageDrawable(
+                            androidx.core.graphics.drawable.RoundedBitmapDrawableFactory
+                                .create(resources, bitmap).apply { isCircular = true },
+                        )
                         into.alpha = 0f
                         into.visibility = View.VISIBLE
                         into.animate().alpha(1f).setDuration(220).start()
@@ -1530,6 +1519,13 @@ class KeenActivity : AppCompatActivity() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
             .build()
         torrentPlayer = player
+        // Turn on English subtitles by default whenever the media carries them —
+        // preferring an "en"-tagged text track, and falling back to an untagged
+        // one (common in torrent MKVs where the English subs have no language tag).
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setPreferredTextLanguage("en")
+            .setSelectUndeterminedTextLanguage(true)
+            .build()
         player.setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -1613,6 +1609,11 @@ class KeenActivity : AppCompatActivity() {
         currentFocus?.let { hideKeyboard(it) }
         binding.browseUrlEdit.clearFocus()
         binding.torrentPlayerView.player = player
+        // Scrubber (circle) walks the timeline a minute at a time when focused and
+        // pressed/held left or right, instead of a duration-relative fraction.
+        binding.torrentPlayerView.findViewById<androidx.media3.ui.DefaultTimeBar>(
+            androidx.media3.ui.R.id.exo_progress,
+        )?.setKeyTimeIncrement(TORRENT_TIMEBAR_KEY_INCREMENT_MS)
         binding.torrentPlayerContainer.visibility = View.VISIBLE
         binding.torrentPlayerView.requestFocus()
         // Card artwork: grab a real frame ~75s in (retries until the stream
@@ -1701,7 +1702,9 @@ class KeenActivity : AppCompatActivity() {
                 surfaceView,
                 bitmap,
                 { result ->
-                    if (result == android.view.PixelCopy.SUCCESS && !looksBlack(bitmap)) {
+                    if (result == android.view.PixelCopy.SUCCESS &&
+                        !looksBlack(bitmap) && !looksGarbled(bitmap)
+                    ) {
                         recordEvent(
                             NavigationEvent(
                                 System.currentTimeMillis(),
@@ -1747,6 +1750,35 @@ class KeenActivity : AppCompatActivity() {
             y += stepY
         }
         return true
+    }
+
+    /**
+     * The Amlogic video plane can also read back as high-frequency colour noise
+     * (a garbled dither) rather than black. Real frames have spatial coherence;
+     * noise does not — nearly every neighbouring sample differs wildly. Reject
+     * those so the card falls back to the branded placeholder instead of static.
+     */
+    private fun looksGarbled(bitmap: android.graphics.Bitmap): Boolean {
+        val stepX = (bitmap.width / 40).coerceAtLeast(2)
+        val stepY = (bitmap.height / 24).coerceAtLeast(2)
+        var noisy = 0
+        var total = 0
+        var y = 0
+        while (y < bitmap.height) {
+            var x = 0
+            while (x + 1 < bitmap.width) {
+                val a = bitmap.getPixel(x, y)
+                val b = bitmap.getPixel(x + 1, y)
+                val delta = kotlin.math.abs(((a shr 16) and 0xFF) - ((b shr 16) and 0xFF)) +
+                    kotlin.math.abs(((a shr 8) and 0xFF) - ((b shr 8) and 0xFF)) +
+                    kotlin.math.abs((a and 0xFF) - (b and 0xFF))
+                if (delta > TORRENT_FRAME_NOISE_DELTA) noisy++
+                total++
+                x += stepX
+            }
+            y += stepY
+        }
+        return total > 0 && noisy.toFloat() / total > TORRENT_FRAME_NOISE_RATIO
     }
 
     private fun persistTorrentFrame(bitmap: android.graphics.Bitmap, originKey: String) {
@@ -1822,7 +1854,14 @@ class KeenActivity : AppCompatActivity() {
     private val torrentOverlayVisible: Boolean
         get() = binding.torrentLoadingOverlay.visibility == View.VISIBLE
 
+    // Highest buffer percent shown in the current loader session. The number
+    // never ticks backwards: a piece that finishes downloading briefly drops out
+    // of both the partial-block count and havePiece() for a tick, which otherwise
+    // shows a jarring slide like 99 → 65. Reset each time the loader reappears.
+    private var lastGiantPercent = -1
+
     private fun showTorrentOverlay() {
+        lastGiantPercent = -1
         currentFocus?.let { hideKeyboard(it) }
         binding.torrentLoadingTitle.text = getString(R.string.torrent_loading_title)
         binding.torrentLoadingDetail.text = getString(R.string.torrent_stage_starting)
@@ -1895,7 +1934,10 @@ class KeenActivity : AppCompatActivity() {
         // watermark behind everything instead of the small title, so the bar chase doesn't
         // need to encode it geometrically — it just keeps running throughout.
         if (stage == TorrentStreamingService.STAGE_BUFFERING && percent >= 0) {
-            val clamped = percent.coerceIn(0, 100)
+            // Monotonic: hold the highest value seen this session so the readout
+            // only ever climbs.
+            val clamped = percent.coerceIn(0, 100).coerceAtLeast(lastGiantPercent)
+            lastGiantPercent = clamped
             binding.torrentLoadingSpinner.setProgress(clamped / 100f)
             binding.torrentLoadingPercentGiant.setPercentText(getString(R.string.torrent_percent_giant, clamped))
             if (binding.torrentLoadingPercentGiant.visibility != View.VISIBLE) {
@@ -2604,14 +2646,14 @@ class KeenActivity : AppCompatActivity() {
         }
         val durationMs = player.duration
         if (durationMs == C.TIME_UNSET || durationMs <= 0) return false
-        // With the controller up and focus on a button row, left/right must keep
-        // navigating controls (subtitles etc.); seek owns the keys otherwise.
         val focused = binding.torrentPlayerView.findFocus()
-        if (binding.torrentPlayerView.isControllerFullyVisible &&
-            focused != null && focused !is androidx.media3.ui.DefaultTimeBar
-        ) {
-            return false
-        }
+        // Focus on the scrubber circle itself: hand left/right to Media3 so it
+        // scrubs natively — the thumb walks the timeline live as you press/hold,
+        // a minute per step (see the key increment set in showNativeTorrentPlayer).
+        if (focused is androidx.media3.ui.DefaultTimeBar) return false
+        // Controller up and focus on a button row: left/right must keep navigating
+        // controls (subtitles etc.). Keen's hold-seek owns the keys otherwise.
+        if (binding.torrentPlayerView.isControllerFullyVisible && focused != null) return false
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
                 // Seeking with the controller hidden should still show the real timeline
@@ -2977,7 +3019,17 @@ class KeenActivity : AppCompatActivity() {
             try {
                 val cached = prefs.getString(POSTER_SRC_KEY, null) == posterUrl && cacheFile.exists()
                 val bitmap = if (cached) {
-                    android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)
+                    android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)?.takeUnless {
+                        // A captured frame that read back black or as garbled noise must
+                        // not reach the card — drop it so the branded fallback shows.
+                        posterUrl.startsWith("frame:") && (looksBlack(it) || looksGarbled(it))
+                    } ?: run {
+                        if (posterUrl.startsWith("frame:")) {
+                            cacheFile.delete()
+                            prefs.edit().remove(POSTER_SRC_KEY).apply()
+                        }
+                        null
+                    }
                 } else if (posterUrl.startsWith("frame:")) {
                     // Captured frames exist only in the cache slot — nothing to fetch.
                     null
@@ -3094,6 +3146,20 @@ class KeenActivity : AppCompatActivity() {
          */
         private const val TORRENT_HTTP_TIMEOUT_MS = 120_000
 
+        /** Per-key step for the focused scrubber circle's native left/right scrub:
+         * one minute of media, so pressing/holding walks it by the minute. */
+        private const val TORRENT_TIMEBAR_KEY_INCREMENT_MS = 60_000L
+        /** Target width of the focus border micro-animation (grows inward). */
+        private const val FOCUS_BORDER_WIDTH_DP = 3f
+        /** High-res-first icon paths tried when caching a favourite's roundel icon. */
+        private val FAVICON_CANDIDATE_PATHS = listOf(
+            "/apple-touch-icon.png",
+            "/apple-touch-icon-precomposed.png",
+            "/apple-touch-icon-180x180.png",
+            "/favicon-196x196.png",
+            "/favicon-192x192.png",
+            "/favicon.ico",
+        )
         /** Single DPAD tap in the torrent player: gentle 10 s step. */
         private const val TORRENT_SEEK_TAP_MS = 10_000L
         /** Hold-to-seek rate for the first [TORRENT_SEEK_ACCEL_DELAY_SEC] of a hold
@@ -3129,6 +3195,11 @@ class KeenActivity : AppCompatActivity() {
         private const val TORRENT_FRAME_HEIGHT_PX = 342
         /** Max channel value at or below this across the sample grid = failed grab. */
         private const val TORRENT_FRAME_BLACK_LUMA = 24
+        // Per-sample neighbour delta (sum of R+G+B abs diffs) above which a sample
+        // pair counts as "noise", and the fraction of noisy pairs that marks the
+        // whole grab as garbled readback rather than a real frame.
+        private const val TORRENT_FRAME_NOISE_DELTA = 70
+        private const val TORRENT_FRAME_NOISE_RATIO = 0.22f
 
         /** og:image / twitter:image / <video poster> of the current document. */
         private val PAGE_POSTER_JS = """

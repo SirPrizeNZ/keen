@@ -3,7 +3,6 @@
     <item android:state_focused="true">
         <shape android:shape="oval">
             <solid android:color="#FF23272F" />
-            <stroke android:width="2dp" android:color="#FFFFFFFF" />
         </shape>
     </item>
     <item>

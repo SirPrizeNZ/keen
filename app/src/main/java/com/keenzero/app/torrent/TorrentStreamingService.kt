@@ -281,7 +281,7 @@ class TorrentStreamingService : Service() {
             for (p in maxOf(firstPiece + headCount, lastPiece - TAIL_BUFFER_PIECES + 1)..lastPiece) add(p)
         }
         bufferPieces.forEachIndexed { i, piece -> handle.setPieceDeadline(piece, i * 250) }
-        startBufferLoop(id, server, title, bufferPieces)
+        startBufferLoop(id, server, title, bufferPieces, info.pieceLength())
     }
 
     /** Mid-playback seek stall: buffering percent over the deadline window at [piece]. */
@@ -308,14 +308,22 @@ class TorrentStreamingService : Service() {
     }
 
     /** Pre-metadata (magnet): report peer discovery so the wait never looks dead. */
-    private fun startBufferLoop(id: String, server: TorrentHttpBridge, title: String, bufferPieces: List<Int>) {
+    private fun startBufferLoop(
+        id: String,
+        server: TorrentHttpBridge,
+        title: String,
+        bufferPieces: List<Int>,
+        pieceLen: Int,
+    ) {
         stopProgressLoop()
+        val bufferSet = bufferPieces.toHashSet()
+        val totalBytes = bufferPieces.size.toLong() * pieceLen
         progressTask = ticker.scheduleWithFixedDelay({
             try {
                 val handle = mediaHandle
                 if (id != requestId || handle == null || !handle.isValid) return@scheduleWithFixedDelay
-                val have = bufferPieces.count { handle.havePiece(it) }
-                if (have >= bufferPieces.size) {
+                val whole = bufferPieces.count { handle.havePiece(it) }
+                if (whole >= bufferPieces.size) {
                     stopProgressLoop()
                     sendBroadcast(
                         Intent(ACTION_READY)
@@ -326,11 +334,29 @@ class TorrentStreamingService : Service() {
                             .putExtra(EXTRA_TITLE, title),
                     )
                 } else {
+                    // Byte-accurate: completed buffer pieces plus the finished blocks
+                    // of any in-flight buffer piece. The buffer window is only a
+                    // handful of whole pieces, so counting whole pieces alone quantises
+                    // the readout into ~20% jumps that sit at 0 until the first piece
+                    // lands; block-level progress makes the number climb smoothly.
+                    var haveBytes = whole.toLong() * pieceLen
+                    for (partial in handle.downloadQueue) {
+                        val idx = partial.pieceIndex()
+                        val blocks = partial.blocksInPiece()
+                        if (idx in bufferSet && blocks > 0 && !handle.havePiece(idx)) {
+                            haveBytes += pieceLen.toLong() * partial.finished() / blocks
+                        }
+                    }
+                    // Cap below 100 — only the ready gate (all critical pieces present)
+                    // may report a finished buffer, so the number never claims 100 while
+                    // a required piece is still missing.
+                    val percent = if (totalBytes <= 0) 0
+                    else ((haveBytes * 100) / totalBytes).toInt().coerceIn(0, 99)
                     val status = handle.status()
                     sendProgress(
                         id,
                         STAGE_BUFFERING,
-                        percent = (have * 100) / bufferPieces.size,
+                        percent = percent,
                         peers = status.numPeers(),
                         seeds = status.numSeeds(),
                         speedBps = status.downloadRate().toLong(),
