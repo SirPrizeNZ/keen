@@ -29,11 +29,11 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero-home.png" alt="Keen home screen on Android TV — favourites and a Continue watching card" width="900">
+  <img src="assets/keen-hero.gif" alt="Keen on Android TV — D-pad through favourites and the scrollable Continue watching row, open a title, and a magnet streams from the torrent loader straight into the hardware player" width="900">
 </p>
 
 <p align="center">
-  <sub><em>Keen's remote-first home: favourite sites as greyscale tiles, and a scrollable Continue&nbsp;watching row. Demo titles are <a href="https://studio.blender.org/films/">Blender open movies</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY</a>.</em></sub>
+  <sub><em>Real footage, end to end: navigate the remote-first home, open a title, and the torrent loader connects to peers, buffers, and streams straight into the hardware player. Demo title <a href="https://peach.blender.org/">Big&nbsp;Buck&nbsp;Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY&nbsp;3.0</a>.</em></sub>
 </p>
 
 ---
@@ -41,18 +41,6 @@
 An **18.4 MiB** Android TV app that turns the WebView already sitting on your box into a full streaming browser — torrents, ad-blocking, hardware-decoded playback and remote-first navigation included. **No bundled Chromium. No second engine. No bloat.**
 
 > Open any site on your TV, tap a video or a magnet link, and Keen strips the junk, grabs the stream, and hands it to the hardware decoder — all from a single Activity driven by a five-button remote.
-
----
-
-## See it in action
-
-<p align="center">
-  <img src="assets/keen-flow.gif" alt="Keen in action — remote navigation across favourites and the Continue watching row, then a magnet streams with a live torrent loader" width="860">
-</p>
-
-<p align="center">
-  <sub><em>Real footage, end to end: D-pad through favourites and the scrollable Continue&nbsp;watching row, open a title, and the torrent loader connects to peers, buffers, and streams straight into the hardware player — all on the box. Demo title <a href="https://peach.blender.org/">Big&nbsp;Buck&nbsp;Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY&nbsp;3.0</a>.</em></sub>
-</p>
 
 ---
 
