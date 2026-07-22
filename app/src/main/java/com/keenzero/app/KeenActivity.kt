@@ -2042,23 +2042,11 @@ class KeenActivity : AppCompatActivity() {
             if (speedBps > 0) add(formatSpeed(speedBps))
         }
         binding.torrentLoadingTitle.text = stageText
-        // Stats keep their style; the "Press Back to cancel" hint is de-emphasised —
-        // smaller and dark grey — via spans so it doesn't restyle the stats line.
-        val cancel = getString(R.string.torrent_cancel_hint)
-        val full = if (extras.isEmpty()) cancel else extras.joinToString("   ·   ") + "\n" + cancel
-        val hintStart = full.length - cancel.length
-        binding.torrentLoadingDetail.text = android.text.SpannableString(full).apply {
-            setSpan(
-                android.text.style.RelativeSizeSpan(0.8f),
-                hintStart, full.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-            setSpan(
-                android.text.style.ForegroundColorSpan(
-                    ContextCompat.getColor(this@KeenActivity, R.color.keen_hint),
-                ),
-                hintStart, full.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-        }
+        // Stats only; the de-emphasised "Press Back to cancel" hint is its own view
+        // (torrentLoadingCancel) sitting 24dp below for breathing room.
+        val detail = extras.joinToString("   ·   ")
+        binding.torrentLoadingDetail.text = detail
+        binding.torrentLoadingDetail.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun formatSpeed(bps: Long): String = when {

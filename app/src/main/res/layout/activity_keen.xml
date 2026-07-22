@@ -223,9 +223,19 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:gravity="center_horizontal"
-                android:text="@string/torrent_cancel_hint"
                 android:textColor="@color/keen_muted"
                 android:textSize="14sp" />
+
+            <!-- Own view so the cancel hint can sit a clear 24dp below the stats line. -->
+            <TextView
+                android:id="@+id/torrentLoadingCancel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:gravity="center_horizontal"
+                android:text="@string/torrent_cancel_hint"
+                android:textColor="@color/keen_hint"
+                android:textSize="11sp" />
         </LinearLayout>
     </FrameLayout>
 
