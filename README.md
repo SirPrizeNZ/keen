@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Keen" width="440">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="Keen" width="440">
+  </picture>
 </p>
 
 <p align="center">
