@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo-light.svg" alt="Keen" width="440">
+    <img src="assets/logo-light.svg" alt="Keen" width="220">
   </picture>
 </p>
 
@@ -26,6 +26,14 @@
   <img src="https://img.shields.io/badge/Android_TV-10%2B_(API_29)-3ddc84" alt="Android TV 10+">
   <img src="https://img.shields.io/badge/ABI-armeabi--v7a-555" alt="armeabi-v7a">
   <img src="https://img.shields.io/badge/engine-System_WebView-orange" alt="System WebView">
+</p>
+
+<p align="center">
+  <img src="assets/hero-home.png" alt="Keen home screen on Android TV — favourites and a Continue watching card" width="900">
+</p>
+
+<p align="center">
+  <sub><em>Keen's remote-first home: favourite sites as tiles, and a Continue&nbsp;watching card. Demo content shown — <a href="https://peach.blender.org/">Big Buck Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY&nbsp;3.0</a>.</em></sub>
 </p>
 
 ---
