@@ -331,6 +331,16 @@ class WebViewHost(
         this.inputRouter = inputRouter
         val wv = KeenWebView(context, inputRouter)
         HardenedWebSettings.apply(wv)
+        // Accept cookies, including third-party. Third-party cookies default to OFF
+        // on modern WebView, which breaks embedded sign-in/SSO iframes and the
+        // handshake used by bot-challenge services (the clearance cookie is set from
+        // a challenge iframe on a different origin). Tracker/ad requests are already
+        // blocked upstream, so this restores legitimate functionality without opening
+        // a tracking hole. Cookies are flushed to disk in flushSession().
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(wv, true)
+        }
         BlockingRuntime.ensureServiceWorkerInterception()
 
         val windowBroker = WindowRequestBroker(popupQuarantine)

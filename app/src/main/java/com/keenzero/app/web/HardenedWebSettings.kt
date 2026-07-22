@@ -39,7 +39,15 @@ object HardenedWebSettings {
         s.builtInZoomControls = false
         s.displayZoomControls = false
         s.setSupportZoom(false)
-        s.userAgentString = s.userAgentString // default first (Phase 0)
+        // Present as regular Chrome rather than an embedded WebView. The default
+        // WebView UA carries a "; wv" token (and a "Version/4.0" marker) that many
+        // sites, sign-in flows and bot-challenge services treat as an automated /
+        // embedded client — serving degraded or blocked experiences. Stripping those
+        // tokens is a standard, widely-used compatibility fix and changes nothing
+        // else about the UA (same Android/Chrome version, still mobile).
+        s.userAgentString = s.userAgentString
+            .replace("; wv", "")
+            .replace(Regex("""Version/[\d.]+ """), "")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             s.safeBrowsingEnabled = true
