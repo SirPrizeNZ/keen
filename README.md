@@ -18,7 +18,7 @@
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="GitHub Releases"></a>
   &nbsp;
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="MIT License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-proprietary-b91c1c?style=for-the-badge" alt="Proprietary — All Rights Reserved"></a>
 </p>
 
 <p align="center">
@@ -181,4 +181,7 @@ The loading screen reports live **peers, seeds and speed** with a byte-accurate,
 
 ## License
 
-[MIT](LICENSE)
+**© 2026 SirPrizeNZ — All rights reserved.** Keen is proprietary. The source
+is published for transparency and evaluation only; no right to use, copy,
+modify, or redistribute it is granted without prior written permission. See
+[LICENSE](LICENSE).
