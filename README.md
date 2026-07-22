@@ -51,7 +51,7 @@ An **18.4 MiB** Android TV app that turns the WebView already sitting on your bo
 </p>
 
 <p align="center">
-  <sub><em>Real footage: D-pad through favourites and the scrollable Continue&nbsp;watching row, open a title, and watch the torrent loader connect to peers and buffer live. Demo title <a href="https://peach.blender.org/">Big&nbsp;Buck&nbsp;Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY&nbsp;3.0</a>.</em></sub>
+  <sub><em>Real footage, end to end: D-pad through favourites and the scrollable Continue&nbsp;watching row, open a title, and the torrent loader connects to peers, buffers, and streams straight into the hardware player — all on the box. Demo title <a href="https://peach.blender.org/">Big&nbsp;Buck&nbsp;Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY&nbsp;3.0</a>.</em></sub>
 </p>
 
 ---
