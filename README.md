@@ -18,7 +18,7 @@
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="GitHub Releases"></a>
   &nbsp;
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-2ea44f?style=for-the-badge" alt="PolyForm Noncommercial License 1.0.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-2ea44f?style=for-the-badge" alt="GNU AGPL-3.0 License"></a>
 </p>
 
 <p align="center">
@@ -38,9 +38,9 @@
 
 ---
 
-An **18.4 MiB** Android TV app that turns the WebView already sitting on your box into a full streaming browser — torrents, ad-blocking, hardware-decoded playback and remote-first navigation included. **No bundled Chromium. No second engine. No bloat.**
+**Keen is a free, open-source Android TV browser built on a simple idea: reuse the browser engine your device already has**, instead of shipping yet another 100+ MiB copy of Chromium. On top of the system WebView it layers a remote-first control surface, layered ad- and tracker-blocking, hardware-decoded playback, and open-protocol media streaming — an **18.4 MiB** app that makes a cheap, ageing 2 GB TV box genuinely useful again. **No bundled engine. No second browser. No bloat.**
 
-> Open any site on your TV, tap a video or a magnet link, and Keen strips the junk, grabs the stream, and hands it to the hardware decoder — all from a single Activity driven by a five-button remote.
+> Open any site on your TV, activate a video or a `magnet:` link, and Keen strips the junk, grabs the stream, and hands it to the hardware decoder — all from a single Activity driven by a five-button remote.
 
 ---
 
@@ -56,7 +56,7 @@ Keen doesn't. It wraps the WebView **already on your device** with three focused
 | **Blocking** | Seven-stage ad, popup, redirect and overlay defence |
 | **Playback** | Media3 / ExoPlayer with hardware decoders, torrent streaming, subtitle selection, resume |
 
-The result: an **18.4 MiB** signed APK that boots in under a second on a 2 GB box.
+The result: an **18.4 MiB** signed APK that boots in under a second on a 2 GB box — a capable modern browser on exactly the kind of cheap, low-memory hardware that usually ends up as e-waste, and without the storage, memory and update burden of a second embedded engine. Reusing the platform's own maintained, auto-updated WebView also means Keen inherits Google's security patches instead of shipping a Chromium fork that quietly rots.
 
 ---
 
@@ -65,8 +65,8 @@ The result: an **18.4 MiB** signed APK that boots in under a second on a 2 GB bo
 ### 🌐 The simplest browser for Android TV
 Open any site. Navigate with the D-pad or a pointer. Bookmark favourites to the home screen as tiles. It's a real WebView — every site that works in Chrome on Android works here.
 
-### 🧲 Stream torrents without leaving the page
-Tap a magnet link, drop a `.torrent`, or paste a `magnet:` URI into the address bar. Keen spins up a **separate torrent process**, downloads the largest video file **sequentially**, and pipes it over a **loopback HTTP bridge** straight into ExoPlayer. No files land in your Downloads folder. The cache deletes itself when you stop.
+### 🧲 Stream large media over open protocols
+Activate a `magnet:` link or a `.torrent` — the open, decentralised way large media is distributed (Creative Commons films like the [Blender open movies](https://studio.blender.org/films/), Linux ISOs, public-domain archives, your own self-hosted library). Keen spins up a **separate BitTorrent process** (`libtorrent4j`), fetches the largest video file **sequentially**, and pipes it over a **loopback-only HTTP bridge** straight into ExoPlayer — so playback starts before the download finishes. Nothing lands in your Downloads folder, and the cache deletes itself when you stop.
 
 ### 🔊 Play audio the WebView can't
 The WebView's software decoder chokes on E-AC-3, DTS and similar codecs. Keen intercepts the media URL and hands it to **Media3 / ExoPlayer**, which reaches the TV's **hardware decoders** directly. Surround sound just works.
@@ -150,6 +150,18 @@ adb install -r keen-0.1.92-32bit-armeabi-v7a.apk
 
 ---
 
+## Roadmap
+
+- **64-bit (`arm64-v8a`) builds** alongside the 32-bit package for newer boxes
+- **Wider site compatibility** — a growing set of per-site playback & navigation repairs
+- **More subtitle languages** beyond the current English auto-selection
+- **Accessibility** — TalkBack and large-text passes for the remote-first UI
+- **Richer favourites** — HTML `<link rel>` favicon resolution and reorderable tiles
+
+Contributions toward any of these are especially welcome — see [Contributing](#contributing).
+
+---
+
 ## Architecture at a glance
 
 ```mermaid
@@ -187,18 +199,23 @@ The loading screen reports live **peers, seeds and speed** with a byte-accurate,
 
 ---
 
-## Legal
+## Responsible use
+
+Keen is a general-purpose browser and an open-protocol media client — the same technology behind Creative Commons film distribution, Linux ISO delivery and public-domain archives.
 
 > [!IMPORTANT]
-> Only stream content you are legally permitted to access. Keen does not bypass DRM or access controls.
+> Only access content you are legally entitled to. Keen bypasses no DRM and defeats no access controls — it opens the web and open protocols; what you do with them is your responsibility.
 
 ---
 
+## Contributing
+
+Contributions are welcome — bug reports, site-compatibility fixes, testing on real TV hardware, and code. Open an [issue](https://github.com/SirPrizeNZ/keen/issues) or a pull request. The project is a single, heavily-commented Android module (Kotlin), so it stays approachable; the [architecture diagram](#architecture-at-a-glance) maps the whole thing end to end.
+
 ## License
 
-Keen is free to **use, modify, and share for any noncommercial purpose** under the
-[PolyForm Noncommercial License 1.0.0](LICENSE) — tinker with it, run it, learn from
-it, share it. Commercial use is reserved; if you'd like to use Keen commercially,
-get in touch and we'll sort out a licence.
+Keen is **free and open source** under the [GNU Affero General Public License v3.0](LICENSE). You're free to use, study, modify and share it; any modified version you distribute — or run as a network service — must also be offered under the AGPL, so the project stays open for everyone.
+
+Because the project owns its copyright, **commercial licensing is available separately** for anyone who needs terms other than the AGPL — [get in touch](https://github.com/SirPrizeNZ/keen).
 
 © 2026 SirPrizeNZ.
