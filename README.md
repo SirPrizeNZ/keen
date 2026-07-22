@@ -18,7 +18,7 @@
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="GitHub Releases"></a>
   &nbsp;
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-proprietary-b91c1c?style=for-the-badge" alt="Proprietary — All Rights Reserved"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-2ea44f?style=for-the-badge" alt="PolyForm Noncommercial License 1.0.0"></a>
 </p>
 
 <p align="center">
@@ -144,28 +144,35 @@ adb install -r keen-0.1.92-32bit-armeabi-v7a.apk
 
 ## Architecture at a glance
 
-```
-┌─────────────────────────────────────────────┐
-│               Keen  ·  1 Activity            │
-│                                              │
-│  ┌───────────┐   ┌───────────────────────┐   │
-│  │  Control  │   │   System WebView      │   │
-│  │  bar /    │──▶│   (already on TV,     │   │
-│  │  home     │   │    Chromium-based,    │   │
-│  │  screen   │   │    updated by Google) │   │
-│  └───────────┘   └──────────┬────────────┘   │
-│                             │ media URL      │
-│                  ┌──────────▼────────────┐   │
-│                  │   Media3 / ExoPlayer  │   │
-│                  │   (HW decoders, subs) │   │
-│                  └──────────▲────────────┘   │
-│                             │ loopback HTTP  │
-│  ┌──────────────────────────┴────────────┐   │
-│  │  Torrent process (separate)           │   │
-│  │  libtorrent4j · sequential · cache    │   │
-│  │  auto-delete · foreground service     │   │
-│  └───────────────────────────────────────┘   │
-└──────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    R(["📺  Five-button remote"]) --> UI
+
+    subgraph KEEN["Keen · one Activity, one live WebView"]
+        direction TB
+        UI["Control layer<br/>address bar · D-pad focus · pointer fallback<br/>favourites · remote-first home"]
+        WV["System WebView<br/>Chromium-based — already on the TV, updated by Google<br/>no bundled engine · no second browser"]
+        TOR["Torrent process · isolated<br/>libtorrent4j · sequential download<br/>self-deleting cache · foreground service"]
+        EXO["Media3 / ExoPlayer<br/>hardware decoders · auto English subtitles · resume"]
+
+        UI -- "open any site" --> WV
+        WV -- "media URL handed off" --> EXO
+        TOR -- "loopback HTTP bridge" --> EXO
+    end
+
+    EXO --> OUT(["🔊  TV hardware decoders"])
+
+    classDef edge fill:#0d1117,stroke:#8b949e,color:#c9d1d9;
+    classDef control fill:#0f2a1a,stroke:#2ea043,color:#d7ffe0;
+    classDef engine fill:#0b2545,stroke:#1f6feb,color:#cfe3ff;
+    classDef torrent fill:#4a1616,stroke:#f85149,color:#ffd7d5;
+    classDef player fill:#301a4d,stroke:#a371f7,color:#ecdcff;
+
+    class R,OUT edge;
+    class UI control;
+    class WV engine;
+    class TOR torrent;
+    class EXO player;
 ```
 
 The loading screen reports live **peers, seeds and speed** with a byte-accurate, smoothly animated progress readout — so you always know what the stream is doing before the first frame.
@@ -181,7 +188,9 @@ The loading screen reports live **peers, seeds and speed** with a byte-accurate,
 
 ## License
 
-**© 2026 SirPrizeNZ — All rights reserved.** Keen is proprietary. The source
-is published for transparency and evaluation only; no right to use, copy,
-modify, or redistribute it is granted without prior written permission. See
-[LICENSE](LICENSE).
+Keen is free to **use, modify, and share for any noncommercial purpose** under the
+[PolyForm Noncommercial License 1.0.0](LICENSE) — tinker with it, run it, learn from
+it, share it. Commercial use is reserved; if you'd like to use Keen commercially,
+get in touch and we'll sort out a licence.
+
+© 2026 SirPrizeNZ.
