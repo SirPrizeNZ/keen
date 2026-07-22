@@ -2,6 +2,7 @@ package com.keenzero.app.continuity
 
 import android.content.Context
 import android.util.Log
+import org.json.JSONArray
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -48,6 +49,7 @@ class ContinuityStore(context: Context) {
         // pointing at the last thing the user actually played.
         if (!checkpoint.url.isNullOrBlank() && checkpoint.requiresMediaRestore()) {
             editor.putString(KEY_MEDIA_CHECKPOINT, checkpoint.toJson().toString())
+            editor.putString(KEY_RECENTS, upsertedRecents(checkpoint).toString())
         }
         val ok = editor.commit()
         val duration = System.currentTimeMillis() - t0
@@ -73,6 +75,36 @@ class ContinuityStore(context: Context) {
     /** Last checkpoint that involved actual playback — feeds the Continue watching card. */
     fun loadMedia(): ContinuityCheckpoint? =
         ContinuityCheckpoint.fromJson(prefs.getString(KEY_MEDIA_CHECKPOINT, null))
+
+    /** Up to [MAX_RECENTS] recently played titles, most-recent first. */
+    fun loadRecents(): List<ContinuityCheckpoint> {
+        val raw = prefs.getString(KEY_RECENTS, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                arr.optJSONObject(i)?.let { ContinuityCheckpoint.fromJson(it.toString()) }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /** Replace the recents list wholesale (used to seed demo content). */
+    fun saveRecents(items: List<ContinuityCheckpoint>) {
+        val arr = JSONArray()
+        items.take(MAX_RECENTS).forEach { arr.put(it.toJson()) }
+        prefs.edit().putString(KEY_RECENTS, arr.toString()).commit()
+    }
+
+    /** Move [cp] to the front of the recents list, de-duped by contentId/url, capped. */
+    private fun upsertedRecents(cp: ContinuityCheckpoint): JSONArray {
+        val key = cp.contentId ?: cp.url
+        val kept = loadRecents().filterNot { (it.contentId ?: it.url) == key }
+        val arr = JSONArray()
+        arr.put(cp.toJson())
+        kept.take(MAX_RECENTS - 1).forEach { arr.put(it.toJson()) }
+        return arr
+    }
 
     /**
      * True when the user deliberately backed all the way out to the home surface.
@@ -112,6 +144,8 @@ class ContinuityStore(context: Context) {
         private const val PREFS = "keen_continuity"
         private const val KEY_CHECKPOINT = "latest"
         private const val KEY_MEDIA_CHECKPOINT = "latest_media"
+        private const val KEY_RECENTS = "recents"
+        private const val MAX_RECENTS = 5
         private const val KEY_AT_HOME = "at_home"
         private const val MIN_INTERVAL_MS = 1_200L
         private const val MIN_POS_DELTA_SEC = 0.75

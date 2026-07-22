@@ -92,6 +92,11 @@ class KeenActivity : AppCompatActivity() {
     /** og:image / poster of the current page — attached to media checkpoints. */
     private var currentPagePosterUrl: String? = null
     private var posterProbeUrl: String? = null
+    // Load bar is driven as a continuous 0..1 fraction and rendered via scaleX so
+    // real progress jumps ease in instead of snapping to new rectangle widths.
+    private var loadProgressAnimator: android.animation.ValueAnimator? = null
+    private var loadProgressFraction: Float = 0f
+    private var loadProgressTrickling: Boolean = false
     private val torrentResumeStore by lazy { com.keenzero.app.torrent.TorrentResumeStore(this) }
     private val favouritesStore by lazy { com.keenzero.app.favourites.FavouritesStore(this) }
     private val torrentReceiver = object : BroadcastReceiver() {
@@ -186,20 +191,9 @@ class KeenActivity : AppCompatActivity() {
             ),
         )
 
-        binding.continueCard.setOnClickListener { resumeContinueCard() }
-        binding.continueCard.clipToOutline = true
-        binding.continueCard.outlineProvider = ViewOutlineProvider.BACKGROUND
-        binding.continueCard.foreground = focusBorder(cornerDp = 10f, oval = false)
-        binding.continueCard.setOnFocusChangeListener { v, hasFocus ->
-            // No scale/parallax — the focus cue is a border that eases inward.
-            (v.foreground as? com.keenzero.app.home.BorderDrawable)
-                ?.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
-            binding.continueCardTitle.animate()
-                .alpha(if (hasFocus) 1f else 0.75f)
-                .setDuration(160)
-                .start()
-        }
         binding.chromeFavButton.setOnClickListener { toggleFavourite() }
+        // Tapping the K in the address bar is an explicit, clean return to the home canvas.
+        binding.chromeLogo.setOnClickListener { returnHomeFromChrome() }
 
         binding.homeUrlInput.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_GO ||
@@ -311,7 +305,6 @@ class KeenActivity : AppCompatActivity() {
     private fun hydrateContinuitySurface() {
         latestCheckpoint = continuityStore.load()
         val cp = continuityStore.loadMedia()?.takeIf { !it.url.isNullOrBlank() }
-        val hasContinue = cp != null
 
         val favs = favouritesStore.list()
         binding.favsGroup.visibility = if (favs.isNotEmpty()) View.VISIBLE else View.GONE
@@ -325,6 +318,26 @@ class KeenActivity : AppCompatActivity() {
                 .alpha(1f).translationY(0f)
                 .setStartDelay(50L * index)
                 .setDuration(280)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        }
+
+        // Up to 5 recently played titles as a scrollable row (falls back to the
+        // single latest media checkpoint when no recents list has accrued yet).
+        val recents = continuityStore.loadRecents().ifEmpty { listOfNotNull(cp) }.take(5)
+        val hasContinue = recents.isNotEmpty()
+
+        binding.continueRow.removeAllViews()
+        binding.continueScroll.scrollTo(0, 0)
+        recents.forEachIndexed { index, item ->
+            val card = buildContinueCard(item)
+            card.alpha = 0f
+            card.translationY = 12f * resources.displayMetrics.density
+            binding.continueRow.addView(card)
+            card.animate()
+                .alpha(1f).translationY(0f)
+                .setStartDelay(60L * favs.size + 45L * index)
+                .setDuration(300)
                 .setInterpolator(android.view.animation.DecelerateInterpolator())
                 .start()
         }
@@ -351,30 +364,125 @@ class KeenActivity : AppCompatActivity() {
             }
             return
         }
-        if (cp == null) {
+        if (!hasContinue) {
             // Favourites exist but nothing to continue — land focus on the first roundel.
             binding.favsRow.getChildAt(0)?.requestFocus()
             return
         }
-        binding.continueCardTitle.text = prettyMediaTitle(cp.title)
-            ?: cp.contentId
-            ?: getString(R.string.continue_unknown_title)
+        (binding.continueRow.getChildAt(0) as? android.view.ViewGroup)?.getChildAt(0)?.requestFocus()
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "continuity_surface_shown",
+                url = recents.first().url,
+                detail = "count=${recents.size}",
+            ),
+        )
+    }
+
+    /** One card (poster + progress + title) per recent title, added to `continueRow`. */
+    private fun buildContinueCard(cp: ContinuityCheckpoint): View {
+        fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { marginEnd = dp(16) }
+            clipChildren = false
+            clipToPadding = false
+        }
+        val card = android.widget.FrameLayout(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(dp(190), dp(107))
+            background = ContextCompat.getDrawable(this@KeenActivity, R.drawable.continue_card_bg)
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            isFocusable = true
+            isFocusableInTouchMode = true
+            clipToOutline = true
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            foreground = focusBorder(cornerDp = 10f, oval = false)
+        }
+        val poster = android.widget.ImageView(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            visibility = View.GONE
+        }
+        val fallback = android.widget.ImageView(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(dp(88), dp(72)).apply {
+                gravity = android.view.Gravity.CENTER
+            }
+            alpha = 0.22f
+            setImageResource(R.drawable.keen_mark)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        }
+        val track = android.widget.LinearLayout(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, dp(4),
+            ).apply { gravity = android.view.Gravity.BOTTOM }
+            setBackgroundColor(0x33FFFFFF)
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            weightSum = 1f
+        }
+        val fill = View(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+                .apply { weight = 0f }
+            setBackgroundColor(0xE6FFFFFF.toInt())
+        }
+        track.addView(fill)
+        card.addView(poster); card.addView(fallback); card.addView(track)
+        val title = android.widget.TextView(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(dp(190), android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(12) }
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_muted))
+            textSize = 15f
+            alpha = 0.75f
+            text = prettyMediaTitle(cp.title) ?: cp.contentId ?: getString(R.string.continue_unknown_title)
+        }
+        container.addView(card); container.addView(title)
+
+        card.setOnClickListener { resumeCheckpoint(cp) }
+        card.setOnFocusChangeListener { v, hasFocus ->
+            (v.foreground as? com.keenzero.app.home.BorderDrawable)
+                ?.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
+            title.animate().alpha(if (hasFocus) 1f else 0.75f).setDuration(160).start()
+            if (hasFocus) v.post {
+                // Keep the focused card fully in view with a little breathing room,
+                // scrolling the minimum needed (reliable across the whole row).
+                val sv = binding.continueScroll
+                val pad = dp(24)
+                val left = container.left
+                val right = left + container.width
+                if (right + pad > sv.scrollX + sv.width) {
+                    sv.smoothScrollTo(right + pad - sv.width, 0)
+                } else if (left - pad < sv.scrollX) {
+                    sv.smoothScrollTo((left - pad).coerceAtLeast(0), 0)
+                }
+            }
+        }
+
         val fraction = if (cp.durationSec > 0) {
             (cp.playbackPositionSec / cp.durationSec).toFloat().coerceIn(0f, 1f)
         } else {
             0f
         }
-        applyContinueProgress(fraction)
-        loadContinuePoster(cp.posterUrl)
-        binding.continueCard.requestFocus()
-        recordEvent(
-            NavigationEvent(
-                System.currentTimeMillis(),
-                "continuity_surface_shown",
-                url = cp.url,
-                detail = "pos=${cp.playbackPositionSec} poster=${!cp.posterUrl.isNullOrBlank()}",
-            ),
-        )
+        android.animation.ValueAnimator.ofFloat(0f, fraction).apply {
+            duration = 700
+            startDelay = 260
+            interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener { anim ->
+                (fill.layoutParams as android.widget.LinearLayout.LayoutParams).also {
+                    it.weight = anim.animatedValue as Float
+                    fill.layoutParams = it
+                }
+            }
+        }.start()
+        loadPosterInto(cp.posterUrl, poster, fallback)
+        return container
     }
 
     /** Focus-border drawable at 50% white, used as an animated foreground cue. */
@@ -557,28 +665,6 @@ class KeenActivity : AppCompatActivity() {
         } finally {
             conn.disconnect()
         }
-    }
-
-    private fun applyContinueProgress(fraction: Float) {
-        binding.continueProgressTrack.weightSum = 1f
-        val lp = binding.continueProgressFill.layoutParams as android.widget.LinearLayout.LayoutParams
-        // Fill draws from empty and eases up to the saved position — a still bar
-        // reads as "broken", a filling one reads as "resuming".
-        android.animation.ValueAnimator.ofFloat(0f, fraction).apply {
-            duration = 700
-            startDelay = 200
-            interpolator = android.view.animation.DecelerateInterpolator()
-            addUpdateListener { anim ->
-                lp.weight = anim.animatedValue as Float
-                binding.continueProgressFill.layoutParams = lp
-            }
-        }.start()
-    }
-
-    /** Continue card press: resume the last *played* title from its saved position. */
-    private fun resumeContinueCard() {
-        val cp = continuityStore.loadMedia() ?: continuityStore.load() ?: return
-        resumeCheckpoint(cp)
     }
 
     private fun continueFromCheckpoint() {
@@ -1956,10 +2042,22 @@ class KeenActivity : AppCompatActivity() {
             if (speedBps > 0) add(formatSpeed(speedBps))
         }
         binding.torrentLoadingTitle.text = stageText
-        binding.torrentLoadingDetail.text = if (extras.isEmpty()) {
-            getString(R.string.torrent_cancel_hint)
-        } else {
-            extras.joinToString("   ·   ") + "\n" + getString(R.string.torrent_cancel_hint)
+        // Stats keep their style; the "Press Back to cancel" hint is de-emphasised —
+        // smaller and dark grey — via spans so it doesn't restyle the stats line.
+        val cancel = getString(R.string.torrent_cancel_hint)
+        val full = if (extras.isEmpty()) cancel else extras.joinToString("   ·   ") + "\n" + cancel
+        val hintStart = full.length - cancel.length
+        binding.torrentLoadingDetail.text = android.text.SpannableString(full).apply {
+            setSpan(
+                android.text.style.RelativeSizeSpan(0.8f),
+                hintStart, full.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            setSpan(
+                android.text.style.ForegroundColorSpan(
+                    ContextCompat.getColor(this@KeenActivity, R.color.keen_hint),
+                ),
+                hintStart, full.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
         }
     }
 
@@ -2049,25 +2147,115 @@ class KeenActivity : AppCompatActivity() {
 
     private fun setLoadProgress(percent: Int) {
         val bar = binding.loadProgressBar
-        val track = binding.loadProgressTrack
         val p = percent.coerceIn(0, 100)
         if (p <= 0) {
-            bar.visibility = View.INVISIBLE
-            bar.layoutParams = bar.layoutParams.apply { width = 0 }
+            resetLoadProgress()
             return
         }
         bar.visibility = View.VISIBLE
-        val w = track.width.takeIf { it > 0 } ?: binding.root.width
-        val target = ((w * p) / 100f).toInt().coerceAtLeast(2)
-        bar.layoutParams = bar.layoutParams.apply { width = target }
-        bar.requestLayout()
         if (p >= 100) {
-            bar.postDelayed({
-                if (uiState == AppUiState.BROWSING || uiState == AppUiState.RESTORING) {
-                    bar.visibility = View.INVISIBLE
-                }
-            }, 180)
+            // Sweep to full, hold briefly, then fade the whole bar out.
+            animateLoadProgress(1f, durationMs = 220L) {
+                bar.animate().alpha(0f).setStartDelay(120L).setDuration(180L)
+                    .withEndAction {
+                        if (uiState == AppUiState.BROWSING || uiState == AppUiState.RESTORING) {
+                            bar.visibility = View.INVISIBLE
+                        }
+                        resetLoadProgress()
+                    }.start()
+            }
+            return
         }
+        // Never let a real update pull the bar backwards; ease it forward, then let
+        // it keep trickling so motion never freezes between sparse WebView callbacks.
+        val target = (p / 100f).coerceAtLeast(loadProgressFraction)
+        animateLoadProgress(target, durationMs = 420L) { startLoadProgressTrickle() }
+    }
+
+    /** Full width of the progress track in px (falls back to the root width pre-layout). */
+    private fun loadTrackWidth(): Int =
+        binding.loadProgressTrack.width.takeIf { it > 0 } ?: binding.root.width
+
+    /**
+     * Drive the bar to [target] (0..1) by animating scaleX with pivot at the left
+     * edge — a GPU transform, so there is no per-frame layout pass on the 2 GB box.
+     * The bar is sized to the full track once and only its scale changes.
+     */
+    private fun animateLoadProgress(target: Float, durationMs: Long, onEnd: (() -> Unit)? = null) {
+        val bar = binding.loadProgressBar
+        loadProgressAnimator?.cancel()
+        loadProgressTrickling = false
+        val trackW = loadTrackWidth()
+        if (trackW <= 0) {
+            loadProgressFraction = target
+            onEnd?.invoke()
+            return
+        }
+        if (bar.layoutParams.width != trackW) {
+            bar.layoutParams = bar.layoutParams.apply { width = trackW }
+        }
+        bar.pivotX = 0f
+        bar.alpha = 1f
+        // Pin the visible scale to the current fraction so a freshly-shown bar never
+        // flashes at its default full width before the first animation frame lands.
+        bar.scaleX = loadProgressFraction
+        loadProgressAnimator = android.animation.ValueAnimator.ofFloat(loadProgressFraction, target).apply {
+            duration = durationMs
+            interpolator = android.view.animation.DecelerateInterpolator(1.6f)
+            addUpdateListener {
+                loadProgressFraction = it.animatedValue as Float
+                bar.scaleX = loadProgressFraction
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(a: android.animation.Animator) { cancelled = true }
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    if (!cancelled) onEnd?.invoke()
+                }
+            })
+            start()
+        }
+    }
+
+    /**
+     * Between real progress callbacks, creep slowly toward a 0.9 cap so the bar
+     * always looks alive without ever falsely reaching the end. Each leg re-arms
+     * the next, and any real update or reset cancels the chain.
+     */
+    private fun startLoadProgressTrickle() {
+        val cap = 0.9f
+        if (loadProgressFraction >= cap) return
+        val bar = binding.loadProgressBar
+        loadProgressTrickling = true
+        val toward = (loadProgressFraction + 0.06f).coerceAtMost(cap)
+        loadProgressAnimator?.cancel()
+        loadProgressAnimator = android.animation.ValueAnimator.ofFloat(loadProgressFraction, toward).apply {
+            duration = 1600L
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                loadProgressFraction = it.animatedValue as Float
+                bar.scaleX = loadProgressFraction
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(a: android.animation.Animator) { cancelled = true }
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    if (!cancelled && loadProgressTrickling) startLoadProgressTrickle()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun resetLoadProgress() {
+        loadProgressAnimator?.cancel()
+        loadProgressAnimator = null
+        loadProgressTrickling = false
+        loadProgressFraction = 0f
+        val bar = binding.loadProgressBar
+        bar.scaleX = 0f
+        bar.alpha = 1f
+        bar.visibility = View.INVISIBLE
     }
 
     private fun ensureWebHost(): WebViewHost {
@@ -2789,6 +2977,22 @@ class KeenActivity : AppCompatActivity() {
         controller.show(WindowInsetsCompat.Type.systemBars())
     }
 
+    /**
+     * The K mark in the address bar is a deliberate "home" affordance: tear the
+     * live session down and return to the initial black home canvas, mirroring the
+     * RETURN_HOME back action so a cold start also lands on the Continue surface.
+     */
+    private fun returnHomeFromChrome() {
+        if (uiState == AppUiState.HOME) return
+        exitAllHtmlFullscreen()
+        webHost?.flushSession()
+        webHost?.destroy("chrome_logo_home")
+        webHost = null
+        browseEntryUrl = null
+        continuityStore.markAtHome(true)
+        showHome(status = getString(R.string.status_home) + " (logo)")
+    }
+
     private fun showHome(status: String) {
         stopTorrentStreaming()
         uiState = AppUiState.HOME
@@ -3005,54 +3209,58 @@ class KeenActivity : AppCompatActivity() {
      * survives cold starts and offline launches; falls back to the branded
      * placeholder already in the layout when there is nothing to show.
      */
-    private fun loadContinuePoster(posterUrl: String?) {
-        binding.continuePoster.animate().cancel()
-        binding.continuePosterFallback.animate().cancel()
-        binding.continuePoster.alpha = 1f
-        binding.continuePoster.visibility = View.GONE
-        binding.continuePosterFallback.alpha = 0.22f
-        binding.continuePosterFallback.visibility = View.VISIBLE
+    /**
+     * Load a card's artwork into [poster] (with [fallback] shown until it lands).
+     * "frame:" URLs come from the single captured-frame slot; http(s) URLs are
+     * fetched and cached per-URL so each card in the row keeps its own poster.
+     */
+    private fun loadPosterInto(
+        posterUrl: String?,
+        poster: android.widget.ImageView,
+        fallback: android.widget.ImageView,
+    ) {
+        poster.animate().cancel()
+        fallback.animate().cancel()
+        poster.alpha = 1f
+        poster.visibility = View.GONE
+        fallback.alpha = 0.22f
+        fallback.visibility = View.VISIBLE
         if (posterUrl.isNullOrBlank()) return
-        val cacheFile = java.io.File(filesDir, "continue/poster.img")
-        val prefs = getSharedPreferences(POSTER_PREFS, MODE_PRIVATE)
         Thread({
             try {
-                val cached = prefs.getString(POSTER_SRC_KEY, null) == posterUrl && cacheFile.exists()
-                val bitmap = if (cached) {
-                    android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)?.takeUnless {
-                        // A captured frame that read back black or as garbled noise must
-                        // not reach the card — drop it so the branded fallback shows.
-                        posterUrl.startsWith("frame:") && (looksBlack(it) || looksGarbled(it))
-                    } ?: run {
-                        if (posterUrl.startsWith("frame:")) {
-                            cacheFile.delete()
-                            prefs.edit().remove(POSTER_SRC_KEY).apply()
-                        }
+                val bitmap = if (posterUrl.startsWith("frame:")) {
+                    val frame = java.io.File(filesDir, "continue/poster.img")
+                    if (frame.exists()) {
+                        android.graphics.BitmapFactory.decodeFile(frame.absolutePath)
+                            ?.takeUnless { looksBlack(it) || looksGarbled(it) }
+                    } else {
                         null
                     }
-                } else if (posterUrl.startsWith("frame:")) {
-                    // Captured frames exist only in the cache slot — nothing to fetch.
-                    null
+                } else if (posterUrl.startsWith("res:")) {
+                    val id = resources.getIdentifier(posterUrl.removePrefix("res:"), "drawable", packageName)
+                    if (id != 0) android.graphics.BitmapFactory.decodeResource(resources, id) else null
                 } else {
-                    fetchPosterBitmap(posterUrl)?.also { fetched ->
-                        cacheFile.parentFile?.mkdirs()
-                        java.io.FileOutputStream(cacheFile).use { out ->
-                            fetched.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                    val dir = java.io.File(filesDir, "posters").apply { mkdirs() }
+                    val cacheFile = java.io.File(dir, "${posterUrl.hashCode()}.img")
+                    if (cacheFile.exists()) {
+                        android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)
+                    } else {
+                        fetchPosterBitmap(posterUrl)?.also { fetched ->
+                            java.io.FileOutputStream(cacheFile).use { out ->
+                                fetched.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                            }
                         }
-                        prefs.edit().putString(POSTER_SRC_KEY, posterUrl).apply()
                     }
                 }
                 if (bitmap != null) {
                     runOnUiThread {
-                        if (binding.continueGroup.visibility == View.VISIBLE) {
-                            binding.continuePoster.setImageBitmap(bitmap)
-                            binding.continuePoster.alpha = 0f
-                            binding.continuePoster.visibility = View.VISIBLE
-                            binding.continuePoster.animate().alpha(1f).setDuration(260).start()
-                            binding.continuePosterFallback.animate().alpha(0f).setDuration(260)
-                                .withEndAction { binding.continuePosterFallback.visibility = View.GONE }
-                                .start()
-                        }
+                        poster.setImageBitmap(bitmap)
+                        poster.alpha = 0f
+                        poster.visibility = View.VISIBLE
+                        poster.animate().alpha(1f).setDuration(260).start()
+                        fallback.animate().alpha(0f).setDuration(260)
+                            .withEndAction { fallback.visibility = View.GONE }
+                            .start()
                     }
                 }
             } catch (_: Throwable) {
