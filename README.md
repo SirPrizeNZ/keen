@@ -166,21 +166,21 @@ Contributions toward any of these are especially welcome — see [Contributing](
 
 ```mermaid
 flowchart TD
-    R(["📺  Five-button remote"]) --> UI
+    R(["📺 Five-button remote"]) --> UI
 
-    subgraph KEEN["Keen · one Activity, one live WebView"]
+    subgraph KEEN["Keen · one Activity, one WebView"]
         direction TB
-        UI["Control layer<br/>address bar · D-pad focus · pointer fallback<br/>favourites · remote-first home"]
-        WV["System WebView<br/>Chromium-based — already on the TV, updated by Google<br/>no bundled engine · no second browser"]
-        TOR["Torrent process · isolated<br/>libtorrent4j · sequential download<br/>self-deleting cache · foreground service"]
-        EXO["Media3 / ExoPlayer<br/>hardware decoders · auto English subtitles · resume"]
+        UI["Control layer<br/>D-pad focus · address bar<br/>favourites · home screen"]
+        WV["System WebView<br/>Chromium-based · already on TV<br/>maintained by Google"]
+        TOR["Torrent process · isolated<br/>libtorrent4j · sequential<br/>auto-deleting cache"]
+        EXO["Media3 / ExoPlayer<br/>hardware decoders<br/>subtitles · resume"]
 
-        UI -- "open any site" --> WV
-        WV -- "media URL handed off" --> EXO
-        TOR -- "loopback HTTP bridge" --> EXO
+        UI -->|open a site| WV
+        WV -->|media URL| EXO
+        TOR -->|loopback HTTP| EXO
     end
 
-    EXO --> OUT(["🔊  TV hardware decoders"])
+    EXO --> OUT(["🔊 TV hardware decoders"])
 
     classDef edge fill:#0d1117,stroke:#8b949e,color:#c9d1d9;
     classDef control fill:#0f2a1a,stroke:#2ea043,color:#d7ffe0;
