@@ -33,7 +33,7 @@
 </p>
 
 <p align="center">
-  <sub><em>Keen's remote-first home: favourite sites as tiles, and a Continue&nbsp;watching card. Demo content shown — <a href="https://peach.blender.org/">Big Buck Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY&nbsp;3.0</a>.</em></sub>
+  <sub><em>Keen's remote-first home: favourite sites as greyscale tiles, and a scrollable Continue&nbsp;watching row. Demo titles are <a href="https://studio.blender.org/films/">Blender open movies</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY</a>.</em></sub>
 </p>
 
 ---
