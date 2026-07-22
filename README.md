@@ -44,6 +44,18 @@ An **18.4 MiB** Android TV app that turns the WebView already sitting on your bo
 
 ---
 
+## See it in action
+
+<p align="center">
+  <img src="assets/keen-flow.gif" alt="Keen in action — remote navigation across favourites and the Continue watching row, then a magnet streams with a live torrent loader" width="860">
+</p>
+
+<p align="center">
+  <sub><em>Real footage: D-pad through favourites and the scrollable Continue&nbsp;watching row, open a title, and watch the torrent loader connect to peers and buffer live. Demo title <a href="https://peach.blender.org/">Big&nbsp;Buck&nbsp;Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC&nbsp;BY&nbsp;3.0</a>.</em></sub>
+</p>
+
+---
+
 ## Why it exists
 
 Android TV boxes ship with a perfectly capable browser engine — the **Android System WebView**, a Chromium-based component Google maintains and updates at the OS level. Most "TV browser" apps ignore it and bundle their own 100+ MiB copy of Chromium.
