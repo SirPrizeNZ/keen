@@ -86,6 +86,11 @@ class KeenActivity : AppCompatActivity() {
     /** Pending hold-to-seek target while DPAD left/right is held in the torrent player. */
     private var torrentSeekTargetMs: Long = -1L
     private var torrentSeekLastEventMs: Long = 0L
+    /** True while a Keen hold-seek gesture owns left/right (between key-down and key-up).
+     * Once a gesture starts it keeps ownership through release — showController() moves
+     * focus to the scrubber mid-gesture, and re-checking focus would otherwise abandon
+     * the seek (and leave the target-time preview stuck on screen). */
+    private var torrentSeekActive = false
     /** Frame grab for the Continue card: retries while playback hasn't produced a usable frame. */
     private var torrentFrameAttempts = 0
     private val torrentFrameCaptureRunnable = Runnable { captureTorrentFrame("scheduled") }
@@ -1723,6 +1728,7 @@ class KeenActivity : AppCompatActivity() {
     private fun hideNativeTorrentPlayer() {
         binding.root.removeCallbacks(torrentFrameCaptureRunnable)
         saveTorrentResumePoint()
+        torrentSeekActive = false
         torrentSeekTargetMs = -1L
         binding.torrentSeekPreview.visibility = View.GONE
         binding.torrentPlayerView.player = null
@@ -3009,50 +3015,53 @@ class KeenActivity : AppCompatActivity() {
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> false
             else -> return false
         }
+        // Key-up ALWAYS finishes an in-progress gesture: commit the target and clear
+        // the on-screen preview. This must run before any focus check, because
+        // showController() (below) moves focus to the scrubber during the hold — a
+        // focus-gated bail here was what left "7:15 (−0:19)" stuck on screen.
+        if (event.action == KeyEvent.ACTION_UP) {
+            if (!torrentSeekActive) return false
+            torrentSeekActive = false
+            commitTorrentSeek()
+            return true
+        }
         val durationMs = player.duration
         if (durationMs == C.TIME_UNSET || durationMs <= 0) return false
-        val focused = binding.torrentPlayerView.findFocus()
-        // Focus on the scrubber circle itself: hand left/right to Media3 so it
-        // scrubs natively — the thumb walks the timeline live as you press/hold,
-        // a minute per step (see the key increment set in showNativeTorrentPlayer).
-        if (focused is androidx.media3.ui.DefaultTimeBar) return false
-        // Controller up and focus on a button row: left/right must keep navigating
-        // controls (subtitles etc.). Keen's hold-seek owns the keys otherwise.
-        if (binding.torrentPlayerView.isControllerFullyVisible && focused != null) return false
-        when (event.action) {
-            KeyEvent.ACTION_DOWN -> {
-                // Seeking with the controller hidden should still show the real timeline
-                // (scrubber + elapsed/total time), not just our own target-time preview —
-                // this also resets Media3's auto-hide timer so it stays up while scrubbing.
-                binding.torrentPlayerView.showController()
-                val now = event.eventTime
-                if (torrentSeekTargetMs < 0) torrentSeekTargetMs = player.currentPosition
-                val stepMs = if (event.repeatCount == 0) {
-                    TORRENT_SEEK_TAP_MS
-                } else {
-                    // Steady base rate for the first few seconds (fine control), then
-                    // rate (media-seconds per held second) keeps climbing with hold
-                    // time; each repeat advances by rate × time since the last repeat.
-                    val heldSec = (now - event.downTime) / 1000.0
-                    val accelSec = (heldSec - TORRENT_SEEK_ACCEL_DELAY_SEC).coerceAtLeast(0.0)
-                    val rate = (TORRENT_SEEK_RATE_BASE + TORRENT_SEEK_RATE_GROWTH * accelSec)
-                        .coerceAtMost(TORRENT_SEEK_RATE_MAX)
-                    val dtMs = (now - torrentSeekLastEventMs).coerceIn(16L, 250L)
-                    (rate * dtMs).toLong()
-                }
-                torrentSeekLastEventMs = now
-                torrentSeekTargetMs = (torrentSeekTargetMs + if (forward) stepMs else -stepMs)
-                    .coerceIn(0L, durationMs)
-                showTorrentSeekPreview(forward)
-                return true
-            }
-            KeyEvent.ACTION_UP -> {
-                if (torrentSeekTargetMs < 0) return false
-                commitTorrentSeek()
-                return true
-            }
+        if (!torrentSeekActive) {
+            // Start gate — only decided on the first press. Defer to Media3 solely when
+            // the controls are up and a control *button* (not the scrubber) is focused,
+            // so left/right still moves between subtitle/settings buttons. In every other
+            // case (controls hidden, or the scrubber focused) Keen owns the accelerating
+            // hold-seek so hold behaves consistently instead of falling back to a flat
+            // one-minute native step.
+            val focused = binding.torrentPlayerView.findFocus()
+            val onControlButton = focused != null && focused !is androidx.media3.ui.DefaultTimeBar
+            if (binding.torrentPlayerView.isControllerFullyVisible && onControlButton) return false
+            torrentSeekActive = true
+            if (torrentSeekTargetMs < 0) torrentSeekTargetMs = player.currentPosition
         }
-        return false
+        // Seeking should show the real timeline (scrubber + elapsed/total), not just our
+        // target-time preview — and this keeps resetting Media3's auto-hide timer.
+        binding.torrentPlayerView.showController()
+        val now = event.eventTime
+        val stepMs = if (event.repeatCount == 0) {
+            TORRENT_SEEK_TAP_MS
+        } else {
+            // Steady base rate for the first few seconds (fine control), then rate
+            // (media-seconds per held second) keeps climbing with hold time; each repeat
+            // advances by rate × time since the last repeat.
+            val heldSec = (now - event.downTime) / 1000.0
+            val accelSec = (heldSec - TORRENT_SEEK_ACCEL_DELAY_SEC).coerceAtLeast(0.0)
+            val rate = (TORRENT_SEEK_RATE_BASE + TORRENT_SEEK_RATE_GROWTH * accelSec)
+                .coerceAtMost(TORRENT_SEEK_RATE_MAX)
+            val dtMs = (now - torrentSeekLastEventMs).coerceIn(16L, 250L)
+            (rate * dtMs).toLong()
+        }
+        torrentSeekLastEventMs = now
+        torrentSeekTargetMs = (torrentSeekTargetMs + if (forward) stepMs else -stepMs)
+            .coerceIn(0L, durationMs)
+        showTorrentSeekPreview(forward)
+        return true
     }
 
     private fun showTorrentSeekPreview(forward: Boolean) {
@@ -3071,6 +3080,7 @@ class KeenActivity : AppCompatActivity() {
     }
 
     private fun commitTorrentSeek() {
+        torrentSeekActive = false
         binding.torrentSeekPreview.visibility = View.GONE
         val target = torrentSeekTargetMs
         torrentSeekTargetMs = -1L
