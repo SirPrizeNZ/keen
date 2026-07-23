@@ -97,6 +97,15 @@ class KeenActivity : AppCompatActivity() {
     private var loadProgressAnimator: android.animation.ValueAnimator? = null
     private var loadProgressFraction: Float = 0f
     private var loadProgressTrickling: Boolean = false
+    // Failed / stalled main-frame load state. A single navigation owns one of these
+    // outcomes: it finishes cleanly (hide), errors (show reason), or never progresses
+    // (stall timeout → show). onPageFinished fires even on error pages, so a recorded
+    // error must survive the finish that follows it.
+    private var failedLoadUrl: String? = null
+    private var mainFrameLoadErrored: Boolean = false
+    private val stallTimeout = Runnable {
+        if (!mainFrameLoadErrored) showPageError(getString(R.string.error_reason_stalled))
+    }
     private val torrentResumeStore by lazy { com.keenzero.app.torrent.TorrentResumeStore(this) }
     private val favouritesStore by lazy { com.keenzero.app.favourites.FavouritesStore(this) }
     private val torrentReceiver = object : BroadcastReceiver() {
@@ -194,6 +203,7 @@ class KeenActivity : AppCompatActivity() {
         binding.chromeFavButton.setOnClickListener { toggleFavourite() }
         // Tapping the K in the address bar is an explicit, clean return to the home canvas.
         binding.chromeLogo.setOnClickListener { returnHomeFromChrome() }
+        binding.errorRetry.setOnClickListener { retryFailedLoad() }
 
         binding.homeUrlInput.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_GO ||
@@ -2042,8 +2052,6 @@ class KeenActivity : AppCompatActivity() {
             if (speedBps > 0) add(formatSpeed(speedBps))
         }
         binding.torrentLoadingTitle.text = stageText
-        // Stats only; the de-emphasised "Press Back to cancel" hint is its own view
-        // (torrentLoadingCancel) sitting 24dp below for breathing room.
         val detail = extras.joinToString("   ·   ")
         binding.torrentLoadingDetail.text = detail
         binding.torrentLoadingDetail.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
@@ -2056,6 +2064,7 @@ class KeenActivity : AppCompatActivity() {
 
     private fun openUrl(url: String, restore: Boolean = false, stopTorrent: Boolean = true) {
         if (stopTorrent) stopTorrentStreaming()
+        dismissPageError()
         continuityStore.markAtHome(false)
         recordEvent(NavigationEvent(System.currentTimeMillis(), "user_open_url", url = url))
         val host = ensureWebHost()
@@ -2131,6 +2140,23 @@ class KeenActivity : AppCompatActivity() {
         val left = (starLoc[0] - rootLoc[0]).toFloat()
         val top = (starLoc[1] - rootLoc[1]).toFloat()
         return android.graphics.RectF(left, top, left + star.width, top + star.height)
+    }
+
+    /**
+     * K logo's current bounds in the same shell coordinate space as the pointer cursor,
+     * so [RemoteInputRouter] can tell "pointer OK on the logo" (→ home) apart from
+     * "pointer OK anywhere else in the chrome bar" (→ URL keyboard).
+     */
+    private fun keenLogoRectPx(): android.graphics.RectF? {
+        val logo = binding.chromeLogo
+        if (logo.visibility != View.VISIBLE) return null
+        val logoLoc = IntArray(2)
+        logo.getLocationInWindow(logoLoc)
+        val rootLoc = IntArray(2)
+        binding.root.getLocationInWindow(rootLoc)
+        val left = (logoLoc[0] - rootLoc[0]).toFloat()
+        val top = (logoLoc[1] - rootLoc[1]).toFloat()
+        return android.graphics.RectF(left, top, left + logo.width, top + logo.height)
     }
 
     private fun setLoadProgress(percent: Int) {
@@ -2246,6 +2272,153 @@ class KeenActivity : AppCompatActivity() {
         bar.visibility = View.INVISIBLE
     }
 
+    // ---- Failed / stalled page state -------------------------------------------------
+
+    private val pageErrorVisible: Boolean
+        get() = binding.errorShell.visibility == View.VISIBLE
+
+    private val stallTimeoutMs = 20_000L
+
+    /**
+     * Translate the raw main-frame lifecycle events into the three load outcomes.
+     * WebViewClient delivers these on the UI thread, but other event types on this
+     * stream may not, so the view work is marshalled defensively.
+     */
+    private fun driveFailedLoadState(ev: NavigationEvent) {
+        when (ev.type) {
+            "onPageStarted" -> {
+                val url = ev.url
+                if (url.isNullOrBlank() || url == "about:blank") return
+                runOnUiThread {
+                    failedLoadUrl = url
+                    mainFrameLoadErrored = false
+                    dismissPageError()
+                    armStallTimeout()
+                }
+            }
+            "onReceivedError" -> {
+                if (ev.isMainFrame != true) return
+                if (ev.url == "about:blank") return
+                val code = Regex("""code=(-?\d+)""").find(ev.detail.orEmpty())
+                    ?.groupValues?.getOrNull(1)?.toIntOrNull()
+                runOnUiThread {
+                    cancelStallTimeout()
+                    mainFrameLoadErrored = true
+                    ev.url?.let { failedLoadUrl = it }
+                    showPageError(reasonForError(code))
+                }
+            }
+            "onPageFinished" -> {
+                if (ev.url == "about:blank") return
+                runOnUiThread {
+                    cancelStallTimeout()
+                    // onPageFinished also fires for the browser's own error page, so a
+                    // load that already errored must keep its overlay.
+                    if (!mainFrameLoadErrored) dismissPageError()
+                }
+            }
+        }
+    }
+
+    private fun armStallTimeout() {
+        cancelStallTimeout()
+        binding.root.postDelayed(stallTimeout, stallTimeoutMs)
+    }
+
+    private fun cancelStallTimeout() {
+        binding.root.removeCallbacks(stallTimeout)
+    }
+
+    private fun showPageError(reason: String) {
+        // Never take over home or a native/torrent surface.
+        if (uiState == AppUiState.HOME) return
+        if (nativeTorrentPlayerActive || torrentOverlayVisible) return
+        resetLoadProgress()
+        val host = failedLoadUrl?.let { com.keenzero.app.favourites.FavouritesStore.hostOf(it) }
+        binding.errorHost.text = host.orEmpty()
+        binding.errorHost.visibility = if (host.isNullOrBlank()) View.GONE else View.VISIBLE
+        binding.errorReason.text = reason
+        binding.errorShell.animate().cancel()
+        binding.errorShell.alpha = 0f
+        binding.errorShell.visibility = View.VISIBLE
+        binding.errorShell.bringToFront()
+        // Keep Keen's own pointer clickable above the takeover.
+        binding.pointerLayer.bringToFront()
+        binding.errorShell.animate().alpha(1f).setDuration(200).start()
+        binding.errorRetry.requestFocus()
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "page_error_shown",
+                url = failedLoadUrl,
+                detail = reason,
+            ),
+        )
+    }
+
+    /** Fade the overlay out; safe to call when already hidden. */
+    private fun dismissPageError() {
+        cancelStallTimeout()
+        if (binding.errorShell.visibility != View.VISIBLE) return
+        binding.errorShell.animate().cancel()
+        binding.errorShell.animate().alpha(0f).setDuration(150)
+            .withEndAction {
+                binding.errorShell.visibility = View.GONE
+                binding.errorShell.alpha = 1f
+            }
+            .start()
+    }
+
+    private fun retryFailedLoad() {
+        val url = failedLoadUrl ?: currentUrl
+        recordEvent(NavigationEvent(System.currentTimeMillis(), "page_error_retry", url = url))
+        if (url.isNullOrBlank() || url == "about:blank") {
+            returnHomeFromError()
+            return
+        }
+        // Reload through the normal open path so chrome, progress and the checkpoint
+        // all reset exactly as a fresh navigation would.
+        openUrl(url)
+    }
+
+    private fun returnHomeFromError() {
+        dismissPageError()
+        exitAllHtmlFullscreen()
+        webHost?.flushSession()
+        webHost?.destroy("page_error_home")
+        webHost = null
+        browseEntryUrl = null
+        continuityStore.markAtHome(true)
+        showHome(status = getString(R.string.status_home))
+    }
+
+    private fun reasonForError(code: Int?): String {
+        if (!hasActiveNetwork()) return getString(R.string.error_reason_offline)
+        return when (code) {
+            android.webkit.WebViewClient.ERROR_HOST_LOOKUP ->
+                getString(R.string.error_reason_dns)
+            android.webkit.WebViewClient.ERROR_CONNECT,
+            android.webkit.WebViewClient.ERROR_IO,
+            android.webkit.WebViewClient.ERROR_REDIRECT_LOOP,
+            android.webkit.WebViewClient.ERROR_FAILED_SSL_HANDSHAKE ->
+                getString(R.string.error_reason_connect)
+            android.webkit.WebViewClient.ERROR_TIMEOUT ->
+                getString(R.string.error_reason_timeout)
+            else -> getString(R.string.error_reason_generic)
+        }
+    }
+
+    private fun hasActiveNetwork(): Boolean = try {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE)
+            as? android.net.ConnectivityManager
+        val net = cm?.activeNetwork
+        val caps = net?.let { cm.getNetworkCapabilities(it) }
+        caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    } catch (_: Throwable) {
+        // A permissions/OEM failure must never masquerade as "offline".
+        true
+    }
+
     private fun ensureWebHost(): WebViewHost {
         webHost?.let { return it }
         val host = WebViewHost(
@@ -2255,6 +2428,7 @@ class KeenActivity : AppCompatActivity() {
             fullscreenHost = binding.fullscreenContainer,
             onEvent = { ev ->
                 recordEvent(ev)
+                driveFailedLoadState(ev)
                 // Only RESTORE_SETTLED is authoritative (method=seek|natural).
                 // RESTORE_SEEK_APPLIED mid-attempts previously claimed progress with method=unknown.
                 if (ev.type == "RESTORE_SETTLED" && !restoreMetricEmitted && pendingRestore != null) {
@@ -2476,6 +2650,9 @@ class KeenActivity : AppCompatActivity() {
             onProgress = { percent ->
                 runOnUiThread {
                     setLoadProgress(percent)
+                    // Real progress past the fold means the page is not stalled — a
+                    // "not responding" takeover would only cover usable content.
+                    if (percent >= 80) cancelStallTimeout()
                     if (percent >= 100) capturePagePoster()
                 }
             },
@@ -2491,6 +2668,10 @@ class KeenActivity : AppCompatActivity() {
             starButtonRectPx = { favouriteStarRectPx() },
             onFavouriteActivate = {
                 runOnUiThread { toggleFavourite() }
+            },
+            homeButtonRectPx = { keenLogoRectPx() },
+            onHomeActivate = {
+                runOnUiThread { returnHomeFromChrome() }
             },
             onConfirmNavigation = { url, host, reason ->
                 runOnUiThread {
@@ -2646,6 +2827,14 @@ class KeenActivity : AppCompatActivity() {
      * mirrored in [uiState]; peel it whenever leaving fullscreen *or* playback.
      */
     private fun handleBack() {
+        // Failed / stalled page takeover: Back is the advertised way out — return home.
+        if (pageErrorVisible) {
+            recordEvent(
+                NavigationEvent(System.currentTimeMillis(), "page_error_back", url = failedLoadUrl),
+            )
+            returnHomeFromError()
+            return
+        }
         // Native torrent player (including seek re-buffering with the loader up):
         // leaving must stop the session so the cache (video + .torrent) is deleted.
         if (nativeTorrentPlayerActive) {
@@ -2983,6 +3172,7 @@ class KeenActivity : AppCompatActivity() {
 
     private fun showHome(status: String) {
         stopTorrentStreaming()
+        dismissPageError()
         uiState = AppUiState.HOME
         exitImmersive()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

@@ -96,6 +96,27 @@ class ContinuityStore(context: Context) {
         prefs.edit().putString(KEY_RECENTS, arr.toString()).commit()
     }
 
+    /**
+     * Purge any recents / checkpoint slots whose contentId is in [contentIds].
+     * Used to clear seeded demo content (e.g. the "keen-ui-preview" card) without
+     * touching real watch history. @return number of recents removed.
+     */
+    fun removeByContentId(contentIds: Set<String>): Int {
+        if (contentIds.isEmpty()) return 0
+        val recents = loadRecents()
+        val kept = recents.filterNot { it.contentId in contentIds }
+        val editor = prefs.edit()
+        if (kept.size != recents.size) {
+            val arr = JSONArray()
+            kept.take(MAX_RECENTS).forEach { arr.put(it.toJson()) }
+            editor.putString(KEY_RECENTS, arr.toString())
+        }
+        if (loadMedia()?.contentId in contentIds) editor.remove(KEY_MEDIA_CHECKPOINT)
+        if (load()?.contentId in contentIds) editor.remove(KEY_CHECKPOINT)
+        editor.commit()
+        return recents.size - kept.size
+    }
+
     /** Move [cp] to the front of the recents list, de-duped by contentId/url, capped. */
     private fun upsertedRecents(cp: ContinuityCheckpoint): JSONArray {
         val key = cp.contentId ?: cp.url

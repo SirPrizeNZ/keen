@@ -55,6 +55,18 @@ class FavouritesStore(context: Context) {
         return !exists
     }
 
+    /** Drop any favourite whose host is in [hosts]. @return number removed. */
+    fun removeHosts(hosts: Set<String>): Int {
+        if (hosts.isEmpty()) return 0
+        val current = list()
+        val kept = current.filterNot { it.host in hosts }
+        if (kept.size == current.size) return 0
+        val next = JSONArray()
+        kept.forEach { next.put(it.toJson()) }
+        prefs.edit().putString(PREF_ENTRIES, next.toString()).apply()
+        return current.size - kept.size
+    }
+
     private fun Fav.toJson(): JSONObject =
         JSONObject().put("host", host).put("url", url).put("label", label)
 

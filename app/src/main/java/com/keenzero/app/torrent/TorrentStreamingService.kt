@@ -276,11 +276,19 @@ class TorrentStreamingService : Service() {
         // mkv cues that players fetch immediately via a range request.
         val headCount = ((HEAD_BUFFER_BYTES + info.pieceLength() - 1) / info.pieceLength())
             .toInt().coerceIn(1, lastPiece - firstPiece + 1)
-        val bufferPieces = buildList {
-            for (p in firstPiece until firstPiece + headCount) add(p)
-            for (p in maxOf(firstPiece + headCount, lastPiece - TAIL_BUFFER_PIECES + 1)..lastPiece) add(p)
-        }
-        bufferPieces.forEachIndexed { i, piece -> handle.setPieceDeadline(piece, i * 250) }
+        val headPieces = (firstPiece until firstPiece + headCount).toList()
+        val tailPieces =
+            (maxOf(firstPiece + headCount, lastPiece - TAIL_BUFFER_PIECES + 1)..lastPiece).toList()
+        val bufferPieces = headPieces + tailPieces
+        // Head streams in playback order. The tail pieces gate readiness just as hard
+        // (every buffer piece must land before ACTION_READY), so they must NOT be the
+        // least-urgent request — a deprioritised tail straggling in from a slow peer was
+        // the "buffer sits at 99% for a minute" stall: head finished, percent maxed, and
+        // the only thing left was a tail piece nobody had asked for urgently. Give the
+        // tail the same front-of-queue urgency as the first head pieces so it arrives in
+        // parallel and the number never parks just short of done.
+        headPieces.forEachIndexed { i, piece -> handle.setPieceDeadline(piece, i * 250) }
+        tailPieces.forEach { piece -> handle.setPieceDeadline(piece, 250) }
         startBufferLoop(id, server, title, bufferPieces, info.pieceLength())
     }
 
@@ -318,6 +326,10 @@ class TorrentStreamingService : Service() {
         stopProgressLoop()
         val bufferSet = bufferPieces.toHashSet()
         val totalBytes = bufferPieces.size.toLong() * pieceLen
+        // Buffering progress must only ever climb — piece/block counts can momentarily
+        // dip between ticks (a partial piece re-requested, peers churning), and a number
+        // that jumps backwards reads as broken. Latch the high-water mark.
+        var reportedPercent = 0
         progressTask = ticker.scheduleWithFixedDelay({
             try {
                 val handle = mediaHandle
@@ -350,8 +362,10 @@ class TorrentStreamingService : Service() {
                     // Cap below 100 — only the ready gate (all critical pieces present)
                     // may report a finished buffer, so the number never claims 100 while
                     // a required piece is still missing.
-                    val percent = if (totalBytes <= 0) 0
+                    val rawPercent = if (totalBytes <= 0) 0
                     else ((haveBytes * 100) / totalBytes).toInt().coerceIn(0, 99)
+                    val percent = rawPercent.coerceAtLeast(reportedPercent)
+                    reportedPercent = percent
                     val status = handle.status()
                     sendProgress(
                         id,

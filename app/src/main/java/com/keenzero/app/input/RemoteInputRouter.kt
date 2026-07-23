@@ -43,6 +43,12 @@ class RemoteInputRouter(
     private val starButtonRectPx: () -> RectF? = { null },
     /** Pointer OK on (or near) the star: toggle the favourite instead of opening the keyboard. */
     private val onFavouriteActivate: () -> Unit = {},
+    /** Current on-screen bounds of the K logo in the same shell coordinate space as
+     * the star rect, or null when it isn't showing. Same problem as the star: OK on
+     * the logo used to fall through to the URL bar's keyboard. */
+    private val homeButtonRectPx: () -> RectF? = { null },
+    /** Pointer OK on (or near) the K logo: return to the home surface. */
+    private val onHomeActivate: () -> Unit = {},
     /** Record single-use activation before synthetic click / DOM activate. */
     private val onDeliberateActivation: ((fingerprintJson: String?) -> Unit)? = null,
     /** HTML custom-view surface while fullscreen (pointer click/hover target). */
@@ -2008,9 +2014,17 @@ class RemoteInputRouter(
         val chromeH = chromeHeightPx().coerceAtLeast(0)
         val yShell = cursor.cursorY
         if (yShell <= chromeH + 4f && !imeEnter) {
-            // The star sits inside this same chrome band — without this check, OK anywhere
-            // in the band (star included) always opened the URL bar's keyboard and the star
-            // was never reachable at all.
+            // The K logo and star sit inside this same chrome band — without these
+            // checks, OK anywhere in the band always opened the URL bar's keyboard and
+            // neither the logo (home) nor the star was reachable at all.
+            val home = homeButtonRectPx()
+            if (home != null &&
+                cursor.cursorX >= home.left - HOME_HIT_PAD_PX && cursor.cursorX <= home.right + HOME_HIT_PAD_PX &&
+                cursor.cursorY >= home.top - HOME_HIT_PAD_PX && cursor.cursorY <= home.bottom + HOME_HIT_PAD_PX
+            ) {
+                onHomeActivate()
+                return
+            }
             val star = starButtonRectPx()
             if (star != null &&
                 cursor.cursorX >= star.left - STAR_HIT_PAD_PX && cursor.cursorX <= star.right + STAR_HIT_PAD_PX &&
@@ -2702,6 +2716,8 @@ class RemoteInputRouter(
         /** "Hover over the star or next to it, close to it" — the star is a small
          * target, so OK is accepted a little outside its literal bounds too. */
         const val STAR_HIT_PAD_PX = 28f
+        /** Same forgiveness for the small K logo target as the star. */
+        const val HOME_HIT_PAD_PX = 28f
         const val REBUILD_DEBOUNCE_MS = 280L
         const val TRACE_TAG = "KeenInput"
         /** Continuous pointer speed (dp/sec). Tuned for TV D-pad — smooth but not rushed. */

@@ -225,19 +225,88 @@
                 android:gravity="center_horizontal"
                 android:textColor="@color/keen_muted"
                 android:textSize="14sp" />
-
-            <!-- Own view so the cancel hint can sit a clear 24dp below the stats line. -->
-            <TextView
-                android:id="@+id/torrentLoadingCancel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:gravity="center_horizontal"
-                android:text="@string/torrent_cancel_hint"
-                android:textColor="@color/keen_hint"
-                android:textSize="11sp" />
         </LinearLayout>
     </FrameLayout>
+
+    <!-- Failed / stalled page state: branded, remote-friendly, with a focused Retry. -->
+    <LinearLayout
+        android:id="@+id/errorShell"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/keen_bg"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="48dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="60dp"
+            android:layout_height="52dp"
+            android:layout_marginBottom="28dp"
+            android:alpha="0.45"
+            android:contentDescription="@string/app_name"
+            android:scaleType="fitCenter"
+            android:src="@drawable/keen_mark" />
+
+        <TextView
+            android:id="@+id/errorTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-medium"
+            android:text="@string/error_title"
+            android:textColor="@color/keen_text"
+            android:textSize="26sp" />
+
+        <TextView
+            android:id="@+id/errorHost"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textColor="@color/keen_text"
+            android:textSize="16sp"
+            android:alpha="0.85" />
+
+        <TextView
+            android:id="@+id/errorReason"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_horizontal"
+            android:textColor="@color/keen_muted"
+            android:textSize="14sp" />
+
+        <FrameLayout
+            android:id="@+id/errorRetry"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:background="@drawable/focusable_button"
+            android:clickable="true"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:paddingHorizontal="36dp"
+            android:paddingVertical="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/error_retry"
+                android:textColor="@color/keen_text"
+                android:textSize="16sp" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/errorHomeHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/error_back_home"
+            android:textColor="@color/keen_hint"
+            android:textSize="11sp" />
+    </LinearLayout>
 
     <!-- Keen-owned pointer: always a root sibling above browse + HTML fullscreen. -->
     <FrameLayout
@@ -341,7 +410,7 @@
             android:id="@+id/favsGroup"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="20dp"
+            android:layout_marginBottom="28dp"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:orientation="vertical"
@@ -371,11 +440,11 @@
                 android:id="@+id/continueHeading"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fontFamily="sans-serif-black"
+                android:fontFamily="sans-serif-bold"
                 android:letterSpacing="-0.015"
                 android:text="@string/continue_watching"
                 android:textColor="@color/keen_muted"
-                android:textSize="30sp" />
+                android:textSize="26sp" />
 
             <!-- Up to 5 recently played titles, horizontally scrollable. Cards are
                  built in code (buildContinueCard) so the row stays data-driven. -->

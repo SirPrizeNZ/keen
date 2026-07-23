@@ -56,6 +56,11 @@ class WebViewHost(
      * the chrome bar, which otherwise always opens the URL bar's keyboard. */
     private val starButtonRectPx: () -> android.graphics.RectF? = { null },
     private val onFavouriteActivate: () -> Unit = {},
+    /** K logo's current bounds in shell coordinates, or null when it isn't showing —
+     * lets RemoteInputRouter tell "pointer OK on the K logo" apart from the rest of
+     * the chrome bar, which otherwise always opens the URL bar's keyboard. */
+    private val homeButtonRectPx: () -> android.graphics.RectF? = { null },
+    private val onHomeActivate: () -> Unit = {},
     /** High-risk deliberate navigation: show Open host? (never silent drop). */
     private val onConfirmNavigation: ((url: String, host: String, reason: String) -> Unit)? = null,
     /** magnet: link activated in-page → start native torrent streaming. */
@@ -276,6 +281,8 @@ class WebViewHost(
             onUrlBarActivate = onUrlBarActivate,
             starButtonRectPx = starButtonRectPx,
             onFavouriteActivate = onFavouriteActivate,
+            homeButtonRectPx = homeButtonRectPx,
+            onHomeActivate = onHomeActivate,
             onDeliberateActivation = { fingerprintJson ->
                 recordDeliberateActivation(fingerprintJson, firewall)
             },
