@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/SirPrizeNZ/keen/releases/download/v0.1.92/keen-0.1.92-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.92%20%C2%B7%2032--bit-111111?style=for-the-badge" alt="Download Keen v0.1.92 APK"></a>
+  <a href="https://github.com/SirPrizeNZ/keen/releases/download/v0.1.94/keen-0.1.94-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.94%20%C2%B7%2032--bit-111111?style=for-the-badge" alt="Download Keen v0.1.94 APK"></a>
   &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="GitHub Releases"></a>
   &nbsp;
@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/size-18.4_MiB-111111" alt="18.4 MiB">
+  <img src="https://img.shields.io/badge/size-18.2_MiB-111111" alt="18.2 MiB">
   <img src="https://img.shields.io/badge/Android_TV-10%2B_(API_29)-3ddc84" alt="Android TV 10+">
   <img src="https://img.shields.io/badge/ABI-armeabi--v7a-555" alt="armeabi-v7a">
   <img src="https://img.shields.io/badge/engine-System_WebView-orange" alt="System WebView">
@@ -110,13 +110,13 @@ Not one filter. Seven:
 
 | | |
 |:--|:--|
-| **Version** | v0.1.92 (`versionCode` 112) |
+| **Version** | v0.1.94 (`versionCode` 114) |
 | **Platform** | Android TV / Google TV · Android 10+ (API 29+) |
 | **ABI** | **32-bit ARM (`armeabi-v7a`)** |
-| **Size** | 18.4 MiB (signed) |
-| **APK** | **[keen-0.1.92-32bit-armeabi-v7a.apk](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.92/keen-0.1.92-32bit-armeabi-v7a.apk)** |
-| **Checksum** | [`SHA256SUMS`](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.92/SHA256SUMS) |
-| **Release notes** | [Keen v0.1.92](https://github.com/SirPrizeNZ/keen/releases/tag/v0.1.92) |
+| **Size** | 18.2 MiB (signed) |
+| **APK** | **[keen-0.1.94-32bit-armeabi-v7a.apk](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.94/keen-0.1.94-32bit-armeabi-v7a.apk)** |
+| **Checksum** | [`SHA256SUMS`](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.94/SHA256SUMS) |
+| **Release notes** | [Keen v0.1.94](https://github.com/SirPrizeNZ/keen/releases/tag/v0.1.94) |
 
 The published build is the 32-bit ARMv7 APK for classic Android TV hardware. There is no dedicated arm64 package yet.
 
@@ -128,7 +128,7 @@ The published build is the 32-bit ARMv7 APK for classic Android TV hardware. The
 
 ```bash
 adb connect <tv-ip>:<port>
-adb install -r keen-0.1.92-32bit-armeabi-v7a.apk
+adb install -r keen-0.1.94-32bit-armeabi-v7a.apk
 ```
 
 4. Accept the debugging prompt on the TV if it appears.
@@ -138,15 +138,15 @@ adb install -r keen-0.1.92-32bit-armeabi-v7a.apk
 
 ---
 
-## New in v0.1.92
+## New in v0.1.94
 
-- 🏠 **Remote-first home screen** — favourite roundels and a **Continue** card with a live progress strip
-- 💬 **Auto English subtitles** when the media carries them
-- ⏱ **Minute-by-minute scrubbing** on the focused timeline
-- 🔢 **Byte-accurate loading %** with a smooth digit animation
-- 🎯 **Redesigned focus cue** — an eased inward border instead of a scale-up
-- 💾 **Torrent resume** — durable checkpoints survive kills and power cycles
-- 📐 **Overscan-safe** home layout for older panels
+- 🏠 **K logo returns home** — the mark to the left of the address bar jumps straight back to the home surface from any page (it was opening the keyboard)
+- ⏩ **Smoother hold-seek** — holding left/right scrubs slowly at first, then accelerates, and the seek-time readout clears the moment you land
+- 📶 **Honest buffering %** — the number only ever climbs and no longer parks at 99% waiting on a de-prioritised tail piece
+- ✨ **Lighter Continue-watching heading** and a re-centred app logo in the Android TV **Your apps** banner
+- 📡 **Offline vs. site-stall detection** on the "page didn't load" screen
+
+Earlier highlights (v0.1.92): remote-first home with favourites + a Continue card, auto English subtitles, minute-by-minute scrubbing, torrent resume.
 
 ---
 
