@@ -1,5 +1,7 @@
 package com.keenzero.app
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.os.Bundle
 import android.content.Intent
 import android.content.Context
@@ -1962,11 +1964,31 @@ class KeenActivity : AppCompatActivity() {
     // shows a jarring slide like 99 → 65. Reset each time the loader reappears.
     private var lastGiantPercent = -1
 
+    // Subtle brightness breathe on the stage title while loading (opacity only).
+    private var titlePulse: ObjectAnimator? = null
+
+    private fun startTitlePulse() {
+        titlePulse?.cancel()
+        titlePulse = ObjectAnimator.ofFloat(binding.torrentLoadingTitle, View.ALPHA, 1f, 0.68f).apply {
+            duration = 1600
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            start()
+        }
+    }
+
+    private fun stopTitlePulse() {
+        titlePulse?.cancel()
+        titlePulse = null
+        binding.torrentLoadingTitle.alpha = 1f
+    }
+
     private fun showTorrentOverlay() {
         lastGiantPercent = -1
         currentFocus?.let { hideKeyboard(it) }
         binding.torrentLoadingTitle.text = getString(R.string.torrent_loading_title)
-        binding.torrentLoadingDetail.text = getString(R.string.torrent_stage_starting)
+        binding.torrentLoadingStats.visibility = View.GONE
         // No real percent yet on a fresh session — the jumbo watermark only makes sense
         // once there's a real number behind it, so it stays hidden until buffering starts.
         // INVISIBLE, not GONE: keeps it participating in layout so its width/height are
@@ -1993,10 +2015,12 @@ class KeenActivity : AppCompatActivity() {
         // Fresh session: no real percent yet (still fetching/connecting/resolving
         // metadata), so the ring loops indeterminately until buffering starts.
         binding.torrentLoadingSpinner.startIndeterminate()
+        startTitlePulse()
         ensurePointerAboveContent()
     }
 
     private fun hideTorrentOverlay() {
+        stopTitlePulse()
         binding.torrentLoadingOverlay.animate().cancel()
         binding.torrentLoadingOverlay.animate()
             .alpha(0f)
@@ -2049,23 +2073,29 @@ class KeenActivity : AppCompatActivity() {
         } else {
             binding.torrentLoadingSpinner.startIndeterminate()
         }
-        val extras = buildList {
-            if (seeds >= 0 && peers >= 0) {
-                add(getString(R.string.torrent_seeds_leechers, seeds, (peers - seeds).coerceAtLeast(0)))
-            } else if (peers >= 0) {
-                add(getString(R.string.torrent_peers, peers))
-            }
-            if (speedBps > 0) add(formatSpeed(speedBps))
-        }
         binding.torrentLoadingTitle.text = stageText
-        val detail = extras.joinToString("   ·   ")
-        binding.torrentLoadingDetail.text = detail
-        binding.torrentLoadingDetail.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
+
+        // Peer stat lock-up: only shown once we have a real seeder/leecher breakdown,
+        // then it fades in and stays. Speed is always in MB/s to match the fixed label.
+        if (seeds >= 0 && peers >= 0) {
+            binding.statSeeders.text = seeds.toString()
+            binding.statLeechers.text = (peers - seeds).coerceAtLeast(0).toString()
+            binding.statSpeed.text = if (speedBps > 0) formatMbps(speedBps) else "0"
+            if (binding.torrentLoadingStats.visibility != View.VISIBLE) {
+                binding.torrentLoadingStats.visibility = View.VISIBLE
+                binding.torrentLoadingStats.alpha = 0f
+                binding.torrentLoadingStats.animate().alpha(1f).setDuration(320).start()
+            }
+        } else {
+            binding.torrentLoadingStats.visibility = View.GONE
+        }
     }
 
-    private fun formatSpeed(bps: Long): String = when {
-        bps >= 1_048_576 -> String.format(java.util.Locale.US, "%.1f MB/s", bps / 1_048_576.0)
-        else -> String.format(java.util.Locale.US, "%d KB/s", bps / 1024)
+    /** Speed as a bare MB/s number for the stat lock-up (label supplies the unit). */
+    private fun formatMbps(bps: Long): String {
+        val mbps = bps / 1_048_576.0
+        return if (mbps >= 10) String.format(java.util.Locale.US, "%.0f", mbps)
+        else String.format(java.util.Locale.US, "%.1f", mbps)
     }
 
     private fun openUrl(url: String, restore: Boolean = false, stopTorrent: Boolean = true) {

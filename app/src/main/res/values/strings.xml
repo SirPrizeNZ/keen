@@ -34,6 +34,9 @@
     <string name="torrent_percent_giant">%1$02d</string>
     <string name="torrent_peers">%1$d peers</string>
     <string name="torrent_seeds_leechers">%1$d seeders  ·  %2$d leechers</string>
+    <string name="torrent_stat_seeders">SEEDERS</string>
+    <string name="torrent_stat_leechers">LEECHERS</string>
+    <string name="torrent_stat_speed">MB/s</string>
     <string name="torrent_playback_error">Playback failed — the stream stopped or this file cannot be played</string>
     <string name="error_title">Can’t load this page</string>
     <string name="error_retry">Retry</string>
