@@ -99,6 +99,9 @@ class KeenActivity : AppCompatActivity() {
     /** og:image / poster of the current page — attached to media checkpoints. */
     private var currentPagePosterUrl: String? = null
     private var posterProbeUrl: String? = null
+
+    /** Page the poster was scraped from; without it a title inherited the previous one's art. */
+    private var currentPagePosterForUrl: String? = null
     // Load bar is driven as a continuous 0..1 fraction and rendered via scaleX so
     // real progress jumps ease in instead of snapping to new rectangle widths.
     private var loadProgressAnimator: android.animation.ValueAnimator? = null
@@ -321,6 +324,8 @@ class KeenActivity : AppCompatActivity() {
      */
     private fun hydrateContinuitySurface() {
         latestCheckpoint = continuityStore.load()
+        // Recents are capped at 5; whatever fell off the end takes its artwork with it.
+        pruneOrphanPosters()
         val cp = continuityStore.loadMedia()?.takeIf { !it.url.isNullOrBlank() }
 
         val favs = favouritesStore.list()
@@ -1768,11 +1773,49 @@ class KeenActivity : AppCompatActivity() {
         continuityStore.save(checkpoint, force = true)
     }
 
-    /** "frame:<info-hash>" when the poster cache currently holds this torrent's captured frame. */
+    /** "frame:<info-hash>" when this title's own captured frame exists on disk. */
     private fun capturedFrameKey(): String? {
         val frameKey = torrentOriginKey?.let { "frame:$it" } ?: return null
-        val stored = getSharedPreferences(POSTER_PREFS, MODE_PRIVATE).getString(POSTER_SRC_KEY, null)
-        return frameKey.takeIf { it == stored }
+        // Was gated on a single global "last captured" pref, which is only meaningful
+        // when there is one shared slot. Ask for THIS title's file instead.
+        return frameKey.takeIf { java.io.File(filesDir, "continue/" + frameFileName(it)).exists() }
+    }
+
+    /** Cache file for a "frame:<key>" poster. Hashed so any key yields a safe filename. */
+    private fun frameFileName(posterKey: String): String =
+        "frame_" + posterKey.removePrefix("frame:").hashCode().toUInt().toString(16) + ".img"
+
+    /**
+     * Drop cached artwork no longer referenced by the (max 5) Continue entries.
+     *
+     * Eviction previously left images behind forever; now that each title owns a file,
+     * that would grow without bound. Reconciling against the live set also cleans up the
+     * legacy shared slot and any orphans, rather than trying to hook every eviction path.
+     */
+    private fun pruneOrphanPosters() {
+        Thread({
+            try {
+                val live = (
+                    continuityStore.loadRecents() +
+                        listOfNotNull(continuityStore.load(), continuityStore.loadMedia())
+                    ).mapNotNull { it.posterUrl }.toSet()
+                val keepFrames = live.filter { it.startsWith("frame:") }
+                    .map { frameFileName(it) }.toHashSet()
+                java.io.File(filesDir, "continue").listFiles()?.forEach { f ->
+                    // Legacy single slot: delete it too, so stale duplicates cannot resurface.
+                    if (f.name == "poster.img" || (f.name.startsWith("frame_") && f.name !in keepFrames)) {
+                        f.delete()
+                    }
+                }
+                val keepPosters = live
+                    .filterNot { it.startsWith("frame:") || it.startsWith("res:") }
+                    .map { "${it.hashCode()}.img" }.toHashSet()
+                java.io.File(filesDir, "posters").listFiles()?.forEach { f ->
+                    if (f.name !in keepPosters) f.delete()
+                }
+            } catch (_: Throwable) {
+            }
+        }, "poster-prune").start()
     }
 
     /**
@@ -1890,13 +1933,16 @@ class KeenActivity : AppCompatActivity() {
             try {
                 val dir = java.io.File(filesDir, "continue")
                 dir.mkdirs()
+                val frameKey = "frame:$originKey"
+                // One file PER TITLE. This used to be a single shared "poster.img" slot,
+                // so every torrent card in the row rendered whichever frame was captured
+                // last — which is why most Continue cards showed the same screenshot.
                 val tmp = java.io.File(dir, "poster.tmp")
-                val dst = java.io.File(dir, "poster.img")
+                val dst = java.io.File(dir, frameFileName(frameKey))
                 java.io.FileOutputStream(tmp).use { out ->
                     bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
                 }
                 tmp.renameTo(dst)
-                val frameKey = "frame:$originKey"
                 getSharedPreferences(POSTER_PREFS, MODE_PRIVATE)
                     .edit()
                     .putString(POSTER_SRC_KEY, frameKey)
@@ -1943,6 +1989,18 @@ class KeenActivity : AppCompatActivity() {
             ),
         )
         stopTorrentStreaming()
+        // Force both surfaces down. `nativeTorrentPlayerActive` / `torrentOverlayVisible`
+        // are derived from these views' visibility, and handleBack() returns early on
+        // either — so if one survived teardown, EVERY later Back press re-entered this
+        // branch and did nothing visible. Back appeared permanently dead after playing a
+        // torrent. Hiding them here makes that state unreachable.
+        binding.torrentPlayerContainer.visibility = View.GONE
+        binding.torrentLoadingOverlay.visibility = View.GONE
+        android.util.Log.i(
+            "KeenBack",
+            "torrent_player_exit reason=$reason playerVis=${binding.torrentPlayerContainer.visibility} " +
+                "overlayVis=${binding.torrentLoadingOverlay.visibility}",
+        )
         if (webHost?.isCreated == true && currentUrl != null && currentUrl != "about:blank") {
             uiState = AppUiState.BROWSING
             webHost?.webView?.requestFocus()
@@ -2722,9 +2780,14 @@ class KeenActivity : AppCompatActivity() {
             },
             onCheckpoint = { rawCp ->
                 // Attach the playing page's artwork for the Continue card.
-                val cp = if (rawCp.posterUrl.isNullOrBlank() && !currentPagePosterUrl.isNullOrBlank()) {
+                val cp = if (rawCp.posterUrl.isNullOrBlank() &&
+                    !currentPagePosterUrl.isNullOrBlank() &&
+                    samePageKey(currentPagePosterForUrl, rawCp.url ?: currentUrl)
+                ) {
                     rawCp.copy(posterUrl = currentPagePosterUrl)
                 } else {
+                    // No artwork of its own: leave it blank so the card falls back to the
+                    // placeholder. A wrong image is worse than no image.
                     rawCp
                 }
                 latestCheckpoint = cp
@@ -2862,6 +2925,36 @@ class KeenActivity : AppCompatActivity() {
      * Document fullscreen (PlaybackOrchestrator OPTIONAL_FULLSCREEN_JS) is not always
      * mirrored in [uiState]; peel it whenever leaving fullscreen *or* playback.
      */
+    /**
+     * Idempotent "put the browsing UI back". Each exit path used to restore a different
+     * subset, so whether the URL bar returned depended on which layer was active.
+     */
+    private fun restoreBrowsingChrome(reason: String) {
+        exitImmersive()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        binding.fullscreenContainer.visibility = View.GONE
+        binding.browseShell.visibility = View.VISIBLE
+        binding.browserContainer.visibility = View.VISIBLE
+        binding.chromeBar.visibility = View.VISIBLE
+        uiState = AppUiState.BROWSING
+        webHost?.setMediaPointerLock(false)
+        webHost?.webView?.requestFocus()
+        // NEVER bringToFront() the chrome bar: it is a child of the vertical LinearLayout
+        // `browseColumn`, and bringToFront re-adds the view at the END of its parent's
+        // child list — in a LinearLayout that means it is laid out LAST, i.e. moved to the
+        // BOTTOM of the screen. It also desynced pointer hit-testing, because
+        // chromeHeightPx() still reported a top chrome inset, so taps on the site's own
+        // top buttons opened the URL keyboard instead. Only pointerLayer/homeShell may use
+        // bringToFront — those are children of the root FrameLayout, where it is z-order only.
+        ensurePointerAboveContent()
+        android.util.Log.i(
+            "KeenBack",
+            "restore_chrome reason=$reason chromeVis=${binding.chromeBar.visibility} " +
+                "fsHost=${binding.fullscreenContainer.visibility} " +
+                "playbackMode=${webHost?.isPlaybackMode} customView=${webHost?.chromeClient?.isFullscreen}",
+        )
+    }
+
     private fun handleBack() {
         // Failed / stalled page takeover: Back is the advertised way out — return home.
         if (pageErrorVisible) {
@@ -2881,6 +2974,10 @@ class KeenActivity : AppCompatActivity() {
         if (torrentOverlayVisible) {
             recordEvent(NavigationEvent(System.currentTimeMillis(), "torrent_cancel", url = currentUrl))
             stopTorrentStreaming()
+            // Same self-heal as the player exit: if the overlay survived teardown this
+            // branch would swallow every future Back press.
+            binding.torrentLoadingOverlay.visibility = View.GONE
+            android.util.Log.i("KeenBack", "torrent_cancel overlayVis=${binding.torrentLoadingOverlay.visibility}")
             if (webHost?.isCreated != true || currentUrl == null || currentUrl == "about:blank") {
                 continuityStore.markAtHome(true)
                 showHome(status = getString(R.string.status_home))
@@ -2909,36 +3006,33 @@ class KeenActivity : AppCompatActivity() {
             atBrowseEntry = atEntry,
             urlBarFocused = binding.browseUrlEdit.hasFocus(),
         )
+        android.util.Log.i(
+            "KeenBack",
+            "decide action=$action surface=$surface customView=$customViewFs " +
+                "playbackMode=${webHost?.isPlaybackMode} canGoBack=${webHost?.canGoBack()} " +
+                "atEntry=$atEntry chromeVis=${binding.chromeBar.visibility}",
+        )
         when (action) {
-            com.keenzero.app.navigation.BrowsingBackPolicy.Action.EXIT_FULLSCREEN -> {
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.EXIT_FULLSCREEN,
+            com.keenzero.app.navigation.BrowsingBackPolicy.Action.EXIT_PLAYBACK_MODE,
+            -> {
+                // One press = "get me out of the video", always. Peel every layer that
+                // could be up (custom view, document fullscreen, the CSS fill chain, then
+                // playback mode) and restore the browsing surface once, at the end.
+                // Splitting these produced the "back does nothing / URL bar gone" state.
                 exitAllHtmlFullscreen()
-                uiState = if (webHost?.isPlaybackMode == true) {
-                    AppUiState.PLAYBACK_MODE
-                } else {
-                    AppUiState.BROWSING
-                }
-                binding.browseShell.visibility = View.VISIBLE
-                binding.chromeBar.visibility = View.VISIBLE
-                if (webHost?.isPlaybackMode != true) {
-                    webHost?.setMediaPointerLock(false)
-                }
-                webHost?.webView?.requestFocus()
-                recordEvent(
-                    NavigationEvent(System.currentTimeMillis(), "exit_fullscreen", url = currentUrl),
-                )
-            }
-            com.keenzero.app.navigation.BrowsingBackPolicy.Action.EXIT_PLAYBACK_MODE -> {
-                // Must peel HTML fullscreen first or video stays stuck full-bleed.
-                exitAllHtmlFullscreen()
+                // Unconditional: it no-ops if mode is already down, but always arms the
+                // suppression that stops the playback poller re-entering behind us.
                 webHost?.exitPlaybackMode("back")
                 applyKeenPlaybackMode(false)
-                webHost?.setMediaPointerLock(false)
-                uiState = AppUiState.BROWSING
-                binding.browseShell.visibility = View.VISIBLE
-                binding.chromeBar.visibility = View.VISIBLE
-                webHost?.webView?.requestFocus()
+                restoreBrowsingChrome("back:$action")
                 recordEvent(
-                    NavigationEvent(System.currentTimeMillis(), "exit_playback_mode", url = currentUrl),
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "exit_playback_surface",
+                        url = currentUrl,
+                        detail = action.name,
+                    ),
                 )
             }
             com.keenzero.app.navigation.BrowsingBackPolicy.Action.CLEAR_URL_FOCUS -> {
@@ -2985,6 +3079,12 @@ class KeenActivity : AppCompatActivity() {
     private fun exitAllHtmlFullscreen() {
         webHost?.chromeClient?.exitFullscreenIfNeeded()
         webHost?.webView?.evaluateJavascript(EXIT_DOCUMENT_FULLSCREEN_JS, null)
+        // Embed players that could not get real fullscreen were expanded with CSS
+        // across the iframe chain — collapse that too or the page stays covered.
+        webHost?.webView?.evaluateJavascript(
+            com.keenzero.app.web.FramePlayerJs.EXIT_FILL_JS,
+            null,
+        )
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -3447,7 +3547,10 @@ class KeenActivity : AppCompatActivity() {
         Thread({
             try {
                 val bitmap = if (posterUrl.startsWith("frame:")) {
-                    val frame = java.io.File(filesDir, "continue/poster.img")
+                    // Per-title file. No fallback to the old shared slot on purpose: a
+                    // missing frame shows the branded placeholder, and a placeholder is
+                    // better than another card's screenshot.
+                    val frame = java.io.File(filesDir, "continue/" + frameFileName(posterUrl))
                     if (frame.exists()) {
                         android.graphics.BitmapFactory.decodeFile(frame.absolutePath)
                             ?.takeUnless { looksBlack(it) || looksGarbled(it) }
@@ -3517,6 +3620,16 @@ class KeenActivity : AppCompatActivity() {
      * Grab the page's og:image / video poster once per URL — attached to media
      * checkpoints so the Continue card has artwork.
      */
+    /**
+     * Same content page, ignoring query/fragment — SPA routes and tracking params must not
+     * count as a different page, but a different title must never match.
+     */
+    private fun samePageKey(a: String?, b: String?): Boolean {
+        if (a.isNullOrBlank() || b.isNullOrBlank()) return false
+        fun key(u: String): String = u.substringBefore('#').substringBefore('?').trimEnd('/')
+        return key(a) == key(b)
+    }
+
     private fun capturePagePoster() {
         val wv = webHost?.webView ?: return
         val pageUrl = currentUrl ?: return
@@ -3529,6 +3642,7 @@ class KeenActivity : AppCompatActivity() {
             }
             // The playing page's own artwork (or none) — never a stale carry-over.
             currentPagePosterUrl = value
+            currentPagePosterForUrl = pageUrl
         }
     }
 

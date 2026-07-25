@@ -76,14 +76,25 @@ class ContinuityStore(context: Context) {
     fun loadMedia(): ContinuityCheckpoint? =
         ContinuityCheckpoint.fromJson(prefs.getString(KEY_MEDIA_CHECKPOINT, null))
 
-    /** Up to [MAX_RECENTS] recently played titles, most-recent first. */
+    /** Up to [MAX_RECENTS] recently played titles, most-recent first, de-duped. */
     fun loadRecents(): List<ContinuityCheckpoint> {
         val raw = prefs.getString(KEY_RECENTS, null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
-            (0 until arr.length()).mapNotNull { i ->
-                arr.optJSONObject(i)?.let { ContinuityCheckpoint.fromJson(it.toString()) }
+            // Collapse duplicate cards for the same title. Historically a magnet and a
+            // slightly different magnet for the same movie (different tracker/&dn= params
+            // but the same info-hash) produced two Continue cards; dedupe on the stable
+            // key and keep the first (most-recent) occurrence.
+            val out = ArrayList<ContinuityCheckpoint>(arr.length())
+            val seen = HashSet<String>()
+            for (i in 0 until arr.length()) {
+                val cp = arr.optJSONObject(i)?.let { ContinuityCheckpoint.fromJson(it.toString()) } ?: continue
+                if (seen.add(recentsKeyOf(cp))) out.add(cp)
             }
+            // Only the write paths used to cap, so a list persisted by an older build kept
+            // rendering in full. Cap on read too, and order by recency explicitly rather
+            // than trusting stored insertion order — "latest MAX_RECENTS, never more".
+            out.sortedByDescending { it.timestampMs }.take(MAX_RECENTS)
         } catch (_: Exception) {
             emptyList()
         }
@@ -117,14 +128,27 @@ class ContinuityStore(context: Context) {
         return recents.size - kept.size
     }
 
-    /** Move [cp] to the front of the recents list, de-duped by contentId/url, capped. */
+    /** Move [cp] to the front of the recents list, de-duped by stable key, capped. */
     private fun upsertedRecents(cp: ContinuityCheckpoint): JSONArray {
-        val key = cp.contentId ?: cp.url
-        val kept = loadRecents().filterNot { (it.contentId ?: it.url) == key }
+        val key = recentsKeyOf(cp)
+        val kept = loadRecents().filterNot { recentsKeyOf(it) == key }
         val arr = JSONArray()
         arr.put(cp.toJson())
         kept.take(MAX_RECENTS - 1).forEach { arr.put(it.toJson()) }
         return arr
+    }
+
+    /**
+     * Stable identity for de-duping the Continue watching row. Prefers an explicit
+     * contentId; for magnets, keys on the info-hash so the same movie added from two
+     * different magnet links (differing tracker/&dn= params) collapses to one card;
+     * otherwise falls back to the raw url.
+     */
+    private fun recentsKeyOf(cp: ContinuityCheckpoint): String {
+        cp.contentId?.let { return it }
+        val url = cp.url ?: return ""
+        val ih = MAGNET_INFO_HASH.find(url)?.groupValues?.get(1)?.lowercase()
+        return ih ?: url
     }
 
     /**
@@ -170,5 +194,7 @@ class ContinuityStore(context: Context) {
         private const val KEY_AT_HOME = "at_home"
         private const val MIN_INTERVAL_MS = 1_200L
         private const val MIN_POS_DELTA_SEC = 0.75
+        private val MAGNET_INFO_HASH =
+            Regex("""xt=urn:bt[im]h:([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
     }
 }
