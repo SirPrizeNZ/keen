@@ -67,6 +67,9 @@ object BlockingRuntime {
         }
     }
 
+    /** Authoritative host check for the new-window / popup policy (shares core-hosts.txt). */
+    fun isHostBlocked(host: String?): Boolean = blocker.get().blocksHost(host)
+
     /** Update top-level host for third-party classification (page start / commit). */
     fun setPageUrl(url: String?) {
         pageHost.set(url?.let { RequestBlocker.hostOf(it) })
@@ -102,9 +105,24 @@ object BlockingRuntime {
 
         if (!result.blocks) {
             allowed.incrementAndGet()
+            // Targeted diagnostic: an ad creative that renders is always a DOCUMENT that
+            // got through. Logging just those (not every segment/script) keeps the ad
+            // defence auditable on-device without flooding logcat during playback.
+            if (url != null && !request.isForMainFrame && host != null && isAdCandidate(host)) {
+                android.util.Log.i(
+                    "KZ_NETDIAG",
+                    "blk=false 3p host=$host url=${url.take(130)}",
+                )
+            }
             return null
         }
         blocked.incrementAndGet()
+        if (url != null) {
+            android.util.Log.i(
+                "KZ_NETDIAG",
+                "blk=true r=${result.name} host=$host url=${url.take(140)}",
+            )
+        }
         if (url != null) onBlocked(url, result.name)
         // Fresh InputStream each time (required); body array is shared empty.
         return WebResourceResponse(
@@ -146,6 +164,17 @@ object BlockingRuntime {
         val visibility: String,
     )
 
+    /**
+     * Diagnostic filter: third-party hosts that got through and are NOT part of the known
+     * playback chain. Whatever renders an ad creative must appear here, and the stream
+     * (segments, manifests, player CDN) is excluded so playback does not flood logcat.
+     */
+    private fun isAdCandidate(host: String): Boolean {
+        val page = pageHost.get()
+        if (page != null && RequestBlocker.sameRegistrable(page, host)) return false
+        return KNOWN_PLAYBACK_HOSTS.none { host.contains(it) }
+    }
+
     private fun recordLatency(nanos: Long) {
         matchNanosSum.addAndGet(nanos)
         matchCount.incrementAndGet()
@@ -180,4 +209,10 @@ object BlockingRuntime {
         )
         serviceWorkerInstalled.set(true)
     }
+
+    /** Playback chain — excluded from the ad-candidate diagnostic, never from blocking. */
+    private val KNOWN_PLAYBACK_HOSTS = arrayOf(
+        "cloudflarestorage", "phantemlis", "romponalis", "xameleon", "jsdelivr",
+        "challenges.cloudflare", "chatango", "gstatic", "googleapis",
+    )
 }

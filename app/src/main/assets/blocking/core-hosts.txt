@@ -3557,3 +3557,68 @@
 .umommy.cyou
 .layla.wtf
 .mysellauth.com
+
+# --- project: sports-streaming ad / popunder / malvertising networks ---
+# Observed serving banner + adult (sexual/"sexting") pop ads across the dlhd.st /
+# thedaddy embed chain (watch.php -> stream-*.php -> daddy2.php -> player). Confirmed
+# not part of playback: the real stream (phantemlis.top / xameleon), the embed host
+# (romponalis.st) and the Clappr CDN (jsdelivr.net) are intentionally NOT listed.
+.adsboosters.xyz
+.cleverwebserver.com
+.kefiricoxalate.com
+.tabretwicht.com
+.cobnutscopsole.com
+.effectivecpmnetwork.com
+.eveningreverencesports.com
+.waust.at
+.histats.com
+# jerkmate / adult-cam creatives + the networks that serve them (rendered INSIDE the
+# cross-origin player iframe, so only network blocking reaches them — the DOM overlay
+# guard cannot cross that origin boundary).
+.jerkmate.com
+.jerkmate.tv
+.jmate.co
+.crakrevenue.com
+.exdynsrv.com
+# Real on-device ad chain (captured via KZ_NETDIAG on the Mi TV, 2026-07-25): the device
+# gets a different payload than a spoofed curl — geo/UA/cookie-targeted. This chain renders
+# the "jerkmate" / "Anna sent you N photos" creatives, hosted partly on reputable infra
+# (CrakRevenue CDN, Cloudflare R2) that generic lists miss. Kill the loaders + creatives.
+.xadsmart.com
+.adexchangerapid.com
+.usrpubtrk.com
+.crcdn.org
+.rocketstreams4k.com
+# NOTE: an earlier build blocked a *.r2.cloudflarestorage.com bucket believing it was the
+# ad video — it is actually the HLS video SEGMENTS (served as IMG_*.png). Blocking it stalls
+# playback, so it must NOT be listed. cloudflarestorage is in SAFE_LABELS to stay unblocked.
+# DGA overlay hosts captured on-device serving the "sent you a video / undress me" dating-cam
+# bubble (image + CSS + geo + heartbeat). These rotate per-load, so the durable defence is the
+# looksRandomAdDomain() heuristic in RequestBlocker; these are same-session insurance.
+.vqjxckklhqfjv.website
+.gjuiepjg.com
+.rdipmrbwgvk.com
+.bvtpk.com
+.ueuee.com
+.ntwkbc21.com
+.ntwkbc42.com
+.usrpubtrk.com
+.kdjoidndjhzaf.site
+.mmirvipxdumpx.online
+.fafeyrfqyxwivk.com
+.dqmgvcgaghhww.online
+.jfoctkgkapnhm.com
+.czoquowdqbtjr.online
+.al5sm.com
+.jnbhi.com
+# Malvertising loader captured on-device 2026-07-25 (v0.1.108, KZ_NETDIAG "blk=false 3p"):
+# randomized path segments + impersonated library names on one CloudFront distribution
+# (/AEGdm/yframework7.min.js, /VqG/mframework7.min.js). Real Framework7 ships from
+# cdnjs/jsdelivr and never randomizes its path — this is the loader that injects the
+# fake-chat "(2) Missed Messages / Voice message" creative over the player.
+.d11enq2rymy0yl.cloudfront.net
+# Captured on-device 2026-07-25 (v0.1.110): served the fake-chat creative jpg over the
+# player, with cbpage=dlhd.st / cbdescription="Watch beIN Sports..." in base64 query
+# params. Escaped looksRandomAdDomain() (13 letters, 23% vowels, consonant run only 4) —
+# the ABUSED_TLDS rule now catches this family generically; this entry is belt-and-braces.
+.cbarackvuvdfv.online
