@@ -128,6 +128,9 @@ class TorrentStreamingService : Service() {
         val root = File(cacheDir, "torrent/$id")
         check(root.mkdirs() || root.isDirectory) { "Cannot create torrent cache" }
         sessionDir = root
+        // Claim ownership process-wide BEFORE any data lands here, so a teardown still
+        // running for the previous magnet cannot delete this session's directory.
+        ACTIVE_SESSION_DIR.set(root)
         return root
     }
 
@@ -442,18 +445,37 @@ class TorrentStreamingService : Service() {
     }
 
     @Synchronized
-    private fun cleanup() {
+    /**
+     * Tear down this session without destroying one that replaced it. Stop+start in quick
+     * succession used to delete the whole torrent root from onDestroy while the new session
+     * was building, leaving it with nowhere to write and stuck at ~1 peer. Ownership is
+     * process-wide (both instances share this process) and teardown/startup are serialised.
+     */
+    private fun cleanup() = synchronized(LIFECYCLE_LOCK) {
         stopProgressLoop()
         mediaHandle = null
         bridge?.stop()
         bridge = null
         manager?.stop()
         manager = null
-        // Delete the whole torrent root, not just this session — reclaims space
-        // left behind by process kills mid-stream.
+        // Release ownership only if this session still holds it. If a newer session has
+        // claimed it, the CAS fails and `keep` below protects that newer directory.
+        ACTIVE_SESSION_DIR.compareAndSet(sessionDir, null)
+        val keep = ACTIVE_SESSION_DIR.get()
         val torrentRoot = File(cacheDir, "torrent")
-        if (torrentRoot.exists() && !torrentRoot.deleteRecursively()) {
-            Log.w(TAG, "Could not completely delete torrent cache: ${torrentRoot.absolutePath}")
+        if (torrentRoot.exists()) {
+            if (keep == null) {
+                // Nothing newer is running: reclaim everything, including anything left
+                // behind by a process kill mid-stream.
+                if (!torrentRoot.deleteRecursively()) {
+                    Log.w(TAG, "Could not completely delete torrent cache: ${torrentRoot.absolutePath}")
+                }
+            } else {
+                torrentRoot.listFiles()?.forEach { child ->
+                    if (child.absolutePath != keep.absolutePath) child.deleteRecursively()
+                }
+                Log.i(TAG, "cleanup: kept active session ${keep.name}, purged stale sessions")
+            }
         }
         sessionDir = null
         requestId = null
@@ -525,6 +547,16 @@ class TorrentStreamingService : Service() {
         val VIDEO_EXTENSIONS = setOf(
             "mp4", "mkv", "webm", "m4v", "mov", "avi", "ts", "m2ts", "mpg", "mpeg", "3gp",
         )
+
+        /**
+         * Session directory currently owned by a live/starting stream, shared across every
+         * service instance in this process. A teardown must never delete this one — that
+         * is what broke back-to-back magnets.
+         */
+        private val ACTIVE_SESSION_DIR = java.util.concurrent.atomic.AtomicReference<File?>(null)
+
+        /** Serialises teardown against startup so they cannot interleave. */
+        private val LIFECYCLE_LOCK = Any()
 
         private const val TAG = "KeenTorrent"
         private const val CHANNEL_ID = "keen_torrent_streaming"
