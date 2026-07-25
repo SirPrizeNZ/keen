@@ -13,7 +13,7 @@ package com.keenzero.app.input
 object ScrollAuthorityJs {
     val INSTALL_JS: String = """
 (function(){
-  if(window.__keenProviderFrame) return;
+  ${com.keenzero.app.web.ChallengeFrameGuard.PREFIX}
   if(window.__keenScrollAuth && window.__keenScrollAuth.v>=5) return window.__keenScrollAuth;
   // No window.scrollTo / scrollIntoView patches. No rAF watchdog.
   window.__keenScrollAuth={

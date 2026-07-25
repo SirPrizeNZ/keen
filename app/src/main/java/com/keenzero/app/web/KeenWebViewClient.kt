@@ -25,6 +25,8 @@ class KeenWebViewClient(
     private val onPageFinishedExtra: ((WebView, String?) -> Unit)? = null,
     /** magnet: navigation → native torrent streaming (never a blocked scheme drop). */
     private val onMagnet: ((String) -> Unit)? = null,
+    /** Watches for a Cloudflare verification loop so Keen can offer compatibility mode. */
+    private val challengeDetector: com.keenzero.app.compat.ChallengeLoopDetector? = null,
 ) : WebViewClient() {
 
     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -67,6 +69,9 @@ class KeenWebViewClient(
 
     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
         val safeRequest = request ?: return null
+        // Bisect: no classification, no synthetic 204s — the network path a stock
+        // WebView would take. Ad blocking is off for every site while this is on.
+        if (com.keenzero.app.diagnostics.ExperimentFlags.isOn(com.keenzero.app.diagnostics.ExperimentFlags.NO_BLOCKING)) return null
         assetLoader.intercept(safeRequest)?.let { return it }
         return BlockingRuntime.intercept(safeRequest) { url, reason ->
             onEvent(
@@ -82,6 +87,7 @@ class KeenWebViewClient(
     }
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+        challengeDetector?.onMainFrameCommitted(url)
         firewall.recordCommittedUrl(url)
         BlockingRuntime.setPageUrl(url)
         // New document commit invalidates prior single-use activation.
@@ -97,6 +103,7 @@ class KeenWebViewClient(
     }
 
     override fun onPageFinished(view: WebView?, url: String?) {
+        challengeDetector?.onContentLoaded(url)
         onUrlChanged(url)
         // Persist cookies as soon as a page settles. Cloudflare's clearance cookie is
         // useless if it only ever lives in memory, and flush ran on destroy only.
@@ -109,11 +116,20 @@ class KeenWebViewClient(
                     ?.mapNotNull { it.substringBefore('=').trim().takeIf(String::isNotEmpty) }
                     .orEmpty()
                 cm.flush()
+                val pkg = try {
+                    androidx.webkit.WebViewCompat.getCurrentWebViewPackage(view!!.context)
+                } catch (_: Throwable) {
+                    null
+                }
+                val challenge = url.contains("/cdn-cgi/challenge-platform/") ||
+                    url.contains("challenges.cloudflare.com")
                 android.util.Log.i(
                     "KeenCookie",
                     "host=${android.net.Uri.parse(url).host} cookies=${names.size} " +
                         "cf_clearance=${names.contains("cf_clearance")} " +
-                        "cfuvid=${names.contains("_cfuvid")}",
+                        "cfuvid=${names.contains("_cfuvid")} " +
+                        "challengeUrl=$challenge " +
+                        "wv=${pkg?.packageName}/${pkg?.versionName}",
                 )
             } catch (_: Throwable) {
             }
@@ -186,6 +202,13 @@ class KeenWebViewClient(
         errorResponse: WebResourceResponse?,
     ) {
         if (request?.isForMainFrame == true) {
+            // The only place Cloudflare's own headers are visible, so authenticity is
+            // decided here rather than from page wording.
+            challengeDetector?.onMainFrameHttpError(
+                request.url?.toString(),
+                errorResponse?.statusCode ?: 0,
+                errorResponse?.responseHeaders,
+            )
             onEvent(
                 NavigationEvent(
                     t = System.currentTimeMillis(),

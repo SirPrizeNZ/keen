@@ -61,4 +61,5 @@ object HardenedWebSettings {
 
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
     }
+
 }

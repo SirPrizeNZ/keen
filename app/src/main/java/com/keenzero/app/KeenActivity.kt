@@ -66,6 +66,24 @@ class KeenActivity : AppCompatActivity() {
     private var uiState: AppUiState = AppUiState.HOME
     private var webHost: WebViewHost? = null
 
+    /**
+     * Isolated stock WebView for approved compatibility origins (see
+     * [com.keenzero.app.compat.CompatibilityOrigins]). Never coexists with [webHost]:
+     * entering compatibility mode destroys the normal host, leaving it rebuilds one with
+     * every protection back in force, so no protection state can leak between the two.
+     */
+    private var compatSession: com.keenzero.app.compat.CompatibilitySession? = null
+
+    /** Origins the user has agreed to open in compatibility mode. */
+    private val compatOriginStore by lazy {
+        com.keenzero.app.compat.CompatibilityOriginStore(this).also {
+            com.keenzero.app.compat.CompatibilityOrigins.store = it
+        }
+    }
+
+    /** Guards against switching the same host twice in one session. */
+    private val compatSwitchedHosts = mutableSetOf<String>()
+
     private val events = ArrayDeque<NavigationEvent>(MAX_EVENTS)
     private val rendererTerminations = mutableListOf<JSONObject>()
     private var currentUrl: String? = null
@@ -288,6 +306,7 @@ class KeenActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        compatSession?.onPause()
         webHost?.onBackground {
             latestCheckpoint?.let { continuityStore.save(it, force = true) }
             continuityStore.flush()
@@ -312,6 +331,7 @@ class KeenActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        compatSession?.onResume()
         // Recover pointer frame-loop / scroll after screensaver or ~1min idle.
         webHost?.onForeground()
     }
@@ -1575,7 +1595,16 @@ class KeenActivity : AppCompatActivity() {
         // Entry from home / URL bar has no page under the overlay — bring up the
         // browse shell on a blank page. Entry from a site keeps the page visible
         // beneath the loading overlay so cancel returns exactly where the user was.
-        if (webHost?.isCreated != true || binding.browseShell.visibility != View.VISIBLE) {
+        // A compatibility-mode page counts as a page underneath. `webHost` is null while
+        // compat mode is active (the normal host is destroyed on entry), so testing it
+        // alone read "launched from home", built a blank normal WebView over the top and
+        // loaded about:blank — that blank page was the black screen the user landed on
+        // after backing out of a magnet opened from a compatibility-mode page.
+        val compatPageUp = compatSession?.isActive == true &&
+            binding.browseShell.visibility == View.VISIBLE
+        if (!compatPageUp &&
+            (webHost?.isCreated != true || binding.browseShell.visibility != View.VISIBLE)
+        ) {
             currentUrl = originLabel
             lastChromeUrl = originLabel
             binding.homeShell.visibility = View.GONE
@@ -2001,9 +2030,22 @@ class KeenActivity : AppCompatActivity() {
             "torrent_player_exit reason=$reason playerVis=${binding.torrentPlayerContainer.visibility} " +
                 "overlayVis=${binding.torrentLoadingOverlay.visibility}",
         )
-        if (webHost?.isCreated == true && currentUrl != null && currentUrl != "about:blank") {
+        // A magnet can be launched from either WebView. In compatibility mode `webHost`
+        // is deliberately null (the normal host is destroyed on entry), so testing it
+        // alone sent every compat-launched torrent home on exit instead of back to the
+        // page it came from.
+        val compatActive = compatSession?.isActive == true
+        val pageAvailable = compatActive || webHost?.isCreated == true
+        if (pageAvailable && currentUrl != null && currentUrl != "about:blank") {
             uiState = AppUiState.BROWSING
-            webHost?.webView?.requestFocus()
+            binding.browseShell.visibility = View.VISIBLE
+            binding.browserContainer.visibility = View.VISIBLE
+            binding.chromeBar.visibility = View.VISIBLE
+            if (compatActive) {
+                binding.pointerLayer.visibility = View.VISIBLE
+            } else {
+                webHost?.webView?.requestFocus()
+            }
         } else {
             // Backing out of a home-launched playback is a deliberate return to
             // the Continue surface — a cold start should land here too.
@@ -2161,6 +2203,13 @@ class KeenActivity : AppCompatActivity() {
         dismissPageError()
         continuityStore.markAtHome(false)
         recordEvent(NavigationEvent(System.currentTimeMillis(), "user_open_url", url = url))
+        // Approved compatibility origins get their own stock WebView; everything else —
+        // dlhd.st included — takes the normal fully protected path below.
+        if (com.keenzero.app.compat.CompatibilityOrigins.isApproved(url)) {
+            openUrlInCompatibility(url)
+            return
+        }
+        exitCompatibilityMode()
         val host = ensureWebHost()
         webViewEverCreated = true
         // Session root: Back should not return to FMHY chooser until we leave this site stack.
@@ -2185,6 +2234,109 @@ class KeenActivity : AppCompatActivity() {
         hideKeyboard(binding.browseUrlEdit)
         binding.browseUrlEdit.clearFocus()
         host.load(url)
+    }
+
+    /**
+     * Enter (or continue) compatibility mode for an approved origin.
+     *
+     * The normal WebView is destroyed rather than reconfigured: reusing it would mean
+     * toggling protections off and hoping to restore them later, which is exactly the
+     * failure mode this architecture exists to avoid.
+     */
+    /**
+     * A Cloudflare verification loop was detected in normal mode: switch this origin to
+     * the isolated compatibility WebView and reload, without asking.
+     *
+     * Being stuck on a spinner is not a state a user can act on usefully, so the browser
+     * resolves it itself. The safeguards are structural rather than a prompt:
+     *  - only genuine Cloudflare responses count (cf-ray / server headers, never wording),
+     *    so a hostile page cannot fake its way out of Keen's blocking;
+     *  - [CompatibilityOriginStore.PINNED_NORMAL] origins can never be switched;
+     *  - the decision expires, so a site that stops needing it gets protections back;
+     *  - a non-blocking notice says what happened, and it is revocable.
+     */
+    private fun switchToCompatibilityMode(host: String, url: String, reason: String) {
+        if (isFinishing) return
+        if (com.keenzero.app.diagnostics.ExperimentFlags.isOn(
+                com.keenzero.app.diagnostics.ExperimentFlags.NO_COMPAT,
+            )
+        ) {
+            // Kill switch is on (A/B testing): never auto-switch, or the detector would
+            // fire repeatedly against a route that refuses to change.
+            android.util.Log.i("KZ_CHALLENGE", "auto-switch suppressed by keen_no_compat")
+            return
+        }
+        if (!compatSwitchedHosts.add(host)) return
+        compatOriginStore.allow(host)
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "COMPAT_AUTO_SWITCH",
+                url = url,
+                detail = "host=$host reason=$reason",
+            ),
+        )
+        android.util.Log.i("KZ_CHALLENGE", "auto-switching $host to compatibility mode ($reason)")
+        openUrl(url)
+    }
+
+    private fun openUrlInCompatibility(url: String) {
+        webViewEverCreated = true
+        browseEntryUrl = url
+        currentUrl = url
+        webHost?.let { host ->
+            host.destroy("compat_enter")
+            webHost = null
+        }
+        binding.homeShell.visibility = View.GONE
+        binding.browseShell.visibility = View.VISIBLE
+        binding.browserContainer.visibility = View.VISIBLE
+        binding.chromeBar.visibility = View.VISIBLE
+        binding.pointerLayer.visibility = View.VISIBLE
+        lastChromeUrl = url
+        refreshBrowseChrome()
+        setLoadProgress(0)
+        uiState = AppUiState.BROWSING
+        persistBrowsingCheckpoint(url, force = true)
+        hideKeyboard(binding.browseUrlEdit)
+        binding.browseUrlEdit.clearFocus()
+
+        val existing = compatSession
+        if (existing != null && existing.isActive) {
+            existing.load(url)
+            return
+        }
+        val session = com.keenzero.app.compat.CompatibilitySession(
+            context = this,
+            container = binding.browserContainer,
+            cursorHost = binding.pointerLayer,
+            onLeaveOrigin = { target -> openUrl(target) },
+            onBack = {
+                handleBack()
+                true
+            },
+            onMagnet = { magnet -> runOnUiThread { startTorrentStreaming(magnet) } },
+            homeButtonRect = { keenLogoRectPx() },
+            onHomeActivate = { runOnUiThread { returnHomeFromChrome() } },
+            starButtonRect = { favouriteStarRectPx() },
+            onFavouriteActivate = { runOnUiThread { toggleFavourite() } },
+        )
+        compatSession = session
+        session.start(url)
+    }
+
+    /** Tear down compatibility mode, if any. Safe to call when it was never entered. */
+    private fun exitCompatibilityMode() {
+        compatSession?.destroy()
+        compatSession = null
+    }
+
+    /**
+     * Site-scoped verification reset for the current compatibility origin. Clears only
+     * that origin's Cloudflare cookies and storage — never dlhd.st, never all Keen data.
+     */
+    private fun resetVerificationForCurrentSite() {
+        compatSession?.resetVerification(currentUrl)
     }
 
     private fun refreshBrowseChrome() {
@@ -2515,6 +2667,9 @@ class KeenActivity : AppCompatActivity() {
 
     private fun ensureWebHost(): WebViewHost {
         webHost?.let { return it }
+        // Init the store before any navigation so a previously accepted origin routes
+        // to compatibility mode on the very first load, not the second.
+        compatOriginStore
         val host = WebViewHost(
             context = this,
             container = binding.browserContainer,
@@ -2843,6 +2998,10 @@ class KeenActivity : AppCompatActivity() {
                 }
             },
         )
+        host.onChallengeLoop = { h, u, reason ->
+            runOnUiThread { switchToCompatibilityMode(h, u, reason) }
+        }
+        android.util.Log.i("KZ_CHALLENGE", "loop callback attached to new WebViewHost")
         webHost = host
         return host
     }
@@ -2984,6 +3143,23 @@ class KeenActivity : AppCompatActivity() {
             }
             return
         }
+        // Compatibility mode owns Back only once the overlay surfaces above have had
+        // their turn. Placing this first meant a magnet opened from a compatibility page
+        // could never be exited: Back walked the hidden WebView's history (or dropped to
+        // home) instead of closing the player and returning to the page it was launched
+        // from.
+        compatSession?.let { session ->
+            if (session.isActive) {
+                if (session.canGoBack()) {
+                    session.goBack()
+                } else {
+                    exitCompatibilityMode()
+                    continuityStore.markAtHome(true)
+                    showHome(status = getString(R.string.status_home))
+                }
+                return
+            }
+        }
         val surface = when (uiState) {
             AppUiState.HOME -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.HOME
             AppUiState.BROWSING -> com.keenzero.app.navigation.BrowsingBackPolicy.Surface.BROWSING
@@ -3120,6 +3296,15 @@ class KeenActivity : AppCompatActivity() {
                 return true
             }
             return super.dispatchKeyEvent(event)
+        }
+        // Compatibility mode: native D-pad controller owns the remote. It never
+        // consumes Back, so Keen/Android back handling stays intact.
+        compatSession?.let { session ->
+            if (uiState != AppUiState.HOME && session.isActive &&
+                event.keyCode != KeyEvent.KEYCODE_BACK && session.handleKey(event)
+            ) {
+                return true
+            }
         }
         if ((uiState == AppUiState.BROWSING || uiState == AppUiState.WEB_FULLSCREEN ||
                 uiState == AppUiState.PLAYBACK_MODE || uiState == AppUiState.RESTORING) &&
@@ -3322,10 +3507,33 @@ class KeenActivity : AppCompatActivity() {
         binding.chromeBar.visibility = View.GONE
         binding.homeShell.visibility = View.VISIBLE
         binding.homeUrlInput.setText("")
+        // Home is a focus surface, not a pointer one. A compatibility session left alive
+        // here keeps its native cursor on screen and swallows D-pad keys before the home
+        // rows ever see them, so it must go the moment we land here — every route home
+        // funnels through this method.
+        exitCompatibilityMode()
+        binding.pointerLayer.visibility = View.GONE
         hydrateContinuitySurface()
+        focusHomeDefault()
         recordEvent(
             NavigationEvent(System.currentTimeMillis(), "home_shown", detail = status),
         )
+    }
+
+    /**
+     * Where the remote starts on the home surface: first favourite, else the first
+     * Continue-watching card, else the URL field. Posted because the rows are populated
+     * by [hydrateContinuitySurface] in the same pass and are not laid out yet.
+     */
+    private fun focusHomeDefault() {
+        binding.homeShell.post {
+            val target = binding.favsRow.takeIf { it.childCount > 0 && it.isShown }?.getChildAt(0)
+                ?: binding.continueRow.takeIf { it.childCount > 0 && it.isShown }?.getChildAt(0)
+                ?: binding.homeUrlInput
+            target.isFocusable = true
+            target.isFocusableInTouchMode = true
+            target.requestFocus()
+        }
     }
 
     private fun exportEvidence() {
@@ -3456,6 +3664,7 @@ class KeenActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         latestCheckpoint?.let { continuityStore.save(it, force = true) }
+        exitCompatibilityMode()
         webHost?.flushSession()
         webHost?.destroy("activity_destroy")
         webHost = null

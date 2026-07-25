@@ -12,7 +12,7 @@ object HostileOverlayGuard {
     val DOCUMENT_START_JS: String = """
 (function(){
   // Never run inside a challenge provider's own frame (see WebViewHost bundle prelude).
-  if(window.__keenProviderFrame) return;
+  ${com.keenzero.app.web.ChallengeFrameGuard.PREFIX}
   /**
    * Hostile interstitial guard v7
    * Goal: kill robot/QR gates and dating/for-you/CONTINUE ad cards.

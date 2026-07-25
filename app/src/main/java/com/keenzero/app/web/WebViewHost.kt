@@ -82,6 +82,23 @@ class WebViewHost(
     private val popupQuarantine = PopupQuarantine()
     private var hostileSweepGeneration: Int = 0
     private val hostileHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * Raised when a Cloudflare verification loop is detected in normal mode. The host
+     * only reports it; the decision to switch belongs to the activity (and the user).
+     */
+    var onChallengeLoop: ((host: String, url: String, reason: String) -> Unit)? = null
+
+    private val challengeDetector by lazy {
+        com.keenzero.app.compat.ChallengeLoopDetector { host, url, reason ->
+            val cb = onChallengeLoop
+            android.util.Log.i(
+                "KZ_CHALLENGE",
+                "dispatch host=$host reason=$reason callbackAttached=${cb != null}",
+            )
+            cb?.invoke(host, url, reason)
+        }
+    }
     private val lifecycleHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** Last observed restore settlement path: "seek" | "natural" | null. */
@@ -348,7 +365,12 @@ class WebViewHost(
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(wv, true)
         }
-        BlockingRuntime.ensureServiceWorkerInterception()
+        com.keenzero.app.diagnostics.ExperimentFlags.logProfile("webview_create")
+        if (com.keenzero.app.diagnostics.ExperimentFlags.isOn(com.keenzero.app.diagnostics.ExperimentFlags.NO_SW_INTERCEPT)) {
+            android.util.Log.i(com.keenzero.app.diagnostics.ExperimentFlags.TAG, "service_worker_interception SKIPPED")
+        } else {
+            BlockingRuntime.ensureServiceWorkerInterception()
+        }
 
         // Share the one authoritative host blocklist with the popup policy — no second list.
         val windowBroker = WindowRequestBroker(
@@ -492,7 +514,20 @@ class WebViewHost(
             onProgress = onProgress,
         )
         chromeClient = chrome
-        wv.webChromeClient = chrome
+        wv.webChromeClient = if (com.keenzero.app.diagnostics.ExperimentFlags.isOn(com.keenzero.app.diagnostics.ExperimentFlags.NO_POPUP_BROKER)) {
+            android.util.Log.i(com.keenzero.app.diagnostics.ExperimentFlags.TAG, "popup_broker DISABLED (plain WebChromeClient)")
+            android.webkit.WebChromeClient()
+        } else {
+            chrome
+        }
+        // A challenge that never yields content is stuck even without a reload, so poll
+        // for the stalled case alongside the reload-driven one.
+        hostileHandler.post(object : Runnable {
+            override fun run() {
+                challengeDetector.checkStall()
+                hostileHandler.postDelayed(this, 500L)
+            }
+        })
         wv.webViewClient = KeenWebViewClient(
             assetLoader = assetLoader,
             firewall = firewall,
@@ -523,6 +558,7 @@ class WebViewHost(
                 inputRouter.markIndexDirty("page_finished")
                 inputRouter.requestRebuild(view, force = true)
             },
+            challengeDetector = challengeDetector,
         )
         wv.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
             if (isTorrentDownload(url, contentDisposition, mimetype)) {
@@ -750,8 +786,34 @@ class WebViewHost(
         }
     }
 
-    fun handleRemoteKey(event: KeyEvent): Boolean =
-        webView?.let { inputRouter?.handle(it, event) } == true
+    fun handleRemoteKey(event: KeyEvent): Boolean {
+        val wv = webView ?: return false
+        // Bisect: drive the remote with native MotionEvents instead of the router's
+        // injected JS (InteractionIndex / ActivateHitTest), keeping every other Keen
+        // surface intact. Isolates "our D-pad is page-visible" from the rest.
+        if (com.keenzero.app.diagnostics.ExperimentFlags.isOn(com.keenzero.app.diagnostics.ExperimentFlags.NO_ROUTER_JS)) {
+            return nativeRemote(wv)?.handleKey(event) == true
+        }
+        return inputRouter?.handle(wv, event) == true
+    }
+
+    private var nativeRemoteController: com.keenzero.app.compat.CompatibilityRemoteController? = null
+
+    private fun nativeRemote(wv: WebView): com.keenzero.app.compat.CompatibilityRemoteController? {
+        nativeRemoteController?.let { return it }
+        val overlay = cursorOverlay ?: return null
+        // Named arguments: this class gained trailing parameters (home button rect and
+        // action), so a positional trailing lambda silently binds to the wrong one.
+        val c = com.keenzero.app.compat.CompatibilityRemoteController(
+            webView = wv,
+            cursor = overlay,
+            onBack = { false },
+        )
+        c.attach()
+        nativeRemoteController = c
+        android.util.Log.i(com.keenzero.app.diagnostics.ExperimentFlags.TAG, "dpad NATIVE (router JS disabled)")
+        return c
+    }
 
     /**
      * Debug/lab only: deterministic vertical-slice Play without D-pad flakiness.
@@ -1336,24 +1398,13 @@ class WebViewHost(
             // and scroll-home / abort content navigation (cineby-class). Ads get a dead stub;
             // same-origin / content paths navigate same-tab. HostileOverlayGuard overwrites with
             // the full policy; this early patch is the fail-safe if that install is skipped.
-            // Mark challenge-provider frames. setOf("*") injects into every frame, including
-            // Cloudflare's own challenge widget; running our observers and listeners inside
-            // the verification document is why it never passed. Leave that frame untouched.
+            // setOf("*") injects into every frame, including Cloudflare's own challenge
+            // widget; running our observers and listeners inside the verification document
+            // is why it never passed. ChallengeFrameGuard.PREFIX leaves that frame with
+            // zero property writes and zero console output — see that file for why the
+            // previous window.__keenProviderFrame marker was itself the footprint.
             """(function(){
-              try{
-                var h=(location.hostname||'').toLowerCase();
-                var p=(location.pathname||'');
-                window.__keenProviderFrame =
-                  /(^|\.)challenges\.cloudflare\.com${'$'}|(^|\.)hcaptcha\.com${'$'}|(^|\.)recaptcha\.net${'$'}|(^|\.)arkoselabs\.com${'$'}|(^|\.)funcaptcha\.com${'$'}|(^|\.)captcha-delivery\.com${'$'}/.test(h) ||
-                  (/(^|\.)google\.com${'$'}/.test(h) && p.indexOf('/recaptcha/')===0) ||
-                  p.indexOf('/cdn-cgi/challenge-platform/')===0;
-                if(window.__keenProviderFrame){
-                  try{ console.warn('KZ_FRAME_SKIP:challenge_provider:'+h); }catch(e){}
-                }
-              }catch(e){ window.__keenProviderFrame=false; }
-            })();
-            (function(){
-              if(window.__keenProviderFrame) return;
+              ${ChallengeFrameGuard.PREFIX}
               function keenEarlyStub(){
                 var w={closed:false,opener:null,name:''};
                 w.close=function(){ w.closed=true; };

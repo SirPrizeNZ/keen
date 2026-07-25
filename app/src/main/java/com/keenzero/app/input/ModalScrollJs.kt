@@ -12,7 +12,7 @@ object ModalScrollJs {
     /** Full controller install (idempotent). */
     val INSTALL_JS: String = """
 (function(){
-  if(window.__keenProviderFrame) return;
+  ${com.keenzero.app.web.ChallengeFrameGuard.PREFIX}
   // v10: slightly looser room gates for long result sheets; still rejects chrome/junk.
   if(window.__keenModalScroll && window.__keenModalScroll.__v>=10) return;
   var C={

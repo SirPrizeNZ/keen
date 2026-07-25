@@ -35,7 +35,7 @@ object FramePlayerJs {
     val INSTALL_JS: String = """
 (function(){
   // Never run inside a challenge provider's own frame (see WebViewHost bundle prelude).
-  if(window.__keenProviderFrame) return;
+  ${com.keenzero.app.web.ChallengeFrameGuard.PREFIX}
   if(window.__keenFramePlayerV1) return;
   window.__keenFramePlayerV1=1;
 
