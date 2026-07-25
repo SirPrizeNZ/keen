@@ -16,6 +16,10 @@ import java.net.URI
 class WindowRequestBroker(
     private val quarantine: PopupQuarantine = PopupQuarantine(),
     private val clock: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+    /** Authoritative ad/track host blocklist (core-hosts.txt). Popups to a blocked host
+     *  are killed regardless of user gesture / Play grant — streaming pages fire the ad
+     *  window.open on the same tap that starts playback. */
+    private val isHostBlocked: (String?) -> Boolean = { false },
 ) {
     enum class Action {
         OPEN_CURRENT_SESSION,
@@ -53,6 +57,11 @@ class WindowRequestBroker(
         }
 
         val host = hostOf(targetUrl)
+        // Authoritative blocklist wins over any gesture/grant: a play tap that also fires
+        // a window.open to a known ad host must never open that window in-session.
+        if (isHostBlocked(host)) {
+            return Decision(Action.BLOCK, "ad_host_blocklist", consumeGrant = liveGrant != null, destinationHost = host)
+        }
         val v = quarantine.decide(
             targetUrl = targetUrl,
             requestingOrigin = pageOrigin,
@@ -90,16 +99,16 @@ class WindowRequestBroker(
             if (!href.isNullOrBlank() && sameHostFamily(href, targetUrl)) {
                 return Decision(Action.OPEN_CURRENT_SESSION, "grant_host_family", consumeGrant = true, destinationHost = host)
             }
-            if (liveGrant.type == ActivationLedger.Type.PLAY || playIntentActive) {
-                // Deliberate Play already cleared ad/scheme checks — open player path in-session.
-                return Decision(Action.OPEN_CURRENT_SESSION, "grant_play", consumeGrant = true, destinationHost = host)
-            }
             // Junk ad/redirect farms never get a confirm dialog — silent block.
             if (host != null && quarantine.looksDisposableAdHost(host)) {
                 return Decision(Action.BLOCK, "ad_host_heuristic", consumeGrant = true, destinationHost = host)
             }
-            // Deliberate activation, high-risk mismatch — native confirm required.
-            return Decision(Action.REQUIRE_CONFIRMATION, "deliberate_uncertain", consumeGrant = true, destinationHost = host)
+            // A deliberate grant does NOT open arbitrary cross-origin windows. The legit
+            // stream resolves via iframe/HLS or a same-family/media-CDN hop (handled above);
+            // a window.open to an unrelated cross-origin host on the play/theatre tap is an ad
+            // hijacking the click. Fail closed — silent block, never a confirm dialog (those
+            // interrupt playback and confuse users). Same-origin already returned OPEN above.
+            return Decision(Action.BLOCK, "deliberate_cross_origin_popup", consumeGrant = true, destinationHost = host)
         }
 
         // Platform gesture WITHOUT a Keen deliberate grant:

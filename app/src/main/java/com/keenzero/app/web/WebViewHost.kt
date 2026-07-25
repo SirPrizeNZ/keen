@@ -350,7 +350,11 @@ class WebViewHost(
         }
         BlockingRuntime.ensureServiceWorkerInterception()
 
-        val windowBroker = WindowRequestBroker(popupQuarantine)
+        // Share the one authoritative host blocklist with the popup policy — no second list.
+        val windowBroker = WindowRequestBroker(
+            popupQuarantine,
+            isHostBlocked = { BlockingRuntime.isHostBlocked(it) },
+        )
         val chrome = KeenWebChromeClient(
             fullscreenHost = fullscreenHost,
             onFullscreen = onFullscreen,
@@ -386,6 +390,13 @@ class WebViewHost(
                             detail = msg.take(300),
                         ),
                     )
+                }
+                // Embed players live in cross-origin iframes, so the pointer activation
+                // never resolves to a Play-like control and no PlayIntent is emitted.
+                // The in-frame agent reports "media playing right after a real tap" —
+                // that is the same proof of intent, so honour it as a Play press.
+                if (msg.contains(FramePlayerJs.GESTURE_PLAY_NEEDLE)) {
+                    adoptFramePlayback(firewall, playback)
                 }
                 if (msg.contains("KZ_AUDIBLE_PLAYBACK")) {
                     onEvent(
@@ -627,6 +638,42 @@ class WebViewHost(
         )
     }
 
+    /**
+     * Media started inside a player frame within the tap window. There is no DOM Play
+     * control we can fingerprint (it is behind a cross-origin boundary), so synthesise
+     * the PlayIntent from the in-frame evidence: same journey, audio focus, immersive
+     * mode and checkpointing as a first-party Play.
+     */
+    private fun adoptFramePlayback(
+        firewall: NavigationFirewall,
+        playback: PlaybackOrchestrator,
+    ) {
+        if (playback.isPlaybackMode) return
+        val url = webView?.url
+        val intent = PlayIntent(
+            id = UUID.randomUUID().toString(),
+            origin = url?.let { originOf(it) },
+            url = url,
+            focusedFingerprint = null,
+            role = "frame-media",
+            visibleText = "embedded player",
+            expectedHref = null,
+            geometry = null,
+            contentId = null,
+            timestampElapsedMs = SystemClock.elapsedRealtime(),
+        )
+        onEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "FRAME_PLAY_ADOPTED",
+                url = url,
+                detail = "id=${intent.id}",
+            ),
+        )
+        firewall.recordPlayIntent(intent)
+        playback.onPlayIntent(intent)
+    }
+
     private fun emitPlayIntent(
         fingerprintJson: String?,
         firewall: NavigationFirewall,
@@ -671,6 +718,9 @@ class WebViewHost(
             "window.__keenNativeIntent=Date.now();window.__keenPlayIntentId='${intent.id}';",
             null,
         )
+        // Tell every subframe a deliberate Play happened so the in-frame agent unmutes
+        // even when the tap landed on a native (non-JS) control.
+        webView?.evaluateJavascript(FramePlayerJs.BROADCAST_INTENT_JS, null)
         playback.onPlayIntent(intent)
     }
 
@@ -1259,6 +1309,26 @@ class WebViewHost(
 
     private fun installDocumentStartProtection(webView: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        // DIAGNOSTIC toggle: `adb shell touch /data/local/tmp/keen_no_inject` then restart
+        // to run with ZERO injected JS. Bisects "our scripts trip bot detection" against
+        // "the site rejects this client regardless".
+        if (java.io.File("/data/local/tmp/keen_no_inject").exists()) {
+            android.util.Log.i("KeenZero", "document_start_injection_DISABLED (diagnostic toggle)")
+            return
+        }
+        // Per-script bisect toggles: `adb shell touch /data/local/tmp/keen_no_guard`
+        // (also keen_no_player, keen_no_scroll), then restart. Lets one script at a time
+        // be removed to identify which top-frame injection a bot challenge reacts to,
+        // instead of the all-or-nothing keen_no_inject switch.
+        val noGuard = java.io.File("/data/local/tmp/keen_no_guard").exists()
+        val noPlayer = java.io.File("/data/local/tmp/keen_no_player").exists()
+        val noScroll = java.io.File("/data/local/tmp/keen_no_scroll").exists()
+        if (noGuard || noPlayer || noScroll) {
+            android.util.Log.i(
+                "KeenZero",
+                "inject_profile guard=${!noGuard} player=${!noPlayer} scroll=${!noScroll}",
+            )
+        }
         // window.open quarantine + hostile QR/interstitial guard (coreflix-class popups).
         WebViewCompat.addDocumentStartJavaScript(
             webView,
@@ -1266,7 +1336,24 @@ class WebViewHost(
             // and scroll-home / abort content navigation (cineby-class). Ads get a dead stub;
             // same-origin / content paths navigate same-tab. HostileOverlayGuard overwrites with
             // the full policy; this early patch is the fail-safe if that install is skipped.
+            // Mark challenge-provider frames. setOf("*") injects into every frame, including
+            // Cloudflare's own challenge widget; running our observers and listeners inside
+            // the verification document is why it never passed. Leave that frame untouched.
             """(function(){
+              try{
+                var h=(location.hostname||'').toLowerCase();
+                var p=(location.pathname||'');
+                window.__keenProviderFrame =
+                  /(^|\.)challenges\.cloudflare\.com${'$'}|(^|\.)hcaptcha\.com${'$'}|(^|\.)recaptcha\.net${'$'}|(^|\.)arkoselabs\.com${'$'}|(^|\.)funcaptcha\.com${'$'}|(^|\.)captcha-delivery\.com${'$'}/.test(h) ||
+                  (/(^|\.)google\.com${'$'}/.test(h) && p.indexOf('/recaptcha/')===0) ||
+                  p.indexOf('/cdn-cgi/challenge-platform/')===0;
+                if(window.__keenProviderFrame){
+                  try{ console.warn('KZ_FRAME_SKIP:challenge_provider:'+h); }catch(e){}
+                }
+              }catch(e){ window.__keenProviderFrame=false; }
+            })();
+            (function(){
+              if(window.__keenProviderFrame) return;
               function keenEarlyStub(){
                 var w={closed:false,opener:null,name:''};
                 w.close=function(){ w.closed=true; };
@@ -1284,7 +1371,9 @@ class WebViewHost(
               function isContentPath(u){
                 return /\/movie\/|\/tv\/|\/show\/|\/title\/|\/watch\/|\/play\/|\/v\/|\/embed\/|\/film\/|\/series\//i.test(u||'');
               }
-              window.open=function(url){
+              // Deferred like the guard's copy: overriding native window.open at
+              // document-start trips bot-challenge fingerprinting (1337x/DataDome loop).
+              if(window.__keenPostLoad) window.open=function(url){
                 try{
                   var href=typeof url==='string'?url:String(url||'');
                   console.warn('KZ_WINDOW_OPEN_NATIVE_PATH '+href.slice(0,120));
@@ -1316,9 +1405,20 @@ class WebViewHost(
                   }catch(e){}
                 }
               },true);
-            })();""" + "\n" + HostileOverlayGuard.DOCUMENT_START_JS +
-                "\n" + com.keenzero.app.input.ModalScrollJs.INSTALL_JS +
-                "\n" + com.keenzero.app.input.ScrollAuthorityJs.INSTALL_JS,
+            })();""" +
+                (if (noGuard) "" else "\n" + HostileOverlayGuard.DOCUMENT_START_JS) +
+                // Player agent must run INSIDE the frame that owns the <video>: on embed
+                // sites the media is in nested cross-origin iframes the native side
+                // cannot reach with evaluateJavascript().
+                (if (noPlayer) "" else "\n" + FramePlayerJs.INSTALL_JS) +
+                (
+                    if (noScroll) {
+                        ""
+                    } else {
+                        "\n" + com.keenzero.app.input.ModalScrollJs.INSTALL_JS +
+                            "\n" + com.keenzero.app.input.ScrollAuthorityJs.INSTALL_JS
+                    }
+                    ),
             setOf("*"),
         )
     }
@@ -1329,8 +1429,19 @@ class WebViewHost(
      * the page ~5–6s after load and fought user scroll (push-up sensation).
      */
     private fun armHostileOverlayGuard(view: WebView) {
+        if (java.io.File("/data/local/tmp/keen_no_inject").exists()) return
+        // Past any bot challenge now — release the deferred window.open policy.
+        view.evaluateJavascript("window.__keenPostLoad=1;", null)
         // Full install once per navigation (idempotent JS if already present).
-        view.evaluateJavascript(HostileOverlayGuard.DOCUMENT_START_JS, null)
+        // Honour the same bisect toggles, or the post-load pass would silently
+        // re-add the very script the profile is meant to exclude.
+        if (!java.io.File("/data/local/tmp/keen_no_guard").exists()) {
+            view.evaluateJavascript(HostileOverlayGuard.DOCUMENT_START_JS, null)
+        }
+        // Top frame only; subframes get it from the document-start bundle.
+        if (!java.io.File("/data/local/tmp/keen_no_player").exists()) {
+            view.evaluateJavascript(FramePlayerJs.INSTALL_JS, null)
+        }
         val gen = ++hostileSweepGeneration
         var ticks = 0
         val tick = object : Runnable {

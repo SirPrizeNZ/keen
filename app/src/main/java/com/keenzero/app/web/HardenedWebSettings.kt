@@ -45,9 +45,15 @@ object HardenedWebSettings {
         // embedded client — serving degraded or blocked experiences. Stripping those
         // tokens is a standard, widely-used compatibility fix and changes nothing
         // else about the UA (same Android/Chrome version, still mobile).
-        s.userAgentString = s.userAgentString
-            .replace("; wv", "")
-            .replace(Regex("""Version/[\d.]+ """), "")
+        // DIAGNOSTIC (v0.1.115): UA rewrite temporarily disabled to test whether it is
+        // what puts 1337x.to (DataDome) into its verification reload loop.
+        if (!java.io.File("/data/local/tmp/keen_stock_ua").exists()) {
+            s.userAgentString = s.userAgentString
+                .replace("; wv", "")
+                .replace(Regex("""Version/[\d.]+ """), "")
+        } else {
+            android.util.Log.i("KeenZero", "ua_stock_webview (diagnostic toggle)")
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             s.safeBrowsingEnabled = true

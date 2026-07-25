@@ -11,6 +11,8 @@ package com.keenzero.app.web
 object HostileOverlayGuard {
     val DOCUMENT_START_JS: String = """
 (function(){
+  // Never run inside a challenge provider's own frame (see WebViewHost bundle prelude).
+  if(window.__keenProviderFrame) return;
   /**
    * Hostile interstitial guard v7
    * Goal: kill robot/QR gates and dating/for-you/CONTINUE ad cards.
@@ -18,13 +20,51 @@ object HostileOverlayGuard {
    * Must NOT strip sticky site nav (fmhy) or reset position/scroll to top.
    * Re-arming full script must be rare — native side only sweeps, does not re-inject this bundle.
    */
+  // Human-verification widgets. Early "return false" (= do not remove), so match on the
+  // provider's ORIGIN only. Matching on bot-check TEXT or generic *challenge*/*captcha*
+  // class names hands ad interstitials immunity: they impersonate that wording.
+  var CHALLENGE_ORIGIN=/^https?:\/\/([a-z0-9-]+\.)*(challenges\.cloudflare\.com|google\.com\/recaptcha|recaptcha\.net|hcaptcha\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com)/i;
+  var CHALLENGE_IFRAME='iframe[src*="challenges.cloudflare"],iframe[src*="turnstile"],iframe[src*="google.com/recaptcha"],iframe[src*="hcaptcha.com"]';
+  /** Genuine challenge running here? Structural/provider evidence only, never wording. */
+  function keenChallengeActive(){
+    try{
+      if(document.querySelector(
+        'iframe[src*="challenges.cloudflare.com"],iframe[src*="/turnstile/"],' +
+        'iframe[src*="google.com/recaptcha"],iframe[src*="recaptcha.net"],' +
+        'iframe[src*="hcaptcha.com"],iframe[src*="arkoselabs.com"],iframe[src*="captcha-delivery.com"],' +
+        'script[src*="/cdn-cgi/challenge-platform/"],iframe[src*="/cdn-cgi/challenge-platform/"],' +
+        '.cf-turnstile,#challenge-stage,#challenge-running,#challenge-form,#cf-challenge-running')) return true;
+      var u=String(location.href||'').toLowerCase();
+      if(u.indexOf('/cdn-cgi/challenge-platform/')>=0) return true;
+    }catch(e){}
+    return false;
+  }
+  window.__keenChallengeActive=keenChallengeActive;
+  function keenChallengeGate(){
+    var on=keenChallengeActive();
+    if(on && !window.__keenChallengeLogged){
+      window.__keenChallengeLogged=1;
+      try{ console.warn('KZ_CHALLENGE_ACTIVE:'+location.host+' — destructive passes paused'); }catch(e){}
+    }
+    if(!on && window.__keenChallengeLogged){
+      window.__keenChallengeLogged=0;
+      try{ console.warn('KZ_CHALLENGE_CLEARED:'+location.host+' — protection resumed'); }catch(e){}
+    }
+    return on;
+  }
   function isCloudflareChallenge(el){
     try{
+      // The element ITSELF may be the widget: Turnstile mounts its interactive
+      // challenge as a fixed iframe at z-index 2147483647 covering the viewport —
+      // exactly the shape of the ad-interstitial rule below. querySelector never
+      // matches `el` itself, so that check alone let the sweep delete the checkbox
+      // the moment it was pressed. Origin-matched, so an ad iframe can never qualify.
+      if(el.tagName==='IFRAME' && CHALLENGE_ORIGIN.test(el.src||el.getAttribute('src')||'')) return true;
       var t=(el.innerText||'').toLowerCase();
       if(/just a moment|checking your browser|ray id|cf-challenge|enable javascript and cookies/i.test(t)){
-        if(el.querySelector && el.querySelector('iframe[src*="challenges.cloudflare"],iframe[src*="turnstile"]')) return true;
+        if(el.querySelector && el.querySelector(CHALLENGE_IFRAME)) return true;
       }
-      if(el.querySelector && el.querySelector('iframe[src*="challenges.cloudflare"],iframe[src*="turnstile"]')) return true;
+      if(el.querySelector && el.querySelector(CHALLENGE_IFRAME)) return true;
     }catch(e){}
     return false;
   }
@@ -38,6 +78,66 @@ object HostileOverlayGuard {
       }
       return bits.join(' ').toLowerCase().replace(/\s+/g,' ').slice(0,900);
     }catch(e){ return ''; }
+  }
+  // Cosmetic filter for the adult-cam creatives that render INSIDE the player frame
+  // (jerkmate class: "Oh hi there", "sent you a video", "undress me"). The host rotates
+  // every load, so network rules alone always lag; this is the same approach Brave/uBlock
+  // take — match the creative copy, not the domain. Only reached AFTER the position gate
+  // below, so it can only ever remove a positioned overlay, never page content.
+  function camAdLanguage(t){
+    return /oh hi there|sent you a (video|photo|pic|message)|\bundress\b|wanna (chat|play|meet|see)|i'?m (online|live) now|jerkmate|meet ?and ?fuck|fuckmeet|horny (girls|singles|women)|nude (photos|pics)|girls? (near|around) you|start (chatting|video chat) now|click to (chat|see more)/i.test(t||'') ||
+      // Fake-notification variants (observed on dlhd 2026-07-25): a chat bubble reading
+      // "(2) Missed Messages / (00:51) Voice message" beside a photo. No CTA button, so
+      // the close-X + CTA structural rule below never fires on it.
+      /missed (messages?|calls?)|voice message|\d+ new messages?|unread messages?|is typing|wants to (chat|talk)|new match|incoming (call|video)/i.test(t||'');
+  }
+  /**
+   * Generic defence for "ad rendered over the video": inside a frame that owns a player,
+   * a positioned layer whose content comes from ANOTHER origin is not player UI — real
+   * controls are same-origin. This catches rotated creatives regardless of their copy,
+   * which is the only thing that keeps working when the host and wording change per load.
+   */
+  /** This frame shows the player: it owns the <video>, or it hosts the player iframe. */
+  function ownsPlayer(){
+    try{
+      if(document.querySelector('video')) return true;
+      return !!document.querySelector(
+        '#playerFrame,iframe[src*="/stream-"],iframe[src*="/stream/"],iframe[src*="/premiumtv/"],iframe[src*="daddy"],iframe[id*="player" i],iframe[class*="player" i]');
+    }catch(e){ return false; }
+  }
+  function foreignCreativeOverPlayer(el){
+    try{
+      // The creative runs in whichever frame the ad script was injected into — on dlhd
+      // that is the TOP document (its beacons carry cbpage=dlhd.st), which holds the
+      // player in an iframe and owns no <video> at all. Requiring a local <video> here
+      // made this rule a no-op on exactly the frame that renders the ad.
+      if(!ownsPlayer()) return false;
+      if(el.querySelector && el.querySelector('video')) return false; // never the player itself
+      // Nor the player iframe / its wrapper.
+      try{
+        if(el.querySelector && el.querySelector('#playerFrame,iframe[src*="/stream-"],iframe[src*="/premiumtv/"],iframe[src*="daddy"]')) return false;
+      }catch(e2){}
+      var host=location.hostname||'';
+      function foreign(u){
+        if(!u) return false;
+        try{
+          var h=new URL(u, location.href).hostname;
+          if(!h||h===host) return false;
+          // Same registrable domain (cdn.site.com vs site.com) is first-party enough.
+          var a=h.split('.').slice(-2).join('.'), b=host.split('.').slice(-2).join('.');
+          return a!==b;
+        }catch(e){ return false; }
+      }
+      var nodes=el.querySelectorAll?el.querySelectorAll('img,iframe,a[href]'):[];
+      for(var i=0;i<nodes.length&&i<12;i++){
+        var n=nodes[i];
+        if(foreign(n.src||n.getAttribute('src')||n.href||n.getAttribute('href')||'')) return true;
+      }
+      if(el.tagName==='IMG'||el.tagName==='IFRAME'){
+        if(foreign(el.src||el.getAttribute('src')||'')) return true;
+      }
+    }catch(e){}
+    return false;
   }
   function botLanguage(t){
     // Real phishing/ad interstitial language — require this (or strong QR signal).
@@ -172,6 +272,14 @@ object HostileOverlayGuard {
     if(pos==='fixed' && r.height>0 && r.height<=120 && r.width>=vw*0.7 && r.top<=80) return false;
     var cover=(r.width*r.height)/(vw*vh);
     var z=parseInt(s.zIndex,10); if(!isFinite(z)) z=0;
+    // Injected extreme-z top layer (ad interstitial, e.g. dlhd z-index:300000 overlay that
+    // fills with jerkmate/"Anna"/dating creatives on the play tap). Real site UI/players do
+    // not use z>=100000; only strip if it does NOT contain the video/player embed.
+    if((pos==='fixed'||pos==='absolute') && z>=100000 && cover>=0.12){
+      try{
+        if(!(el.querySelector && el.querySelector('video,#player,#playerFrame,iframe[src*="stream-"],iframe[src*="daddy"],iframe[src*="/stream/"],iframe[src*="/premiumtv/"]'))) return true;
+      }catch(e){ return true; }
+    }
     var t=textOf(el);
     var bot=botLanguage(t);
     var qrl=qrLanguage(t);
@@ -182,6 +290,22 @@ object HostileOverlayGuard {
 
     // PRIMARY: bot/robot confirmation language on a positioned layer
     if(bot) return true;
+
+    // PRIMARY: adult-cam / fake-notification creative copy on a positioned layer. These
+    // render inside the player frame from a per-load random host, so the DOM is the
+    // reliable place to catch them; the copy never appears in real player chrome.
+    if(camAdLanguage(t)){
+      try{ console.warn('KZ_REMOVE_CAM_AD:'+location.host+':'+t.slice(0,60)); }catch(e){}
+      return true;
+    }
+
+    // PRIMARY: any third-party creative layered over the video. Copy-independent, so it
+    // survives creative rotation. Bounded so it can never eat the player or a full-frame
+    // shell, and it only applies in frames that actually own a <video>.
+    if(cover>=0.01 && cover<=0.7 && foreignCreativeOverPlayer(el)){
+      try{ console.warn('KZ_REMOVE_FOREIGN_OVER_PLAYER:'+location.host+':z='+z+':'+t.slice(0,50)); }catch(e){}
+      return true;
+    }
 
     // QR language + media on a layer that covers a meaningful area
     if((qrl||qrm) && cover>=0.1 && (z>=10 || pos==='fixed')) return true;
@@ -229,8 +353,23 @@ object HostileOverlayGuard {
     }catch(e){}
   }
   function sweepHostile(){
+    // Never mutate the DOM while a genuine challenge runs. Resumes automatically the
+    // moment the evidence disappears — nothing is permanently disabled.
+    if(keenChallengeGate()) return 0;
     var sc=readScroll();
     var removed=0;
+    // Ad-banner iframes by src PATH (any position, any origin) — catches first-party
+    // proxied ads like dlhd.st/rs4k-adbanner.html that host-blocking cannot touch.
+    try{
+      var af=document.getElementsByTagName('iframe');
+      for(var a=af.length-1;a>=0;a--){
+        var isrc=((af[a].src)||af[a].getAttribute('src')||'').toLowerCase();
+        if(CHALLENGE_ORIGIN.test(isrc)) continue;
+        if(/(rs4k-?adbanner|adbanner|\/ad-|[-_]ad\.html|\/ads\/|\/adframe|\/advert|adsbanner)/.test(isrc)){
+          try{ af[a].remove(); removed++; }catch(e){}
+        }
+      }
+    }catch(e){}
     var sel='div,section,aside,dialog,article,span,iframe,figure';
     var nodes;
     try{ nodes=document.querySelectorAll(sel); }catch(e){ return 0; }
@@ -254,11 +393,34 @@ object HostileOverlayGuard {
     }catch(e){}
     if(removed){
       unlockScroll();
-      try{ console.warn('KZ_REMOVE_HOSTILE_OVERLAY:'+removed); }catch(e){}
+      try{ console.warn('KZ_REMOVE_HOSTILE_OVERLAY:'+removed+' @'+location.host); }catch(e){}
     }
     // Sticky-nav reflow + our DOM work can snap scroll to 0 — put the user back.
     restoreScroll(sc.x, sc.y);
     return removed;
+  }
+  /**
+   * Diagnostic: describe the positioned layers this frame is carrying. The player frames
+   * are cross-origin, so logcat is the only way to see what an ad element actually looks
+   * like when a rule fails to match it. Runs three times per frame, then stops.
+   */
+  function dumpOverlays(n){
+    try{
+      var out=[];
+      var nodes=document.querySelectorAll('div,section,aside,iframe,a,img');
+      for(var i=0;i<nodes.length&&out.length<5;i++){
+        var el=nodes[i];
+        var s;
+        try{ s=getComputedStyle(el); }catch(e){ continue; }
+        if(!s||(s.position!=='fixed'&&s.position!=='absolute')) continue;
+        var r=el.getBoundingClientRect();
+        if(r.width<100||r.height<50) continue;
+        var z=parseInt(s.zIndex,10); if(!isFinite(z)) z=0;
+        out.push(el.tagName+(el.id?'#'+el.id:'')+' z='+z+' '+(r.left|0)+','+(r.top|0)+' '+
+          (r.width|0)+'x'+(r.height|0)+' "'+textOf(el).slice(0,45)+'"');
+      }
+      if(out.length) console.warn('KZ_OVL'+n+' '+location.host+' :: '+out.join(' | '));
+    }catch(e){}
   }
   function startObserver(){
     // Replace stale observer from older guard versions.
@@ -287,9 +449,46 @@ object HostileOverlayGuard {
       window.__keenHostileObs=obs;
     }catch(e){}
   }
+  function installKeenStyle(){
+    try{
+      if(!document.getElementById('keen-hostile-css')){
+        var st=document.createElement('style');
+        st.id='keen-hostile-css';
+        st.textContent='[data-keen-hostile-overlay],.ad-trap,.overlay-ad,.popup-ad{display:none!important;pointer-events:none!important}';
+        (document.head||document.documentElement).appendChild(st);
+      }
+    }catch(e){}
+  }
   function arm(){
+    // Inert while a challenge runs, retrying until it clears. Gating only the removals
+    // was not enough: arming alone started an observer, appended <style> and swept before
+    // the challenge markers existed. Bisect (v0.1.123): 1337x passes with this guard off.
+    if(keenChallengeGate()){
+      if(!window.__keenArmRetry){
+        window.__keenArmRetry=setInterval(function(){
+          if(!keenChallengeActive()){
+            clearInterval(window.__keenArmRetry);
+            window.__keenArmRetry=null;
+            arm();
+          }
+        }, 1000);
+      }
+      return;
+    }
+    installKeenStyle();
     startObserver();
     sweepHostile();
+    if(!window.__keenOvlDumped){
+      window.__keenOvlDumped=1;
+      setTimeout(function(){ dumpOverlays(1); }, 2500);
+      setTimeout(function(){ dumpOverlays(2); }, 7000);
+      setTimeout(function(){ dumpOverlays(3); }, 14000);
+      // These creatives inject AFTER the play tap, so the early dumps kept showing a
+      // clean page. Keep sampling across the window where the ad actually appears.
+      setTimeout(function(){ dumpOverlays(4); }, 25000);
+      setTimeout(function(){ dumpOverlays(5); }, 40000);
+      setTimeout(function(){ dumpOverlays(6); }, 60000);
+    }
     // One in-page timer only; do not restart if already running (native sweeps must not re-arm).
     if(window.__keenHostileTimer) return;
     var n=0;
@@ -308,7 +507,11 @@ object HostileOverlayGuard {
   // - Same-origin / content paths → same-tab navigation.
   // - Cross-origin junk → stub window (ad dies, SPA keeps working).
   try{
-    if(!window.__keenOpenPatched){
+    // Patch only after load: replacing a native function at document-start trips
+    // challenge fingerprinting. Ads call window.open on interaction, always post-load.
+    // ...and never while a challenge is actually running: the challenge page fires
+    // page-finished itself, so __keenPostLoad alone still let us tamper mid-challenge.
+    if(!window.__keenOpenPatched && window.__keenPostLoad && !keenChallengeActive()){
       window.__keenOpenPatched=1;
       function keenStubWin(){
         var w={closed:false,opener:null,name:''};
@@ -357,14 +560,9 @@ object HostileOverlayGuard {
       };
     }
   }catch(e){}
-  try{
-    if(!document.getElementById('keen-hostile-css')){
-      var st=document.createElement('style');
-      st.id='keen-hostile-css';
-      st.textContent='[data-keen-hostile-overlay],.ad-trap,.overlay-ad,.popup-ad{display:none!important;pointer-events:none!important}';
-      (document.head||document.documentElement).appendChild(st);
-    }
-  }catch(e){}
+  // NOTE: the stylesheet is no longer appended here. Injecting a <style> at document-start
+  // mutates the document before we can possibly know whether it is a challenge page.
+  // installKeenStyle() now runs from arm(), i.e. only once the page is challenge-free.
   // Idempotent install / upgrade: v7 replaces older guards (chrome-safe + scroll preserve).
   if(window.__keenHostileV7){
     try{ window.__keenHostileV7.sweep(); }catch(e){}
@@ -377,7 +575,11 @@ object HostileOverlayGuard {
   window.__keenHostileV4=window.__keenHostileV7;
   window.__keenHostileV3=window.__keenHostileV7;
   window.__keenHostileV2=window.__keenHostileV7;
-  arm();
+  // Give the document a beat to reveal a challenge before touching anything. At
+  // document-start the DOM is empty, so an immediate arm() cannot see the markers and
+  // would modify a challenge page before it identified itself. Ads inject later than
+  // this, so the delay costs the ad defence nothing.
+  setTimeout(arm, 1200);
   document.addEventListener('DOMContentLoaded',function(){ arm(); },{once:true});
   window.addEventListener('load',function(){ arm(); },{once:true});
   return window.__keenHostileV7;

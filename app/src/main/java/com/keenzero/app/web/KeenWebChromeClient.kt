@@ -343,9 +343,31 @@ class KeenWebChromeClient(
 
     override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
         if (consoleMessage != null) {
+            val text = consoleMessage.message().orEmpty()
             onConsole(
-                "${consoleMessage.messageLevel()} ${consoleMessage.sourceId()}:${consoleMessage.lineNumber()} ${consoleMessage.message()}",
+                "${consoleMessage.messageLevel()} ${consoleMessage.sourceId()}:${consoleMessage.lineNumber()} $text",
             )
+            // Our own needles only — page console noise stays out of logcat. This is the
+            // ONLY channel that reports what the in-frame agents did: they run inside
+            // cross-origin iframes the native side cannot inspect any other way.
+            val level = consoleMessage.messageLevel()
+            val isOurs = text.startsWith("KZ_")
+            // Also surface the PAGE's own errors. Bot-challenge failures are diagnosed by
+            // the provider's error code (Turnstile 300xxx/600xxx, CSP violations, blocked
+            // fetches) and the previous KZ_-only filter discarded every one of them, which
+            // is why the challenge failure has been invisible for several builds.
+            val pageProblem = level == ConsoleMessage.MessageLevel.ERROR ||
+                level == ConsoleMessage.MessageLevel.WARNING ||
+                text.contains("turnstile", ignoreCase = true) ||
+                text.contains("challenge", ignoreCase = true) ||
+                text.contains("cf-", ignoreCase = true)
+            if (isOurs || pageProblem) {
+                android.util.Log.i(
+                    "KZ_CONSOLE",
+                    "${if (isOurs) "" else "[$level] "}${text.take(220)} " +
+                        "@${consoleMessage.sourceId()?.takeLast(70)}:${consoleMessage.lineNumber()}",
+                )
+            }
         }
         return super.onConsoleMessage(consoleMessage)
     }
