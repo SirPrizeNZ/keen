@@ -48,6 +48,13 @@ class PlaybackOrchestrator(
     private var audioFocusRequest: AudioFocusRequest? = null
     private var audioFocusGranted = false
     private var unmuteRequested = false
+
+    /**
+     * Set when the user deliberately leaves playback mode; blocks the automatic
+     * "playing_reassert" re-entry until the next deliberate Play. Without it, Back
+     * restored the browsing chrome and the poller silently undid it.
+     */
+    private var reassertSuppressed = false
     private var audibleConfirmed = false
     private var playbackPriorityActive = false
 
@@ -101,6 +108,8 @@ class PlaybackOrchestrator(
         htmlFullscreenAttempted = false
         unmuteRequested = false
         audibleConfirmed = false
+        // A fresh deliberate Play re-arms automatic playback mode.
+        reassertSuppressed = false
         val tPlay = clock()
         session = PlaybackSession(
             sessionId = UUID.randomUUID().toString(),
@@ -224,6 +233,9 @@ class PlaybackOrchestrator(
     }
 
     fun exitPlaybackMode(reason: String) {
+        // Before the early return: the user asked to leave, so block auto re-entry even
+        // if mode was already down (media can still be playing and would re-trigger it).
+        reassertSuppressed = true
         if (!playbackModeEntered) return
         playbackModeEntered = false
         session = session?.copy(playbackModeActive = false)
@@ -564,7 +576,12 @@ class PlaybackOrchestrator(
 
                 if (playing) {
                     updatePlaybackPriority(true)
-                    if (!playbackModeEntered && confirmed) {
+                    // Never re-assert after the user deliberately left playback mode.
+                    // Back does not pause the video, so this 400ms poller re-entered
+                    // playback mode ~2s later, re-hiding the chrome bar and making Back
+                    // look dead until pressed twice quickly. (Latent until the frame-media
+                    // bridge first made `playing` true for cross-origin embeds like dlhd.)
+                    if (!playbackModeEntered && confirmed && !reassertSuppressed) {
                         enterPlaybackMode(webView, snapshot, reason = "playing_reassert")
                     }
                     if (audibleSignal && !audibleConfirmed) {
@@ -868,7 +885,20 @@ class PlaybackOrchestrator(
               var v=document.querySelector('video');
               var ae=document.activeElement;
               var fp=ae?(ae.tagName+'#'+(ae.id||'')).slice(0,80):null;
-              if(!v) return JSON.stringify({playing:false,paused:true,ended:false,muted:true,currentTime:0,duration:0,title:document.title||null,contentId:window.__keenContentId||null,fullscreen:!!document.fullscreenElement,audible:false,scrollY:window.scrollY||0,focusedFp:fp,volume:0});
+              if(!v){
+                // Embed sites keep the <video> in a cross-origin iframe this script can
+                // never see. FramePlayerJs relays that frame's state to the top document.
+                var fm=window.__keenFrameMedia;
+                if(fm && (Date.now()-(fm.t||0))<3000){
+                  return JSON.stringify({playing:!!fm.playing,paused:!fm.playing,ended:false,
+                    muted:!!fm.muted,volume:fm.muted?0:1,currentTime:fm.currentTime||0,
+                    duration:fm.duration||0,title:document.title||null,
+                    contentId:window.__keenContentId||null,
+                    fullscreen:!!(document.fullscreenElement||document.webkitFullscreenElement),
+                    audible:!!fm.audible,scrollY:window.scrollY||0,focusedFp:fp});
+                }
+                return JSON.stringify({playing:false,paused:true,ended:false,muted:true,currentTime:0,duration:0,title:document.title||null,contentId:window.__keenContentId||null,fullscreen:!!document.fullscreenElement,audible:false,scrollY:window.scrollY||0,focusedFp:fp,volume:0});
+              }
               var playing=!v.paused && !v.ended;
               var audible=playing && !v.muted && v.volume>0 && v.currentTime>0.05;
               return JSON.stringify({
@@ -914,6 +944,8 @@ class PlaybackOrchestrator(
 
         private val THEATRE_RESTORE_JS = """
             (function(){
+              // Undo the CSS-fill fullscreen chain in every descendant frame first.
+              try{ if(typeof window.__keenExitFill==='function') window.__keenExitFill(); }catch(e){}
               try{
                 document.documentElement.classList.remove('keen-theatre');
                 document.querySelectorAll('.rail,.carousel,.promo').forEach(function(e){
