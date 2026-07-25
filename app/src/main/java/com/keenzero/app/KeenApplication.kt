@@ -31,7 +31,7 @@ class KeenApplication : Application() {
      * KeenActivity.EXTRA_LAB_UI_PREVIEW) that was left in a device's saved data after
      * a demo-video recording: four placeholder favourites and the "Nocturne" Continue
      * watching card. Runs once, guarded by a pref flag, and touches only those exact
-     * demo hosts / contentId — real favourites (1337x, etc.) and real watch history
+     * demo hosts / contentId — real favourites and real watch history
      * are untouched.
      */
     private fun pruneSeededDemoContent() {

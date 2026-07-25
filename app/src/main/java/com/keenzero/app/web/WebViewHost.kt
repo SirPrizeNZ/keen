@@ -1391,11 +1391,11 @@ class WebViewHost(
                 "inject_profile guard=${!noGuard} player=${!noPlayer} scroll=${!noScroll}",
             )
         }
-        // window.open quarantine + hostile QR/interstitial guard (coreflix-class popups).
+        // window.open quarantine + hostile QR/interstitial guard (popup-heavy popups).
         WebViewCompat.addDocumentStartJavaScript(
             webView,
             // NEVER return null from window.open — SPA movie sites treat null as "popup blocked"
-            // and scroll-home / abort content navigation (cineby-class). Ads get a dead stub;
+            // and scroll-home / abort content navigation (SPA-movie-site class). Ads get a dead stub;
             // same-origin / content paths navigate same-tab. HostileOverlayGuard overwrites with
             // the full policy; this early patch is the fail-safe if that install is skipped.
             // setOf("*") injects into every frame, including Cloudflare's own challenge
@@ -1423,7 +1423,7 @@ class WebViewHost(
                 return /\/movie\/|\/tv\/|\/show\/|\/title\/|\/watch\/|\/play\/|\/v\/|\/embed\/|\/film\/|\/series\//i.test(u||'');
               }
               // Deferred like the guard's copy: overriding native window.open at
-              // document-start trips bot-challenge fingerprinting (1337x/DataDome loop).
+              // document-start trips bot-challenge fingerprinting (DataDome loop).
               if(window.__keenPostLoad) window.open=function(url){
                 try{
                   var href=typeof url==='string'?url:String(url||'');

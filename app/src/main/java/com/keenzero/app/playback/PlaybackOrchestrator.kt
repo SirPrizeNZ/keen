@@ -580,7 +580,7 @@ class PlaybackOrchestrator(
                     // Back does not pause the video, so this 400ms poller re-entered
                     // playback mode ~2s later, re-hiding the chrome bar and making Back
                     // look dead until pressed twice quickly. (Latent until the frame-media
-                    // bridge first made `playing` true for cross-origin embeds like dlhd.)
+                    // bridge first made `playing` true for cross-origin embeds.)
                     if (!playbackModeEntered && confirmed && !reassertSuppressed) {
                         enterPlaybackMode(webView, snapshot, reason = "playing_reassert")
                     }

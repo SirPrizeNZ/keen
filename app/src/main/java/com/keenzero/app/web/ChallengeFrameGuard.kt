@@ -11,7 +11,7 @@ package com.keenzero.app.web
  *
  * So the check must write nothing and log nothing: prepend [PREFIX] as the first
  * statement inside every injected IIFE. In a challenge frame it returns before a
- * single property is touched; everywhere else (dlhd.st and friends) it is a
+ * single property is touched; everywhere else (the live-stream site and friends) it is a
  * regex test and the ad/overlay logic runs exactly as before.
  */
 object ChallengeFrameGuard {
@@ -26,7 +26,7 @@ object ChallengeFrameGuard {
             // exactly those (observed via CDP: "KZ_FRAME_BOOT:sub ?srcdoc" inside a live
             // challenge). `_cf_chl_opt` exists only on a real cdn-cgi interstitial
             // document, never on an ordinary page that merely embeds a widget, so this
-            // stays out of dlhd.st and friends.
+            // stays out of the live-stream site and friends.
             "try{ if(window.top && window.top._cf_chl_opt) return true; }catch(e0){}" +
             "var h=(location.hostname||'').toLowerCase();var p=(location.pathname||'');" +
             "return /(^|\\.)challenges\\.cloudflare\\.com$D" +

@@ -173,7 +173,7 @@ object ModalScrollJs {
       var hosts=document.querySelectorAll('[role="dialog"],[role="listbox"],[role="menu"],[aria-modal="true"],[class*="modal"],[class*="Modal"],[class*="dropdown"],[class*="suggest"],[class*="result"],[class*="popover"],[class*="overlay"],[class*="typeahead"],[class*="autocomplete"],[class*="Search"],[class*="search"],[class*="sheet"],[class*="Sheet"],[class*="drawer"],[class*="Drawer"],[class*="popup"],[class*="Popup"]');
       for(var i=0;i<hosts.length&&i<100;i++) harvestHost(list, hosts[i]);
     }catch(e){}
-    // 2) Fixed/absolute layers — required for hashed-class SPAs (bcine.ru etc.).
+    // 2) Fixed/absolute layers — required for hashed-class SPAs.
     try{
       var all=document.body?document.body.getElementsByTagName('*'):[];
       var lim=Math.min(all.length, 2800);

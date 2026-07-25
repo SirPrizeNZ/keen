@@ -20,7 +20,7 @@ import java.io.File
  * ```
  *
  * These are diagnostic switches, not features: while one is on, the protection it removes
- * is off for *every* site, dlhd.st included. They are meant to be flipped back off.
+ * is off for *every* site, the live-stream site included. They are meant to be flipped back off.
  */
 object ExperimentFlags {
 
@@ -55,7 +55,7 @@ object ExperimentFlags {
      * Clear the approved origin's Cloudflare cookies on every compatibility-session
      * start, so a challenge is guaranteed. Without this, a valid `cf_clearance` from an
      * earlier pass means the site loads straight through and the test proves nothing.
-     * Site-scoped: never touches dlhd.st or any other origin.
+     * Site-scoped: never touches the live-stream site or any other origin.
      */
     const val RESET_VERIFICATION = "keen_reset_verification"
 

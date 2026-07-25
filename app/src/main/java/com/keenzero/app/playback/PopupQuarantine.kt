@@ -100,7 +100,7 @@ class PopupQuarantine(
     /**
      * Heuristic for throwaway ad/redirect hosts that never deserve a confirm dialog.
      * Tuned for streaming-site junk: short nonsense labels + cheap TLDs + digits.
-     * Must not classify real brands (netflix, youtube, bcine, …).
+     * Must not classify real brands (netflix, youtube, …).
      */
     fun looksDisposableAdHost(host: String): Boolean {
         val h = host.lowercase().removePrefix("www.")

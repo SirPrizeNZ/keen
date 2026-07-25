@@ -4,7 +4,7 @@ package com.keenzero.app.web
  * In-frame player agent (runs in EVERY frame via addDocumentStartJavaScript(setOf("*"))).
  *
  * Why this exists: the native side can only evaluateJavascript() in the TOP frame.
- * On embed sites (dlhd.st class) the <video> lives in nested cross-origin iframes, so
+ * On embed sites the <video> lives in nested cross-origin iframes, so
  * PlaybackOrchestrator's SAMPLE_JS / UNMUTE_AND_THEATRE_JS / OPTIONAL_FULLSCREEN_JS all
  * see no video and silently do nothing — which is why playback was always muted and
  * never auto-fullscreened. Everything that must touch the media element has to run in
@@ -403,7 +403,7 @@ object FramePlayerJs {
    * Only frames that actually host a player may be touched.
    *
    * Redefining a window property is exactly what bot-detection services fingerprint for.
-   * Installing this on EVERY page put 1337x.to (DataDome) into a permanent
+   * Installing this on EVERY page put a DataDome-protected site into a permanent
    * "Performing security verification" reload loop — nothing was blocked, the page just
    * never passed. Keep our footprint off pages that have no player at all.
    */

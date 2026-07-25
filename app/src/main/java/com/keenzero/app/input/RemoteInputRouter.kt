@@ -95,7 +95,7 @@ class RemoteInputRouter(
     private var pageDragFingerY = 0f
     private var pageDragWebView: WebView? = null
 
-    // Horizontal rail drag (nested carousels under pointer — cineby/bcine rows).
+    // Horizontal rail drag (nested carousels under pointer — SPA catalogue rows).
     private var hDragActive = false
     private var hDragDownTime = 0L
     private var hDragX = 0f
@@ -1668,7 +1668,7 @@ class RemoteInputRouter(
                       if(ar.height<40||ar.height>cssH*0.70||ar.width<72) return false;
                     }catch(e){ return false; }
                   }
-                  // Cineby/etc: Swiper transform rails — prefer official API.
+                  // SPA catalogues: Swiper transform rails — prefer official API.
                   var sw=findSwiper(n);
                   if(sw){
                     try{
@@ -1729,7 +1729,7 @@ class RemoteInputRouter(
                   }
                   n=n.parentElement; h++;
                 }
-                // 1b) Explicit Swiper hosts in the same Y band (cineby rows) — content rails only.
+                // 1b) Explicit Swiper hosts in the same Y band (SPA catalogue rows) — content rails only.
                 try{
                   var swHosts=document.querySelectorAll('.swiper,.swiper-container,[class*="swiper-initialized"]');
                   var bestSw=null, bestSwScore=-1e9;
@@ -2559,7 +2559,7 @@ class RemoteInputRouter(
                 keyboardLikelyVisible = true
                 onShowKeyboard()
                 // Typing into a search field spawns a results overlay. Arm the modal-bind
-                // window so the next Up/Down grabs that list for hold-to-scroll — cineby &
+                // window so the next Up/Down grabs that list for hold-to-scroll — SPA catalogues &
                 // co. render live results with no explicit submit, so the IME-submit path
                 // that normally arms this never fires.
                 modalLikelyUntil = SystemClock.elapsedRealtime() + MODAL_LIKELY_WINDOW_MS
@@ -2820,7 +2820,7 @@ class RemoteInputRouter(
 
         // Clear scroll locks left by dismissed modals only.
         // NEVER force position:static on html/body — that breaks sticky site nav
-        // (fmhy header/search reflow) and yanks the viewport to the top.
+        // (a link-directory site header/search reflow) and yanks the viewport to the top.
         val UNLOCK_SCROLL_JS = """
             (function(){
               try{

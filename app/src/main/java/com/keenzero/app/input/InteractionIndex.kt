@@ -122,7 +122,7 @@ class InteractionIndex(
      *
      * Off-screen candidates remain eligible (with score penalty). FOCUS_JS
      * scrollIntoView then brings them into the viewport — required for long
-     * catalogue pages (e.g. FMHY external links below the fold).
+     * catalogue pages (e.g. a link-directory site external links below the fold).
      */
     fun select(direction: String): InteractionCandidate? {
         val current = current() ?: return candidates.firstOrNull { !it.offscreen }
@@ -242,7 +242,7 @@ class InteractionIndex(
                 id=e.dataset.keenIdx;
                 seen[id]=1;
                 // NEVER stamp tabindex during collect — that makes every nav link focusable
-                // and causes ghost :focus rings (fmhy "Changelog" flash when OK'ing Cineby).
+                // and causes ghost :focus rings (a stale header link flashing when activating a card).
                 // tabindex is applied only in FOCUS_JS when DOM mode actually focuses a candidate.
                 var role=e.getAttribute('role')||e.tagName;
                 var text=(e.innerText||e.getAttribute('aria-label')||e.getAttribute('title')||e.value||'').trim().slice(0,40);

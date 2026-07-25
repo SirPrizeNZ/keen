@@ -2204,7 +2204,7 @@ class KeenActivity : AppCompatActivity() {
         continuityStore.markAtHome(false)
         recordEvent(NavigationEvent(System.currentTimeMillis(), "user_open_url", url = url))
         // Approved compatibility origins get their own stock WebView; everything else —
-        // dlhd.st included — takes the normal fully protected path below.
+        // the live-stream site included — takes the normal fully protected path below.
         if (com.keenzero.app.compat.CompatibilityOrigins.isApproved(url)) {
             openUrlInCompatibility(url)
             return
@@ -2212,7 +2212,7 @@ class KeenActivity : AppCompatActivity() {
         exitCompatibilityMode()
         val host = ensureWebHost()
         webViewEverCreated = true
-        // Session root: Back should not return to FMHY chooser until we leave this site stack.
+        // Session root: Back should not return to a link-directory site chooser until we leave this site stack.
         // The torrent player (stopTorrent=false) is an overlay page, not a new session root.
         if (stopTorrent) browseEntryUrl = url
         currentUrl = url
@@ -2333,7 +2333,7 @@ class KeenActivity : AppCompatActivity() {
 
     /**
      * Site-scoped verification reset for the current compatibility origin. Clears only
-     * that origin's Cloudflare cookies and storage — never dlhd.st, never all Keen data.
+     * that origin's Cloudflare cookies and storage — never the live-stream site, never all Keen data.
      */
     private fun resetVerificationForCurrentSite() {
         compatSession?.resetVerification(currentUrl)
@@ -3217,7 +3217,7 @@ class KeenActivity : AppCompatActivity() {
                 webHost?.webView?.requestFocus()
             }
             com.keenzero.app.navigation.BrowsingBackPolicy.Action.HISTORY_BACK -> {
-                // Movie page → previous site page (search/list), never FMHY chooser mid-site.
+                // Movie page → previous site page (search/list), never a link-directory site chooser mid-site.
                 exitAllHtmlFullscreen()
                 webHost?.historyBack()
                 recordEvent(
@@ -3230,7 +3230,7 @@ class KeenActivity : AppCompatActivity() {
                 )
             }
             com.keenzero.app.navigation.BrowsingBackPolicy.Action.RETURN_HOME -> {
-                // Only when already at session entry URL (e.g. cineby home after openUrl).
+                // Only when already at session entry URL (e.g. an SPA home after openUrl).
                 exitAllHtmlFullscreen()
                 webHost?.flushSession()
                 webHost?.destroy("return_home")

@@ -8,7 +8,7 @@ import org.json.JSONObject
 /**
  * Site favourites for the home surface. Host-level identity: starring any page
  * on a site favourites the site; the roundel opens the site root. The label is
- * the core of the domain ("www.1337x.to" → "1337x").
+ * the core of the domain ("www.example.org" → "example").
  */
 class FavouritesStore(context: Context) {
 
@@ -91,7 +91,7 @@ class FavouritesStore(context: Context) {
             }
         }
 
-        /** "www.1337x.to" → "1337x"; "flixer.gd" → "flixer". */
+        /** "www.example.org" → "example"; "sub.example.net" → "example". */
         fun labelFor(host: String): String {
             val parts = host.removePrefix("www.").split('.')
             return (parts.firstOrNull { it.isNotBlank() } ?: host).take(14)

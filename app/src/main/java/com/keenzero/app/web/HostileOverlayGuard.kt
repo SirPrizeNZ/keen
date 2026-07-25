@@ -2,11 +2,11 @@ package com.keenzero.app.web
 
 /**
  * Hostile interstitial guard v7.
- * Targets robot/QR gates **and** dating/for-you/CONTINUE ad cards (cineby-style).
- * Must not delete SPA shells (bcine #root).
+ * Targets robot/QR gates **and** dating/for-you/CONTINUE ad cards.
+ * Must not delete SPA shells (a site's #root container).
  * v5: do not re-arm on every native sweep (v4 re-armed every 750ms → scroll thrash).
  * v6: adLanguage + CTA + close-X card detection; longer live sweep.
- * v7: never strip site chrome / sticky nav; preserve scrollY after sweep (fmhy header thrash).
+ * v7: never strip site chrome / sticky nav; preserve scrollY after sweep (a link-directory site header thrash).
  */
 object HostileOverlayGuard {
     val DOCUMENT_START_JS: String = """
@@ -16,8 +16,8 @@ object HostileOverlayGuard {
   /**
    * Hostile interstitial guard v7
    * Goal: kill robot/QR gates and dating/for-you/CONTINUE ad cards.
-   * Must NOT delete SPA shell children of #root (causes "Something went wrong" on bcine/coreflix).
-   * Must NOT strip sticky site nav (fmhy) or reset position/scroll to top.
+   * Must NOT delete SPA shell children of #root (causes "Something went wrong" on SPA sites).
+   * Must NOT strip sticky site nav (a link-directory site) or reset position/scroll to top.
    * Re-arming full script must be rare — native side only sweeps, does not re-inject this bundle.
    */
   // Human-verification widgets. Early "return false" (= do not remove), so match on the
@@ -80,13 +80,13 @@ object HostileOverlayGuard {
     }catch(e){ return ''; }
   }
   // Cosmetic filter for the adult-cam creatives that render INSIDE the player frame
-  // (jerkmate class: "Oh hi there", "sent you a video", "undress me"). The host rotates
+  // (adult cam creatives: "Oh hi there", "sent you a video", "undress me"). The host rotates
   // every load, so network rules alone always lag; this is the same approach Brave/uBlock
   // take — match the creative copy, not the domain. Only reached AFTER the position gate
   // below, so it can only ever remove a positioned overlay, never page content.
   function camAdLanguage(t){
     return /oh hi there|sent you a (video|photo|pic|message)|\bundress\b|wanna (chat|play|meet|see)|i'?m (online|live) now|jerkmate|meet ?and ?fuck|fuckmeet|horny (girls|singles|women)|nude (photos|pics)|girls? (near|around) you|start (chatting|video chat) now|click to (chat|see more)/i.test(t||'') ||
-      // Fake-notification variants (observed on dlhd 2026-07-25): a chat bubble reading
+      // Fake-notification variants (observed on the live-stream site 2026-07-25): a chat bubble reading
       // "(2) Missed Messages / (00:51) Voice message" beside a photo. No CTA button, so
       // the close-X + CTA structural rule below never fires on it.
       /missed (messages?|calls?)|voice message|\d+ new messages?|unread messages?|is typing|wants to (chat|talk)|new match|incoming (call|video)/i.test(t||'');
@@ -107,8 +107,8 @@ object HostileOverlayGuard {
   }
   function foreignCreativeOverPlayer(el){
     try{
-      // The creative runs in whichever frame the ad script was injected into — on dlhd
-      // that is the TOP document (its beacons carry cbpage=dlhd.st), which holds the
+      // The creative runs in whichever frame the ad script was injected into — on the live-stream site
+      // that is the TOP document (its beacons carry the page host), which holds the
       // player in an iframe and owns no <video> at all. Requiring a local <video> here
       // made this rule a no-op on exactly the frame that renders the ad.
       if(!ownsPlayer()) return false;
@@ -146,7 +146,7 @@ object HostileOverlayGuard {
   function qrLanguage(t){
     return /qr[\s_-]?code|scan (the )?qr|scan (with|me|to)|open (in|with) (telegram|whatsapp|discord)|join (our )?(telegram|discord|group|channel)|download (our )?app|install app|get the app|watch on phone/i.test(t||'');
   }
-  // cineby "for you" / dating / green CONTINUE interstitials (presentation-killers).
+  // "for you" / dating / green CONTINUE interstitials (presentation-killers).
   function adLanguage(t){
     return /\bfor you\b|dating style|beautiful and stylish|sweet and cool|singles near|hot singles|meet (girls|boys|singles)|claim (now|reward)|you (have )?won|congratulations.*won|limited offer|install now|download now|get free|play now|spin now|watch free|continue watching free|\bCONTINUE\b/i.test(t||'');
   }
@@ -159,7 +159,7 @@ object HostileOverlayGuard {
         if(/^(continue|ok|yes|install|download|play|claim|get|start|open)$/i.test(tx)) return true;
         if(/\b(continue|install now|download now|play now|claim now)\b/i.test(tx) && tx.length<40) return true;
         var br=b.getBoundingClientRect();
-        // Large green CTA bar (cineby ad)
+        // Large green CTA bar (interstitial ad)
         if(br.width>=120&&br.height>=36&&/continue|install|download|play|claim/i.test(tx)) return true;
       }
     }catch(e){}
@@ -218,7 +218,7 @@ object HostileOverlayGuard {
     }catch(e){}
     return false;
   }
-  // Site chrome (fmhy/VitePress sticky nav, search bar moves on scroll) — never strip.
+  // Site chrome (a link-directory site/VitePress sticky nav, search bar moves on scroll) — never strip.
   // Touching these during sticky reflow was yanking scrollY to the top.
   function isSiteChrome(el){
     if(!el||!el.closest) return false;
@@ -272,8 +272,8 @@ object HostileOverlayGuard {
     if(pos==='fixed' && r.height>0 && r.height<=120 && r.width>=vw*0.7 && r.top<=80) return false;
     var cover=(r.width*r.height)/(vw*vh);
     var z=parseInt(s.zIndex,10); if(!isFinite(z)) z=0;
-    // Injected extreme-z top layer (ad interstitial, e.g. dlhd z-index:300000 overlay that
-    // fills with jerkmate/"Anna"/dating creatives on the play tap). Real site UI/players do
+    // Injected extreme-z top layer (ad interstitial, e.g. the live-stream site z-index:300000 overlay that
+    // fills with adult cam / dating creatives on the play tap). Real site UI/players do
     // not use z>=100000; only strip if it does NOT contain the video/player embed.
     if((pos==='fixed'||pos==='absolute') && z>=100000 && cover>=0.12){
       try{
@@ -343,7 +343,7 @@ object HostileOverlayGuard {
   function unlockScroll(){
     try{
       // Only clear overflow:hidden. NEVER force position:static — that kills sticky nav
-      // layouts (fmhy) and snaps the viewport to the top.
+      // layouts (a link-directory site) and snaps the viewport to the top.
       if(document.body && getComputedStyle(document.body).overflow==='hidden'){
         document.body.style.overflow='';
       }
@@ -359,7 +359,7 @@ object HostileOverlayGuard {
     var sc=readScroll();
     var removed=0;
     // Ad-banner iframes by src PATH (any position, any origin) — catches first-party
-    // proxied ads like dlhd.st/rs4k-adbanner.html that host-blocking cannot touch.
+    // same-origin proxied ad frames that host-blocking cannot touch.
     try{
       var af=document.getElementsByTagName('iframe');
       for(var a=af.length-1;a>=0;a--){
@@ -403,7 +403,7 @@ object HostileOverlayGuard {
     // Replace stale observer from older guard versions.
     try{ if(window.__keenHostileObs){ window.__keenHostileObs.disconnect(); window.__keenHostileObs=null; } }catch(e){}
     var obs=new MutationObserver(function(muts){
-      // Ignore pure text/class jitter in the sticky header (fmhy search relocates constantly).
+      // Ignore pure text/class jitter in the sticky header (a link-directory site search relocates constantly).
       var interesting=false;
       try{
         for(var i=0;i<muts.length&&i<20;i++){
@@ -439,7 +439,7 @@ object HostileOverlayGuard {
   function arm(){
     // Inert while a challenge runs, retrying until it clears. Gating only the removals
     // was not enough: arming alone started an observer, appended <style> and swept before
-    // the challenge markers existed. Bisect (v0.1.123): 1337x passes with this guard off.
+    // the challenge markers existed. Bisect (v0.1.123): a challenge-protected site passes with this guard off.
     if(keenChallengeGate()){
       if(!window.__keenArmRetry){
         window.__keenArmRetry=setInterval(function(){

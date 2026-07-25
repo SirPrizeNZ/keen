@@ -66,7 +66,7 @@ object BrowsingBackPolicy {
         }
         // BROWSING / RESTORING
         if (urlBarFocused) return Action.CLEAR_URL_FOCUS
-        // Prefer in-session history (WebView or SPA history.back). Never dump to FMHY
+        // Prefer in-session history (WebView or SPA history.back). Never dump to a link-directory site
         // chooser while still inside a site (movie page → list/home of that site).
         if (webViewCanGoBack || !atBrowseEntry) return Action.HISTORY_BACK
         return Action.RETURN_HOME
@@ -85,7 +85,7 @@ object BrowsingBackPolicy {
         val e = norm(entryUrl)
         val c = norm(currentUrl)
         if (e == c) return true
-        // Same origin root only (https://cineby.at vs https://cineby.at/)
+        // Same origin root only (https://example.org vs https://example.org/)
         return e.removeSuffix("/") == c.removeSuffix("/")
     }
 }
