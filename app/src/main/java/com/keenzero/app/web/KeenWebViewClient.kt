@@ -98,6 +98,26 @@ class KeenWebViewClient(
 
     override fun onPageFinished(view: WebView?, url: String?) {
         onUrlChanged(url)
+        // Persist cookies as soon as a page settles. Cloudflare's clearance cookie is
+        // useless if it only ever lives in memory, and flush ran on destroy only.
+        // Presence is logged, never the value: cf_clearance is a session credential.
+        if (url != null && url.startsWith("http")) {
+            try {
+                val cm = android.webkit.CookieManager.getInstance()
+                val names = cm.getCookie(url)
+                    ?.split(';')
+                    ?.mapNotNull { it.substringBefore('=').trim().takeIf(String::isNotEmpty) }
+                    .orEmpty()
+                cm.flush()
+                android.util.Log.i(
+                    "KeenCookie",
+                    "host=${android.net.Uri.parse(url).host} cookies=${names.size} " +
+                        "cf_clearance=${names.contains("cf_clearance")} " +
+                        "cfuvid=${names.contains("_cfuvid")}",
+                )
+            } catch (_: Throwable) {
+            }
+        }
         onEvent(
             NavigationEvent(
                 t = System.currentTimeMillis(),

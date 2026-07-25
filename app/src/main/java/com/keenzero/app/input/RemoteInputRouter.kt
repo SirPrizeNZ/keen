@@ -2262,8 +2262,21 @@ class RemoteInputRouter(
                 // hit-test resolved to a bare DIV and the click silently did nothing) —
                 // and a scripted click is precisely what the challenge is watching for.
                 // Verified provider evidence only, so ads cannot trigger this path.
+                function keenChallengeHere(){
+                  // Self-contained: must not depend on HostileOverlayGuard being installed,
+                  // or disabling the guard also makes the checkbox unpressable.
+                  try{
+                    if(window.__keenChallengeActive) return window.__keenChallengeActive();
+                    if(document.querySelector(
+                      'iframe[src*="challenges.cloudflare.com"],iframe[src*="/turnstile/"],' +
+                      'iframe[src*="google.com/recaptcha"],iframe[src*="hcaptcha.com"],' +
+                      'iframe[src*="captcha-delivery.com"],script[src*="/cdn-cgi/challenge-platform/"],' +
+                      '.cf-turnstile,#challenge-stage,#challenge-running,#challenge-form')) return true;
+                    return String(location.href||'').indexOf('/cdn-cgi/challenge-platform/')>=0;
+                  }catch(e){ return false; }
+                }
                 try{
-                  if(window.__keenChallengeActive && window.__keenChallengeActive()){
+                  if(keenChallengeHere()){
                     var cbr=(el0&&el0.getBoundingClientRect)?el0.getBoundingClientRect():{left:0,top:0,width:0,height:0};
                     return JSON.stringify({ok:true,method:'challengeTouch',play:false,href:'',
                       needTouch:true,synthetic:false,tag:(el0&&el0.tagName)||'',

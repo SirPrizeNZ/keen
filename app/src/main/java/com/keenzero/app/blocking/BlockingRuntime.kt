@@ -105,15 +105,6 @@ object BlockingRuntime {
 
         if (!result.blocks) {
             allowed.incrementAndGet()
-            // Targeted diagnostic: an ad creative that renders is always a DOCUMENT that
-            // got through. Logging just those (not every segment/script) keeps the ad
-            // defence auditable on-device without flooding logcat during playback.
-            if (url != null && !request.isForMainFrame && host != null && isAdCandidate(host)) {
-                android.util.Log.i(
-                    "KZ_NETDIAG",
-                    "blk=false 3p host=$host url=${url.take(130)}",
-                )
-            }
             return null
         }
         blocked.incrementAndGet()
@@ -164,17 +155,6 @@ object BlockingRuntime {
         val visibility: String,
     )
 
-    /**
-     * Diagnostic filter: third-party hosts that got through and are NOT part of the known
-     * playback chain. Whatever renders an ad creative must appear here, and the stream
-     * (segments, manifests, player CDN) is excluded so playback does not flood logcat.
-     */
-    private fun isAdCandidate(host: String): Boolean {
-        val page = pageHost.get()
-        if (page != null && RequestBlocker.sameRegistrable(page, host)) return false
-        return KNOWN_PLAYBACK_HOSTS.none { host.contains(it) }
-    }
-
     private fun recordLatency(nanos: Long) {
         matchNanosSum.addAndGet(nanos)
         matchCount.incrementAndGet()
@@ -210,9 +190,4 @@ object BlockingRuntime {
         serviceWorkerInstalled.set(true)
     }
 
-    /** Playback chain — excluded from the ad-candidate diagnostic, never from blocking. */
-    private val KNOWN_PLAYBACK_HOSTS = arrayOf(
-        "cloudflarestorage", "phantemlis", "romponalis", "xameleon", "jsdelivr",
-        "challenges.cloudflare", "chatango", "gstatic", "googleapis",
-    )
 }

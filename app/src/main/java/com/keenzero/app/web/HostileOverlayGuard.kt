@@ -399,29 +399,6 @@ object HostileOverlayGuard {
     restoreScroll(sc.x, sc.y);
     return removed;
   }
-  /**
-   * Diagnostic: describe the positioned layers this frame is carrying. The player frames
-   * are cross-origin, so logcat is the only way to see what an ad element actually looks
-   * like when a rule fails to match it. Runs three times per frame, then stops.
-   */
-  function dumpOverlays(n){
-    try{
-      var out=[];
-      var nodes=document.querySelectorAll('div,section,aside,iframe,a,img');
-      for(var i=0;i<nodes.length&&out.length<5;i++){
-        var el=nodes[i];
-        var s;
-        try{ s=getComputedStyle(el); }catch(e){ continue; }
-        if(!s||(s.position!=='fixed'&&s.position!=='absolute')) continue;
-        var r=el.getBoundingClientRect();
-        if(r.width<100||r.height<50) continue;
-        var z=parseInt(s.zIndex,10); if(!isFinite(z)) z=0;
-        out.push(el.tagName+(el.id?'#'+el.id:'')+' z='+z+' '+(r.left|0)+','+(r.top|0)+' '+
-          (r.width|0)+'x'+(r.height|0)+' "'+textOf(el).slice(0,45)+'"');
-      }
-      if(out.length) console.warn('KZ_OVL'+n+' '+location.host+' :: '+out.join(' | '));
-    }catch(e){}
-  }
   function startObserver(){
     // Replace stale observer from older guard versions.
     try{ if(window.__keenHostileObs){ window.__keenHostileObs.disconnect(); window.__keenHostileObs=null; } }catch(e){}
@@ -478,17 +455,6 @@ object HostileOverlayGuard {
     installKeenStyle();
     startObserver();
     sweepHostile();
-    if(!window.__keenOvlDumped){
-      window.__keenOvlDumped=1;
-      setTimeout(function(){ dumpOverlays(1); }, 2500);
-      setTimeout(function(){ dumpOverlays(2); }, 7000);
-      setTimeout(function(){ dumpOverlays(3); }, 14000);
-      // These creatives inject AFTER the play tap, so the early dumps kept showing a
-      // clean page. Keep sampling across the window where the ad actually appears.
-      setTimeout(function(){ dumpOverlays(4); }, 25000);
-      setTimeout(function(){ dumpOverlays(5); }, 40000);
-      setTimeout(function(){ dumpOverlays(6); }, 60000);
-    }
     // One in-page timer only; do not restart if already running (native sweeps must not re-arm).
     if(window.__keenHostileTimer) return;
     var n=0;

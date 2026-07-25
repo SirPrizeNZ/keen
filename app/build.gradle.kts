@@ -25,8 +25,8 @@ android {
         // until a physical device model is confirmed and a deliberate floor change is approved.
         minSdk = 29
         targetSdk = 35
-        versionCode = 147
-        versionName = "0.1.127"
+        versionCode = 150
+        versionName = "0.1.130"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
