@@ -1243,13 +1243,11 @@ class RemoteInputRouter(
                 // Only nested content rails (movie rows). Never pan the WebView/document —
                 // that drags the hero banner and video player stage sideways.
                 scrollUnderPointer(webView, probeX, probeY, dx, 0, forceWindow = false)
-                // Park cursor in the edge band so hold / repeat keeps revealing the rail.
-                val inset = edge * 0.45f
-                nx = if (holdLeft) {
-                    min(nx, inset)
-                } else {
-                    max(nx, vw - inset)
-                }
+                // Let the pointer glide on to the screen edge (setPosition clamps it to
+                // the margin, which is still well inside EDGE_ZONE_DP, so hold/repeat keeps
+                // revealing the rail). Do NOT yank it back to an inset here: on first entry
+                // the cursor sits near `edge` and snapping to edge*0.45 teleports it ~40px
+                // left in a single frame — the visible "jump" on D-pad left/right.
             } else {
                 endHorizontalDrag()
                 if (!holdLeft && !holdRight) hScrollMissStreak = 0
@@ -2258,6 +2256,38 @@ class RemoteInputRouter(
                 var promoted=promoteInteractive(st);
                 var leafTag=el0?(el0.tagName||''):'';
 
+                // A genuine bot challenge is on screen: hand it a REAL touch, always.
+                // The Turnstile checkbox sits behind a shadow root and a cross-origin
+                // iframe, which a synthetic MouseEvent cannot cross (on-device the
+                // hit-test resolved to a bare DIV and the click silently did nothing) —
+                // and a scripted click is precisely what the challenge is watching for.
+                // Verified provider evidence only, so ads cannot trigger this path.
+                try{
+                  if(window.__keenChallengeActive && window.__keenChallengeActive()){
+                    var cbr=(el0&&el0.getBoundingClientRect)?el0.getBoundingClientRect():{left:0,top:0,width:0,height:0};
+                    return JSON.stringify({ok:true,method:'challengeTouch',play:false,href:'',
+                      needTouch:true,synthetic:false,tag:(el0&&el0.tagName)||'',
+                      x:x,y:y,box:[cbr.left|0,cbr.top|0,cbr.width|0,cbr.height|0]});
+                  }
+                }catch(e){}
+
+                // Nested content (the video player, embeds) lives inside iframes a synthetic
+                // MouseEvent cannot enter — clicking the <iframe> element does nothing, which is
+                // why "press play" appeared dead. When the pointer is over an iframe and no real
+                // control sits above it, dispatch a REAL trusted touch at these coords; that
+                // propagates through the frame boundary to the play button exactly like a finger.
+                if(!promoted){
+                  var keenIfr=null;
+                  for(var ki=0;ki<st.length&&ki<8;ki++){ if((st[ki].tagName||'').toUpperCase()==='IFRAME'){ keenIfr=st[ki]; break; } }
+                  if(!keenIfr&&el0&&(el0.tagName||'').toUpperCase()==='IFRAME') keenIfr=el0;
+                  if(keenIfr){
+                    var kibr=keenIfr.getBoundingClientRect();
+                    return JSON.stringify({ok:true,method:'iframeTouch',play:false,href:'',needTouch:true,synthetic:false,
+                      tag:'IFRAME',cls:String(keenIfr.className||'').slice(0,40),x:x,y:y,
+                      box:[kibr.left|0,kibr.top|0,kibr.width|0,kibr.height|0]});
+                  }
+                }
+
                 // 4a) BUTTON / [role=button] → trusted native touch ONLY (no synthetic click).
                 if(promoted){
                   var ptag=(promoted.tagName||'').toUpperCase();
@@ -2459,6 +2489,22 @@ class RemoteInputRouter(
                     tag:ftag,cls:String(t.className||'').slice(0,40),x:x,y:y,
                     box:[vbr.left|0,vbr.top|0,vbr.width|0,vbr.height|0]});
                 }
+                // Shadow hosts / iframe containers: a synthetic MouseEvent crosses NEITHER
+                // boundary. Cloudflare Turnstile renders its checkbox inside a shadow root
+                // (and a cross-origin iframe), so elementsFromPoint stops at the host DIV,
+                // the iframeTouch branch above never sees an IFRAME, and the synthetic click
+                // below did nothing at all — the checkbox looked dead to the D-pad. Dispatch
+                // a real trusted touch instead, exactly as a finger would.
+                try{
+                  if(t && (t.shadowRoot || (t.querySelector && t.querySelector('iframe')))){
+                    var sbr=t.getBoundingClientRect();
+                    return JSON.stringify({ok:true,method:'shadowOrFrameTouch',play:false,href:'',
+                      needTouch:true,synthetic:false,promotedFrom:leafTag,
+                      text:(t.innerText||'').trim().slice(0,40),
+                      tag:t.tagName||'',cls:String(t.className||'').slice(0,40),
+                      x:x,y:y,box:[sbr.left|0,sbr.top|0,sbr.width|0,sbr.height|0]});
+                  }
+                }catch(e){}
                 // SPA card / remaining non-button: synthetic click is allowed (links already handled).
                 try{
                   t.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window,button:0}));
