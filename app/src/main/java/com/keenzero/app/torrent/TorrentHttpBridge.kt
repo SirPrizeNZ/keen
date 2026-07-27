@@ -137,7 +137,7 @@ class TorrentHttpBridge(
                 }
             }
             // Refresh the playhead window on every HTTP seek/range read.
-            val deadlineEnd = minOf(pieceCount, firstPiece + DEADLINE_WINDOW_PIECES)
+            val deadlineEnd = minOf(pieceCount, firstPiece + deadlineWindowFor(pieceLength))
             for (piece in firstPiece until deadlineEnd) {
                 handle.setPieceDeadline(piece, (piece - firstPiece) * DEADLINE_STEP_MS)
             }
@@ -168,8 +168,30 @@ class TorrentHttpBridge(
 
     companion object {
         private const val LOOPBACK = "127.0.0.1"
-        /** Shared with the service's stall-progress window computation. */
+        /** Floor for the read-ahead window, and the value used when piece length is unknown. */
         const val DEADLINE_WINDOW_PIECES = 12
+
+        /**
+         * How far ahead of the playhead the swarm is told to fetch.
+         *
+         * Expressed in BYTES rather than pieces: a 12-piece window is ~3 MB on a small
+         * torrent with 256 KB pieces but ~48 MB on a big one with 4 MB pieces, so a fixed
+         * piece count gave large films the shortest read-ahead in real time — exactly the
+         * files that most need a cushion. Sizing by bytes gives every torrent a
+         * comparable number of seconds of video in front of the playhead, which is what
+         * stops the "plays, stalls, retries, stalls" cycle on high-bitrate rips.
+         *
+         * This buffer costs disk, not heap — the device has a 256 MB heap cap, so the
+         * cushion deliberately lives in the piece window rather than in the player.
+         */
+        const val READAHEAD_BYTES = 48L * 1024 * 1024
+
+        fun deadlineWindowFor(pieceLength: Int): Int =
+            if (pieceLength <= 0) {
+                DEADLINE_WINDOW_PIECES
+            } else {
+                (READAHEAD_BYTES / pieceLength).toInt().coerceIn(DEADLINE_WINDOW_PIECES, 256)
+            }
         private const val DEADLINE_STEP_MS = 250
         private const val PIECE_POLL_MS = 75L
         private const val STALL_NOTIFY_FIRST_MS = 450L

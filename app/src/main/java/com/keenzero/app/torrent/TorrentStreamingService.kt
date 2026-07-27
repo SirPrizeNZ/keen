@@ -141,9 +141,37 @@ class TorrentStreamingService : Service() {
             override fun types(): IntArray = intArrayOf(
                 AlertType.METADATA_RECEIVED.swig(),
                 AlertType.ADD_TORRENT.swig(),
+                AlertType.TORRENT_FINISHED.swig(),
             )
 
             override fun alert(alert: Alert<*>) {
+                // Download complete: leave the swarm outright, keeping the files.
+                //
+                // Deliberately a removal, not an upload-rate limit of zero. A throttled
+                // seed is still a seed — still announcing to the tracker, still holding
+                // peer connections, still able to serve pieces. Removing the handle takes
+                // this box out of the swarm entirely, so nothing can be uploaded from it
+                // after the download finishes. Re-adding (a repair, or a re-star) rechecks
+                // the pieces already on disk, so nothing is re-downloaded needlessly.
+                if (alert.type() == AlertType.TORRENT_FINISHED) {
+                    val finishedHash =
+                        (alert as org.libtorrent4j.alerts.TorrentAlert<*>).handle().infoHash()
+                    worker.execute {
+                        val handle = session.find(finishedHash) ?: return@execute
+                        if (handle.isValid) {
+                            // false: keep the downloaded files, drop only the swarm membership.
+                            session.remove(handle)
+                            Log.i(TAG, "Download finished; left the swarm (no seeding): $finishedHash")
+                        }
+                        sendBroadcast(
+                            Intent(ACTION_DOWNLOAD_COMPLETE)
+                                .setPackage(packageName)
+                                .putExtra(EXTRA_REQUEST_ID, id)
+                                .putExtra(EXTRA_INFO_HASH, finishedHash.toString()),
+                        )
+                    }
+                    return
+                }
                 val hasMetadata = when (alert) {
                     // Magnet path: metadata just arrived from peers.
                     is MetadataReceivedAlert -> true
@@ -268,7 +296,7 @@ class TorrentStreamingService : Service() {
             // Player seeked past the downloaded window and reads are blocked:
             // surface buffering progress over the playhead window so the UI can
             // bring the loader back until playback can resume.
-            onStall = { piece -> sendSeekBufferProgress(id, piece, lastPiece) },
+            onStall = { piece -> sendSeekBufferProgress(id, piece, lastPiece, info.pieceLength()) },
         )
         bridge = server
         server.startBridge()
@@ -277,7 +305,8 @@ class TorrentStreamingService : Service() {
         // Head pieces must exist before the player opens or the video element sits
         // on a black frame with no feedback. Tail pieces cover mp4 moov-at-end /
         // mkv cues that players fetch immediately via a range request.
-        val headCount = ((HEAD_BUFFER_BYTES + info.pieceLength() - 1) / info.pieceLength())
+        val headBytes = headBufferBytesFor(mediaSize)
+        val headCount = ((headBytes + info.pieceLength() - 1) / info.pieceLength())
             .toInt().coerceIn(1, lastPiece - firstPiece + 1)
         val headPieces = (firstPiece until firstPiece + headCount).toList()
         val tailPieces =
@@ -292,22 +321,31 @@ class TorrentStreamingService : Service() {
         // parallel and the number never parks just short of done.
         headPieces.forEachIndexed { i, piece -> handle.setPieceDeadline(piece, i * 250) }
         tailPieces.forEach { piece -> handle.setPieceDeadline(piece, 250) }
-        startBufferLoop(id, server, title, bufferPieces, info.pieceLength())
+        startBufferLoop(id, server, title, mediaFile.absolutePath, bufferPieces, info.pieceLength())
     }
 
     /** Mid-playback seek stall: buffering percent over the deadline window at [piece]. */
-    private fun sendSeekBufferProgress(id: String, piece: Int, lastPiece: Int) {
+    private fun sendSeekBufferProgress(id: String, piece: Int, lastPiece: Int, pieceLength: Int) {
         try {
             val handle = mediaHandle ?: return
             if (id != requestId || !handle.isValid) return
-            val windowEnd = minOf(lastPiece + 1, piece + TorrentHttpBridge.DEADLINE_WINDOW_PIECES)
+            // Must match the bridge's own read-ahead window or the buffering percent
+            // measures a different span than the one actually being fetched.
+            val windowEnd = minOf(
+                lastPiece + 1,
+                piece + TorrentHttpBridge.deadlineWindowFor(pieceLength),
+            )
             val window = piece until windowEnd
             val have = window.count { handle.havePiece(it) }
             val size = (windowEnd - piece).coerceAtLeast(1)
             val status = handle.status()
             sendProgress(
                 id,
-                STAGE_BUFFERING,
+                // Distinct from the initial buffer loop's STAGE_BUFFERING. They used to
+                // share a stage, so suppressing the start-up stall also blanked the real
+                // 0 -> 100 progress, peers, seeds and speed: the stream ran fine and the
+                // UI showed nothing.
+                STAGE_SEEK_BUFFERING,
                 percent = (have * 100) / size,
                 peers = status.numPeers(),
                 seeds = status.numSeeds(),
@@ -323,6 +361,7 @@ class TorrentStreamingService : Service() {
         id: String,
         server: TorrentHttpBridge,
         title: String,
+        mediaPath: String,
         bufferPieces: List<Int>,
         pieceLen: Int,
     ) {
@@ -346,7 +385,11 @@ class TorrentStreamingService : Service() {
                             .putExtra(EXTRA_REQUEST_ID, id)
                             .putExtra(EXTRA_PLAYER_URL, server.playerUrl)
                             .putExtra(EXTRA_STREAM_URL, server.streamUrl)
-                            .putExtra(EXTRA_TITLE, title),
+                            .putExtra(EXTRA_TITLE, title)
+                            // Card artwork decodes a frame straight off this file. Going
+                            // through the bridge instead would re-arm the piece deadlines
+                            // at the poster's timestamp and stall real playback.
+                            .putExtra(EXTRA_MEDIA_PATH, mediaPath),
                     )
                 } else {
                     // Byte-accurate: completed buffer pieces plus the finished blocks
@@ -524,6 +567,11 @@ class TorrentStreamingService : Service() {
         const val ACTION_READY = "com.keenzero.app.torrent.READY"
         const val ACTION_ERROR = "com.keenzero.app.torrent.ERROR"
         const val ACTION_PROGRESS = "com.keenzero.app.torrent.PROGRESS"
+
+        /** Whole file is on disk and this box has left the swarm. */
+        const val ACTION_DOWNLOAD_COMPLETE = "com.keenzero.app.torrent.DOWNLOAD_COMPLETE"
+        const val EXTRA_INFO_HASH = "info_hash"
+
         const val EXTRA_MAGNET = "magnet"
         const val EXTRA_TORRENT_URL = "torrent_url"
         const val EXTRA_COOKIES = "cookies"
@@ -531,6 +579,9 @@ class TorrentStreamingService : Service() {
         const val EXTRA_REQUEST_ID = "request_id"
         const val EXTRA_PLAYER_URL = "player_url"
         const val EXTRA_STREAM_URL = "stream_url"
+
+        /** Absolute path of the media file the bridge serves (Continue-card frame grabs). */
+        const val EXTRA_MEDIA_PATH = "media_path"
         const val EXTRA_TITLE = "title"
         const val EXTRA_ERROR = "error"
         const val EXTRA_STAGE = "stage"
@@ -543,6 +594,10 @@ class TorrentStreamingService : Service() {
         const val STAGE_CONNECTING = "connecting"
         const val STAGE_METADATA = "metadata"
         const val STAGE_BUFFERING = "buffering"
+
+        /** Mid-playback seek outran the downloaded window — not start-up buffering. */
+        const val STAGE_SEEK_BUFFERING = "seek_buffering"
+
 
         val VIDEO_EXTENSIONS = setOf(
             "mp4", "mkv", "webm", "m4v", "mov", "avi", "ts", "m2ts", "mpg", "mpeg", "3gp",
@@ -561,7 +616,15 @@ class TorrentStreamingService : Service() {
         private const val TAG = "KeenTorrent"
         private const val CHANNEL_ID = "keen_torrent_streaming"
         private const val NOTIFICATION_ID = 1002
-        private const val CONNECTION_LIMIT = 60
+        /**
+         * Peer connections. Lowered from 60: the TV box's Wi-Fi firmware watchdog-reset
+         * twice in one day under sustained streaming, reloading the driver from cold
+         * (`Unknown iface name: wlan0` / `Waiting for the driver ready`) while the RF link
+         * itself was clean — -47 dBm, zero retries, zero loss. Cheap TV-box radios fall
+         * over on concurrent-socket count long before they run out of bandwidth, and 40
+         * peers saturates a 1200 Mbps link on this hardware just as well as 60.
+         */
+        private const val CONNECTION_LIMIT = 40
         private const val ACTIVE_DOWNLOADS = 1
         private const val DISK_QUEUE_BYTES = 24 * 1024 * 1024
         private const val PROGRESS_INTERVAL_MS = 750L
@@ -571,5 +634,20 @@ class TorrentStreamingService : Service() {
         private const val MAX_TORRENT_FILE_BYTES = 20 * 1024 * 1024
         private const val HEAD_BUFFER_BYTES = 6L * 1024 * 1024
         private const val TAIL_BUFFER_PIECES = 2
+
+        /**
+         * Bytes to bank before playback starts, scaled to the film's size.
+         *
+         * A flat 6 MB is a couple of seconds on a 4 GB remux and perfectly adequate on a
+         * 700 MB rip. Since bitrate tracks file size closely for a given runtime, size is
+         * a good enough proxy: big files wait longer up front and then hold, instead of
+         * starting instantly and stalling every few seconds.
+         */
+        fun headBufferBytesFor(mediaSize: Long): Long = when {
+            mediaSize >= 8L * 1024 * 1024 * 1024 -> 32L * 1024 * 1024
+            mediaSize >= 4L * 1024 * 1024 * 1024 -> 24L * 1024 * 1024
+            mediaSize >= 2L * 1024 * 1024 * 1024 -> 16L * 1024 * 1024
+            else -> HEAD_BUFFER_BYTES
+        }
     }
 }

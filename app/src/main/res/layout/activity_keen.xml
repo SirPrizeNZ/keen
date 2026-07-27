@@ -42,7 +42,7 @@
                         android:layout_height="26dp"
                         android:layout_marginStart="10dp"
                         android:layout_marginTop="3dp"
-                        android:alpha="0.9"
+                        android:alpha="1.0"
                         android:background="@drawable/focusable_icon"
                         android:clickable="true"
                         android:contentDescription="@string/app_name"
@@ -69,8 +69,8 @@
                         android:paddingTop="8dp"
                         android:paddingBottom="4dp"
                         android:singleLine="true"
-                        android:textColor="#FFE8E8E8"
-                        android:textColorHint="#FF666666"
+                        android:textColor="@android:color/white"
+                        android:textColorHint="@color/keen_url_hint"
                         android:textSize="14sp"
                         android:importantForAutofill="no" />
 
@@ -410,6 +410,8 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="#FF000000"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
         android:clipChildren="false"
         android:clipToPadding="false"
         android:paddingStart="48dp"
@@ -450,8 +452,8 @@
                 android:paddingEnd="10dp"
                 android:paddingVertical="6dp"
                 android:singleLine="true"
-                android:textColor="@color/keen_text"
-                android:textColorHint="#FF4A4F58"
+                android:textColor="@android:color/white"
+                android:textColorHint="@color/keen_url_hint"
                 android:textSize="14sp"
                 android:importantForAutofill="no" />
         </LinearLayout>
@@ -468,7 +470,7 @@
                 android:id="@+id/homeLogo"
                 android:layout_width="176dp"
                 android:layout_height="145dp"
-                android:alpha="0.4"
+                android:alpha="1.0"
                 android:contentDescription="@string/app_name"
                 android:scaleType="fitCenter"
                 android:src="@drawable/keen_mark" />
@@ -478,13 +480,28 @@
              clipChildren/clipToPadding=false throughout this column: focus-scale
              microinteractions grow tiles a few % past their laid-out box, and a
              LinearLayout's default clip would silently crop that growth away. -->
+        <!-- Scrollable: with Favourites + Continue + Downloaded the column is taller
+             than the screen, and an unscrolled FrameLayout child simply ran off the
+             bottom — the last row's card and title were unreachable, and focus could
+             not travel back up because the rows above were off-screen. A ScrollView
+             also auto-scrolls to whichever card takes focus, which is what makes
+             up/down between the three rows work at all. -->
+        <ScrollView
+            android:id="@+id/homeScroll"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_marginTop="56dp"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:scrollbars="none">
+
         <LinearLayout
             android:id="@+id/homeContentColumn"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="start|center_vertical"
             android:layout_marginStart="24dp"
-            android:layout_marginTop="48dp"
+            android:layout_marginTop="24dp"
+            android:paddingBottom="48dp"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:orientation="vertical">
@@ -549,7 +566,49 @@
                     android:orientation="horizontal" />
             </HorizontalScrollView>
         </LinearLayout>
+
+        <!-- Downloaded: starred titles kept on the box. Same construction as the
+             Continue row (shared buildMediaCard) so the two read as one system. -->
+        <LinearLayout
+            android:id="@+id/downloadedGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="34dp"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/downloadedHeading"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-bold"
+                android:letterSpacing="-0.015"
+                android:text="@string/downloaded_heading"
+                android:textColor="@color/keen_muted"
+                android:textSize="26sp" />
+
+            <HorizontalScrollView
+                android:id="@+id/downloadedScroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/downloadedRow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clipChildren="false"
+                    android:clipToPadding="false"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
         </LinearLayout>
+        </LinearLayout>
+        </ScrollView>
 
         <!-- Hidden diagnostics surface (populated by evidence export intents). -->
         <TextView

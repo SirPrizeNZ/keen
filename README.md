@@ -16,6 +16,8 @@
 <p align="center">
   <a href="https://github.com/SirPrizeNZ/keen/releases/download/v0.1.154/keen-0.1.154-32bit-armeabi-v7a.apk"><img src="https://img.shields.io/badge/download-APK%20v0.1.154%20%C2%B7%2032--bit-111111?style=for-the-badge" alt="Download Keen v0.1.154 APK"></a>
   &nbsp;
+  <a href="https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.0-beta.1"><img src="https://img.shields.io/badge/beta-v0%2E2%2E0--beta%2E1-8250df?style=for-the-badge" alt="Keen beta v0.2.0-beta.1"></a>
+  &nbsp;
   <a href="https://github.com/SirPrizeNZ/keen/releases/latest"><img src="https://img.shields.io/badge/github-releases-24292f?style=for-the-badge" alt="GitHub Releases"></a>
   &nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-2ea44f?style=for-the-badge" alt="GNU AGPL-3.0 License"></a>
@@ -66,10 +68,16 @@ The result: an **18.4 MiB** signed APK that boots in under a second on a 2 GB bo
 Open any site. Navigate with the D-pad or a pointer. Bookmark favourites to the home screen as tiles. It's a real WebView — every site that works in Chrome on Android works here.
 
 ### 🧲 Stream large media over open protocols
-Activate a `magnet:` link or a `.torrent` — the open, decentralised way large media is distributed (Creative Commons films like the [Blender open movies](https://studio.blender.org/films/), Linux ISOs, public-domain archives, your own self-hosted library). Keen spins up a **separate BitTorrent process** (`libtorrent4j`), fetches the largest video file **sequentially**, and pipes it over a **loopback-only HTTP bridge** straight into ExoPlayer — so playback starts before the download finishes. Nothing lands in your Downloads folder, and the cache deletes itself when you stop.
+Activate a `magnet:` link or a `.torrent` — the open, decentralised way large media is distributed (Creative Commons films like the [Blender open movies](https://studio.blender.org/films/), Linux ISOs, public-domain archives, your own self-hosted library). Keen spins up a **separate BitTorrent process** (`libtorrent4j`), fetches the largest video file **sequentially**, and pipes it over a **loopback-only HTTP bridge** straight into ExoPlayer — so playback starts before the download finishes. Read-ahead is sized in bytes rather than pieces, so a large high-bitrate film gets the same cushion in seconds as a small one, and playback holds instead of stalling every few seconds. Nothing lands in your Downloads folder, and the cache deletes itself when you stop.
+
+### ⭐ Keep a title on the box
+Press the star in the player to save what you are watching. Keen finishes the download in the background, in a torrent session of its own, so starting another stream or leaving the app never interrupts it. Saved titles appear in a **Downloaded** row on the home screen and play straight from local storage with no network. Once a download completes, Keen leaves the swarm immediately and never uploads. Press the star again to delete the file completely.
 
 ### 🔊 Play audio the WebView can't
 The WebView's software decoder chokes on E-AC-3, DTS and similar codecs. Keen intercepts the media URL and hands it to **Media3 / ExoPlayer**, which reaches the TV's **hardware decoders** directly. Surround sound just works.
+
+### ⌨️ An address bar that finishes the job
+Typing a URL with a D-pad is slow, so Keen completes it. Type `13` and the rest of a site you have opened before appears in grey after the cursor. Press OK to go there, or keep typing to override it.
 
 ### 💬 Subtitles, automatically
 If the stream carries English subtitle tracks, Keen selects them by default. No menu diving.
@@ -120,6 +128,20 @@ Not one filter. Seven:
 
 The published build is the 32-bit ARMv7 APK for classic Android TV hardware. There is no dedicated arm64 package yet.
 
+### Beta channel
+
+Betas ship ahead of the stable release so new work can be tested on real hardware. They are signed with the same key, so they install over a stable build in place and keep favourites, history and watch positions. Expect rough edges.
+
+| | |
+|:--|:--|
+| **Version** | v0.2.0-beta.1 (`versionCode` 198) |
+| **Channel** | Beta (pre-release) |
+| **Size** | 18.3 MiB (signed) |
+| **APK** | **[keen-0.2.0-beta.1-32bit-armeabi-v7a.apk](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.1/keen-0.2.0-beta.1-32bit-armeabi-v7a.apk)** |
+| **Checksum** | [`SHA256SUMS`](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.1/SHA256SUMS) |
+| **Release notes** | [Keen v0.2.0-beta.1](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.0-beta.1) |
+
+
 ### Install over Wi-Fi
 
 1. On the TV, enable **USB debugging** and **Wireless debugging** in Developer options.
@@ -135,6 +157,22 @@ adb install -r keen-0.1.154-32bit-armeabi-v7a.apk
 
 > [!TIP]
 > Wireless debugging often shows a port other than `5555` — use the exact one the TV displays.
+
+---
+
+## New in v0.2.0-beta.1 (beta)
+
+- ⭐ **Save titles to the box.** A star in the player, left of the subtitle button, keeps what you are watching. The download finishes in the background and the title appears in a new **Downloaded** row, playable offline. Unstarring deletes it completely, after a confirmation
+- 🔒 **Never seeds.** When a download finishes, Keen removes the torrent from its session and leaves the swarm. Nothing is uploaded afterwards
+- 🧱 **Downloads are fully separate from streaming.** Saved downloads run in their own process and their own torrent session, so starting a stream, leaving the player or closing the app cannot disturb them
+- 🖼 **Real artwork for saved titles.** A frame is decoded from the finished file for the card, replacing the placeholder
+- 🧲 **Card art fixed for torrents.** Frames are decoded from the media file instead of read back from the video plane, which on some hardware returned a garbled image of the source page rather than the film
+- ⏱ **Steadier playback on large files.** Longer buffers, a byte-sized read-ahead window, and a much larger cushion before playback resumes after a stall
+- 🎚 **The scrubber now moves while you hold ← / →**, travelling to the position the seek will land on
+- ⌨️ **Address bar prediction** from sites you have opened before, shown in grey after the cursor
+- 🔗 **The address bar is reachable in compatibility mode.** Pressing OK on it opens the keyboard, as it does everywhere else
+- 📶 **Fewer Wi-Fi dropouts.** The peer limit was lowered after the box's Wi-Fi firmware was seen resetting under load on an otherwise clean link
+- 🏠 **Home screen fixes.** The rows scroll, focus moves between them properly, and pressing a Continue card no longer opens the keyboard
 
 ---
 
@@ -157,6 +195,7 @@ Earlier highlights (v0.1.94): K logo returns home, smoother hold-seek, honest bu
 - **More subtitle languages** beyond the current English auto-selection
 - **Accessibility** — TalkBack and large-text passes for the remote-first UI
 - **Richer favourites** — HTML `<link rel>` favicon resolution and reorderable tiles
+- **Queued downloads** so several saved titles can be lined up rather than one at a time
 
 Contributions toward any of these are especially welcome — see [Contributing](#contributing).
 
@@ -172,12 +211,15 @@ flowchart TD
         direction TB
         UI["Control layer<br/>D-pad focus · address bar<br/>favourites · home screen"]
         WV["System WebView<br/>Chromium-based · already on TV<br/>maintained by Google"]
-        TOR["Torrent process · isolated<br/>libtorrent4j · sequential<br/>auto-deleting cache"]
+        TOR["Streaming torrent process<br/>libtorrent4j · sequential<br/>auto-deleting cache"]
+        LIB["Library download process<br/>own libtorrent session<br/>saves to app storage · never seeds"]
         EXO["Media3 / ExoPlayer<br/>hardware decoders<br/>subtitles · resume"]
 
         UI -->|open a site| WV
         WV -->|media URL| EXO
         TOR -->|loopback HTTP| EXO
+        UI -->|star a title| LIB
+        LIB -->|finished file| EXO
     end
 
     EXO --> OUT(["🔊 TV hardware decoders"])
@@ -191,9 +233,11 @@ flowchart TD
     class R,OUT edge;
     class UI control;
     class WV engine;
-    class TOR torrent;
+    class TOR,LIB torrent;
     class EXO player;
 ```
+
+Streaming and saving are deliberately independent. Each owns its own torrent session in its own process, so a stream cannot delete a download and a download cannot disturb a stream.
 
 The loading screen reports live **peers, seeds and speed** with a byte-accurate, smoothly animated progress readout — so you always know what the stream is doing before the first frame.
 

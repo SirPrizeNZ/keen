@@ -9,4 +9,17 @@
     <color name="keen_accent">#FF5CE1A8</color>
     <color name="keen_danger">#FFFF6B6B</color>
     <color name="keen_banner_bg">#FF10141C</color>
+    <!-- Address-bar autocomplete tail: clearly present, clearly not yet typed.
+         Kept genuinely dark. The typed text is already pure white at the top of the
+         range, so all separation between "typed" and "predicted" has to come from
+         pushing this end down — and it has to survive panel bloom, which on a bright
+         TV in a dark room smears small bright glyphs until near values collapse into
+         one another. A lighter tail (#B4BBC7) tested as indistinguishable from the
+         white it sits next to. -->
+    <color name="keen_url_prediction">#FF6B7280</color>
+    <!-- Address-bar placeholder. Deliberately bright: on the all-black home screen this
+         hint IS the URL area most of the time, so a dark value (#4A4F58) made the whole
+         row read grey while the same field over a loaded page rendered pure white. Kept
+         a shade under white so an empty field is still distinguishable from a real one. -->
+    <color name="keen_url_hint">#FFC8CDD6</color>
 </resources>

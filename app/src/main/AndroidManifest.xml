@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Starred background downloads. Required from Android 14 for a dataSync service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- TV-first: touch not required. -->
     <uses-feature
@@ -53,5 +55,14 @@
             android:foregroundServiceType="mediaPlayback"
             android:process=":torrent"
             android:stopWithTask="true" />
+
+        <!-- Separate process AND separate service from streaming: a starred download
+             must survive the player, new streams, and the user leaving the app. -->
+        <service
+            android:name=".library.LibraryDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:process=":library"
+            android:stopWithTask="false" />
     </application>
 </manifest>

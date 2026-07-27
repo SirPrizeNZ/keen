@@ -57,6 +57,10 @@ class CompatibilitySession(
     private val starButtonRect: () -> android.graphics.RectF? = { null },
     /** Pointer OK on the star: toggle the favourite for the current page. */
     private val onFavouriteActivate: () -> Unit = {},
+    /** Height of Keen's chrome bar above this WebView, or 0 when it is hidden. */
+    private val chromeHeightPx: () -> Int = { 0 },
+    /** Pointer OK in the chrome band but off the logo/star: focus the address bar. */
+    private val onUrlBarActivate: () -> Unit = {},
 ) {
 
     val instanceId: Int = NEXT_ID.incrementAndGet()
@@ -149,6 +153,8 @@ class CompatibilitySession(
             onHomeActivate = onHomeActivate,
             starButtonRect = starButtonRect,
             onFavouriteActivate = onFavouriteActivate,
+            chromeHeightPx = chromeHeightPx,
+            onUrlBarActivate = onUrlBarActivate,
         )
         ctrl.attach()
         controller = ctrl

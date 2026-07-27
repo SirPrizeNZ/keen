@@ -38,6 +38,10 @@ class CompatibilityRemoteController(
     private val starButtonRect: () -> android.graphics.RectF? = { null },
     /** Pointer OK on the star: toggle the favourite. */
     private val onFavouriteActivate: () -> Unit = {},
+    /** Height of Keen's chrome bar above the WebView, or 0 when it is hidden. */
+    private val chromeHeightPx: () -> Int = { 0 },
+    /** Pointer OK in the chrome band but off the logo/star: open the address bar. */
+    private val onUrlBarActivate: () -> Unit = {},
 ) {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -206,24 +210,34 @@ class CompatibilityRemoteController(
      */
     private fun dispatchNativeTap() {
         if (tapInFlight) return
-        // Keen's chrome bar sits above the WebView, so OK on the K logo has to mean
-        // "go home" rather than a tap into the page — the same rule the normal pointer
-        // follows. Checked before any MotionEvent is built, so the page never sees it.
-        homeButtonRect()?.let { rect ->
-            if (rect.contains(cursor.cursorX, cursor.cursorY)) {
-                cursor.wake()
-                CompatibilityDiag.event("dpad_home_activate")
-                onHomeActivate()
-                return
+        // Keen's chrome bar sits above the WebView, so an OK anywhere in that band is a
+        // press on Keen's own chrome, never a tap into the page — the same rule the
+        // normal pointer follows (RemoteInputRouter). Resolved before any MotionEvent is
+        // built, so the page never sees it. Without the band check, only the logo and
+        // star responded and the address bar could not be opened at all: its tap was
+        // clamped into the top row of the page instead.
+        val chromeH = chromeHeightPx().coerceAtLeast(0).toFloat()
+        if (chromeH > 0f && cursor.cursorY <= chromeH + CHROME_BAND_PAD_PX) {
+            homeButtonRect()?.let { rect ->
+                if (hits(rect)) {
+                    cursor.wake()
+                    CompatibilityDiag.event("dpad_home_activate")
+                    onHomeActivate()
+                    return
+                }
             }
-        }
-        starButtonRect()?.let { rect ->
-            if (rect.contains(cursor.cursorX, cursor.cursorY)) {
-                cursor.wake()
-                CompatibilityDiag.event("dpad_favourite_activate")
-                onFavouriteActivate()
-                return
+            starButtonRect()?.let { rect ->
+                if (hits(rect)) {
+                    cursor.wake()
+                    CompatibilityDiag.event("dpad_favourite_activate")
+                    onFavouriteActivate()
+                    return
+                }
             }
+            cursor.wake()
+            CompatibilityDiag.event("dpad_url_bar_activate")
+            onUrlBarActivate()
+            return
         }
         tapInFlight = true
         cursor.wake()
@@ -267,6 +281,13 @@ class CompatibilityRemoteController(
         }, TAP_DURATION_MS)
     }
 
+    /** Cursor inside [rect], with the same forgiveness the normal pointer allows. */
+    private fun hits(rect: android.graphics.RectF): Boolean =
+        cursor.cursorX >= rect.left - BUTTON_HIT_PAD_PX &&
+            cursor.cursorX <= rect.right + BUTTON_HIT_PAD_PX &&
+            cursor.cursorY >= rect.top - BUTTON_HIT_PAD_PX &&
+            cursor.cursorY <= rect.bottom + BUTTON_HIT_PAD_PX
+
     /** Cursor position expressed in the WebView's own coordinate space. */
     private fun cursorInWebViewSpace(): Pair<Float, Float> {
         val cursorLoc = IntArray(2)
@@ -296,5 +317,9 @@ class CompatibilityRemoteController(
 
         /** Long enough to read as a deliberate tap, short enough not to be a long-press. */
         const val TAP_DURATION_MS = 60L
+
+        /** Matches RemoteInputRouter's chrome-band slop and STAR/HOME_HIT_PAD_PX. */
+        const val CHROME_BAND_PAD_PX = 4f
+        const val BUTTON_HIT_PAD_PX = 28f
     }
 }
