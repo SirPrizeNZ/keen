@@ -1,13 +1,20 @@
 <div align="center">
 
+<br>
+<br>
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
   <img src="assets/logo-light.svg" alt="Keen" width="200">
 </picture>
 
 <br>
+<br>
+<br>
 
 <img src="assets/keen-title.png" alt="Keen" width="150">
+
+<br>
 
 **Keen is an open-source Android TV browser built for hostile streaming sites.**
 
