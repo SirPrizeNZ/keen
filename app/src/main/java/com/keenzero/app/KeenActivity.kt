@@ -142,9 +142,31 @@ class KeenActivity : AppCompatActivity() {
      */
     private var torrentPlaybackStarted = false
 
+    /** True from launch until a restored session has taken over the screen. */
+    private var autoContinuePending = false
+
+    /** Consecutive playback errors recovered from; reset once playback resumes. */
+    private var torrentPlayerRetries = 0
+
     /** Frame grab for the Continue card: retries while playback hasn't produced a usable frame. */
     private var torrentFrameAttempts = 0
     private val torrentFrameCaptureRunnable = Runnable { captureTorrentFrame("scheduled") }
+
+    /**
+     * Writes the playback position while a torrent plays.
+     *
+     * Checkpoints were only saved on pause, on exit, and after the first frame capture at
+     * 75 s. Anything that kills the process before one of those — a low-memory kill, a
+     * crash, an app update, a power cut — lost the title from Continue watching entirely,
+     * which is exactly what those checkpoints exist to survive. Cheap: one small write.
+     */
+    private val torrentCheckpointRunnable = object : Runnable {
+        override fun run() {
+            if (!nativeTorrentPlayerActive) return
+            saveTorrentResumePoint()
+            binding.root.postDelayed(this, TORRENT_CHECKPOINT_INTERVAL_MS)
+        }
+    }
     /** og:image / poster of the current page — attached to media checkpoints. */
     private var currentPagePosterUrl: String? = null
     private var posterProbeUrl: String? = null
@@ -172,6 +194,38 @@ class KeenActivity : AppCompatActivity() {
 
     /** Star injected into the player controls, left of the subtitle button. */
     private var playerStarButton: android.widget.ImageButton? = null
+
+    /**
+     * Per-title views of the Downloaded row, so a progress tick can update the figure in
+     * place. Rebuilding the row every two seconds would restart its entry animations and
+     * throw away D-pad focus mid-scroll.
+     */
+    private val downloadedCardViews =
+        mutableMapOf<String, Pair<android.widget.TextView, View>>()
+
+    /** Interrupted downloads are restarted once per activity start, not per repaint. */
+    private var resumedDownloadsThisSession = false
+
+    /**
+     * Polls the library index while a download is running and the home screen is up.
+     *
+     * The download service broadcasts on every tick, but the card was still showing a
+     * stale figure, so the row no longer depends on that broadcast arriving: the index is
+     * a small JSON file and reading it once a second is far cheaper than being wrong.
+     * Stops itself as soon as nothing is downloading.
+     */
+    private val downloadProgressTicker = object : Runnable {
+        override fun run() {
+            if (uiState != AppUiState.HOME) return
+            applyDownloadProgress()
+            if (libraryStore.list().any {
+                    it.state == com.keenzero.app.library.StarredLibraryStore.State.DOWNLOADING
+                }
+            ) {
+                binding.root.postDelayed(this, DOWNLOAD_TICK_MS)
+            }
+        }
+    }
 
     /** True while the address bar is writing its own inline completion (re-entrancy guard). */
     private var applyingUrlCompletion = false
@@ -228,8 +282,8 @@ class KeenActivity : AppCompatActivity() {
                     showNativeTorrentPlayer(streamUrl, title.orEmpty())
                 }
                 com.keenzero.app.library.LibraryDownloadService.ACTION_LIBRARY_CHANGED -> {
-                    // The download service owns the library records; we only repaint.
-                    if (uiState == AppUiState.HOME) hydrateDownloadedRow()
+                    // The download service owns the records; we only reflect them.
+                    if (uiState == AppUiState.HOME) applyDownloadProgress()
                 }
                 TorrentStreamingService.ACTION_ERROR -> {
                     val message = intent.getStringExtra(TorrentStreamingService.EXTRA_ERROR)
@@ -341,6 +395,15 @@ class KeenActivity : AppCompatActivity() {
             },
         )
 
+        // Decided BEFORE the home surface renders. On a cold start the favourites and
+        // Continue rows have not hydrated yet, so showHome() briefly sees an empty home
+        // and focuses the address field — and on Android TV focusing an EditText raises
+        // the keyboard on its own, with no showSoftInput call to suppress. The movie then
+        // loads underneath an IME nobody asked for.
+        autoContinuePending = intent?.getStringExtra("com.keenzero.app.extra.LAB_URL").isNullOrBlank() &&
+            intent?.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) != true &&
+            continuityStore.load()?.url != null &&
+            !continuityStore.wasAtHome()
         showHome(status = getString(R.string.status_home))
         recordEvent(NavigationEvent(System.currentTimeMillis(), "native_home_ready"))
         // LAB_URL / harness extras allowed on release for physical TV validation.
@@ -388,6 +451,18 @@ class KeenActivity : AppCompatActivity() {
         // The process may die in the background; keep the resume point current.
         saveTorrentResumePoint()
         super.onStop()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // The window regaining focus is where Android restores a previously-shown IME.
+        // Unless the user is actually in the address field right now, it goes away.
+        if (hasFocus &&
+            !binding.homeUrlInput.hasFocus() &&
+            !binding.browseUrlEdit.hasFocus()
+        ) {
+            dismissHomeKeyboard()
+        }
     }
 
     override fun onResume() {
@@ -459,7 +534,9 @@ class KeenActivity : AppCompatActivity() {
                 .setInterpolator(android.view.animation.DecelerateInterpolator())
                 .start()
         }
-        if (!hasContent) {
+        // requestFocus() alone opens the TV keyboard, so the guard has to sit here, not
+        // just on the showKeyboard call below.
+        if (!hasContent && !autoContinuePending) {
             binding.homeUrlInput.requestFocus()
             binding.homeUrlInput.post {
                 // This runs a frame later, so the world may have moved on: a cold start
@@ -503,19 +580,25 @@ class KeenActivity : AppCompatActivity() {
      */
     private fun hydrateDownloadedRow(): Boolean {
         libraryStore.reconcile()
+        resumeInterruptedDownloads()
         val entries = libraryStore.list()
+        downloadedCardViews.clear()
         binding.downloadedRow.removeAllViews()
         binding.downloadedScroll.scrollTo(0, 0)
         binding.downloadedGroup.visibility = if (entries.isEmpty()) View.GONE else View.VISIBLE
         if (entries.isEmpty()) return false
         entries.forEach { entry ->
             val complete = entry.state == com.keenzero.app.library.StarredLibraryStore.State.COMPLETE
-            val label = if (complete) {
-                prettyMediaTitle(entry.title) ?: entry.title
-            } else {
-                // Downloading: say so on the card rather than offering an unplayable title.
-                val pct = (entry.progress * 100).toInt()
-                "${prettyMediaTitle(entry.title) ?: entry.title} · $pct%"
+            val name = prettyMediaTitle(entry.title) ?: entry.title
+            val pct = (entry.progress * 100).toInt()
+            val label = if (complete) name else "$name · Downloading"
+            // Finished titles carry no chip at all: the card and its name are the whole
+            // story, exactly as asked. Anything unfinished says so, in figures.
+            val chip = when (entry.state) {
+                com.keenzero.app.library.StarredLibraryStore.State.COMPLETE -> null
+                com.keenzero.app.library.StarredLibraryStore.State.FAILED -> getString(R.string.library_failed_chip)
+                com.keenzero.app.library.StarredLibraryStore.State.QUEUED -> getString(R.string.library_queued_chip)
+                else -> downloadChipText(entry)
             }
             val card = buildMediaCard(
                 titleText = label,
@@ -525,14 +608,20 @@ class KeenActivity : AppCompatActivity() {
                 fraction = if (complete) 0f else entry.progress,
                 scroll = binding.downloadedScroll,
                 onClick = {
-                    if (complete) {
-                        playLibraryEntry(entry)
-                    } else {
-                        Toast.makeText(this, R.string.library_still_downloading, Toast.LENGTH_SHORT).show()
-                    }
+                    // An unfinished title cannot be played, so OK offers the only action
+                    // that makes sense on it rather than a toast that leads nowhere.
+                    if (complete) playLibraryEntry(entry) else confirmRemoveLibraryEntry(entry)
                 },
+                badge = chip,
+                onLongClick = { confirmRemoveLibraryEntry(entry) },
             )
             binding.downloadedRow.addView(card)
+            @Suppress("UNCHECKED_CAST")
+            val chipView = card.getTag(R.id.downloaded_chip_tag) as? android.widget.TextView
+            val fillView = card.getTag(R.id.downloaded_fill_tag) as? View
+            if (chipView != null && fillView != null) {
+                downloadedCardViews[entry.key] = chipView to fillView
+            }
             // Backfill art for titles that finished in an earlier session, or whose grab
             // failed at completion time. The capture is keyed and cached on disk, so this
             // decodes once per title and is a no-op on every later render.
@@ -541,6 +630,14 @@ class KeenActivity : AppCompatActivity() {
             ) {
                 captureLibraryPoster(entry.mediaPath, entry.key)
             }
+        }
+        // Live figures without waiting on a cross-process broadcast to arrive.
+        binding.root.removeCallbacks(downloadProgressTicker)
+        if (entries.any {
+                it.state == com.keenzero.app.library.StarredLibraryStore.State.DOWNLOADING
+            }
+        ) {
+            binding.root.postDelayed(downloadProgressTicker, DOWNLOAD_TICK_MS)
         }
         return true
     }
@@ -555,6 +652,116 @@ class KeenActivity : AppCompatActivity() {
             return
         }
         hydrateDownloadedRow()
+    }
+
+    /**
+     * Chip text for an unfinished download: "12% · 1.4 MB/s".
+     *
+     * Speed is dropped when the swarm is idle, so a stalled download reads as a plain
+     * percentage rather than claiming "0 KB/s". A finished title gets no chip at all.
+     */
+    private fun downloadChipText(
+        entry: com.keenzero.app.library.StarredLibraryStore.Entry,
+    ): String {
+        val pct = (entry.progress * 100).toInt()
+        val bps = entry.speedBps
+        if (bps <= 0L) return "$pct%"
+        val speed = if (bps >= 1024L * 1024L) {
+            String.format(java.util.Locale.US, "%.1f MB/s", bps / 1048576.0)
+        } else {
+            String.format(java.util.Locale.US, "%.0f KB/s", bps / 1024.0)
+        }
+        return "$pct% · $speed"
+    }
+
+    /**
+     * Update the Downloaded row's percentages without rebuilding it.
+     *
+     * The service ticks every two seconds while a download runs, so the figure has to
+     * move on its own with no navigation or refresh. Rebuilding the row for each tick
+     * would restart every card's entry animation and drop D-pad focus, so only the chip
+     * text and the bar width are touched; a full rebuild happens only when a title
+     * finishes, fails, or appears, which changes what the cards are.
+     */
+    private fun applyDownloadProgress() {
+        val entries = libraryStore.list()
+        val needsRebuild = entries.any { it.key !in downloadedCardViews } ||
+            downloadedCardViews.keys.any { key -> entries.none { it.key == key } } ||
+            entries.any {
+                it.state == com.keenzero.app.library.StarredLibraryStore.State.COMPLETE ||
+                    it.state == com.keenzero.app.library.StarredLibraryStore.State.FAILED
+            }
+        if (needsRebuild) {
+            hydrateDownloadedRow()
+            return
+        }
+        entries.forEach { entry ->
+            val (chip, fill) = downloadedCardViews[entry.key] ?: return@forEach
+            chip.text = downloadChipText(entry)
+            (fill.layoutParams as? android.widget.LinearLayout.LayoutParams)?.also {
+                it.weight = entry.progress
+                fill.layoutParams = it
+            }
+        }
+    }
+
+    /**
+     * Restart any download that was interrupted rather than finished.
+     *
+     * The download service runs in its own process, and that process dies with an app
+     * update, a low-memory kill or a reboot. Nothing restarted it, so a record sat in
+     * DOWNLOADING for ever showing the percentage it had reached when the process went
+     * away, with no speed because nothing was writing to it any more.
+     *
+     * Restarting is cheap and safe: the service ignores a request for the download it is
+     * already running, and libtorrent rechecks the pieces already on disk, so a resumed
+     * download picks up where it stopped instead of starting over. Runs once per activity
+     * start, not on every repaint.
+     */
+    private fun resumeInterruptedDownloads() {
+        if (resumedDownloadsThisSession) return
+        resumedDownloadsThisSession = true
+        val pending = libraryStore.list()
+            .filter {
+                it.state == com.keenzero.app.library.StarredLibraryStore.State.DOWNLOADING ||
+                    it.state == com.keenzero.app.library.StarredLibraryStore.State.QUEUED
+            }
+            .filter { it.origin.isNotBlank() }
+        // The service downloads one title at a time and switches to whichever key it was
+        // last handed, so starting them all made each one cancel the one before it. Run
+        // the most recent and mark the rest queued, so their cards say "Queued" instead
+        // of showing a frozen percentage that looks like a stalled download.
+        pending.drop(1).forEach {
+            libraryStore.update(
+                it.key,
+                state = com.keenzero.app.library.StarredLibraryStore.State.QUEUED,
+                speedBps = 0L,
+            )
+        }
+        pending.take(1)
+            .forEach { entry ->
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "library_download_resume",
+                        url = entry.origin,
+                        detail = "key=${entry.key} at=${(entry.progress * 100).toInt()}%",
+                    ),
+                )
+                startService(
+                    Intent(this, com.keenzero.app.library.LibraryDownloadService::class.java)
+                        .setAction(com.keenzero.app.library.LibraryDownloadService.ACTION_START)
+                        .putExtra(
+                            com.keenzero.app.library.LibraryDownloadService.EXTRA_ORIGIN,
+                            entry.origin,
+                        )
+                        .putExtra(com.keenzero.app.library.LibraryDownloadService.EXTRA_KEY, entry.key)
+                        .putExtra(
+                            com.keenzero.app.library.LibraryDownloadService.EXTRA_DIR,
+                            libraryStore.dirFor(entry.key).apply { mkdirs() }.absolutePath,
+                        ),
+                )
+            }
     }
 
     /**
@@ -616,6 +823,10 @@ class KeenActivity : AppCompatActivity() {
         fraction: Float,
         scroll: android.widget.HorizontalScrollView,
         onClick: () -> Unit,
+        /** Optional status chip drawn on the artwork, e.g. a download percentage. */
+        badge: String? = null,
+        /** Long-press OK: the Android TV convention for per-card actions. */
+        onLongClick: (() -> Unit)? = null,
     ): View {
         fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
         val container = android.widget.LinearLayout(this).apply {
@@ -668,6 +879,29 @@ class KeenActivity : AppCompatActivity() {
         }
         track.addView(fill)
         card.addView(poster); card.addView(fallback); card.addView(track)
+        var badgeView: android.widget.TextView? = null
+        if (badge != null) {
+            // Readable at a glance from the sofa: a solid chip on the artwork, not a
+            // suffix buried at the end of the title.
+            badgeView = android.widget.TextView(this).apply {
+                    layoutParams = android.widget.FrameLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                        topMargin = dp(8); marginStart = dp(8)
+                    }
+                    text = badge
+                    setTextColor(android.graphics.Color.WHITE)
+                    textSize = 13f
+                    typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                setPadding(dp(8), dp(3), dp(8), dp(3))
+                setBackgroundColor(0xCC000000.toInt())
+            }
+            card.addView(badgeView)
+        }
+        container.setTag(R.id.downloaded_chip_tag, badgeView)
+        container.setTag(R.id.downloaded_fill_tag, fill)
         val title = android.widget.TextView(this).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams(dp(190), android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(12) }
@@ -681,9 +915,20 @@ class KeenActivity : AppCompatActivity() {
         container.addView(card); container.addView(title)
 
         card.setOnClickListener { onClick() }
+        if (onLongClick != null) {
+            card.setOnLongClickListener {
+                onLongClick()
+                true
+            }
+        }
         card.setOnFocusChangeListener { v, hasFocus ->
             (v.foreground as? com.keenzero.app.home.BorderDrawable)
                 ?.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
+            // Focus means white, not "the same grey but brighter".
+            title.setTextColor(
+                if (hasFocus) android.graphics.Color.WHITE
+                else ContextCompat.getColor(this@KeenActivity, R.color.keen_muted),
+            )
             title.animate().alpha(if (hasFocus) 1f else 0.75f).setDuration(160).start()
             if (hasFocus) v.post {
                 // Keep the focused card fully in view with a little breathing room,
@@ -718,7 +963,9 @@ class KeenActivity : AppCompatActivity() {
     /** Focus-border drawable at 50% white, used as an animated foreground cue. */
     private fun focusBorder(cornerDp: Float, oval: Boolean) =
         com.keenzero.app.home.BorderDrawable(
-            android.graphics.Color.argb(128, 255, 255, 255),
+            // Fully opaque. At 128 alpha this composited against the black home screen
+            // to mid-grey, so the focused tile never looked focused.
+            android.graphics.Color.argb(255, 255, 255, 255),
             cornerDp * resources.displayMetrics.density,
             oval,
         )
@@ -1911,7 +2158,24 @@ class KeenActivity : AppCompatActivity() {
             ensureWebHost().load("about:blank")
         }
         showTorrentOverlay()
-        recordEvent(NavigationEvent(System.currentTimeMillis(), "torrent_start", url = originLabel))
+        // Where playback will actually begin, as a fraction of the file. Without this the
+        // service buffers the HEAD of the file and reports 99%, then the player seeks to
+        // the resume point and has to wait all over again for pieces nobody fetched —
+        // which is the long black screen after a part-watched title.
+        val resumeKey = torrentOriginKey
+        val resumeFraction = resumeKey?.let { key ->
+            val pos = torrentResumeStore.positionMs(key)
+            val dur = torrentResumeStore.durationMs(key)
+            if (pos > 0 && dur > 0) (pos.toFloat() / dur).coerceIn(0f, 0.98f) else 0f
+        } ?: 0f
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "torrent_start",
+                url = originLabel,
+                detail = "resumeFraction=$resumeFraction",
+            ),
+        )
         // Foreground service: the :torrent process must survive the cached-app
         // freezer for streams longer than ~30 min.
         ContextCompat.startForegroundService(
@@ -1919,7 +2183,8 @@ class KeenActivity : AppCompatActivity() {
             configure(
                 Intent(this, TorrentStreamingService::class.java)
                     .setAction(TorrentStreamingService.ACTION_START)
-                    .putExtra(TorrentStreamingService.EXTRA_REQUEST_ID, id),
+                    .putExtra(TorrentStreamingService.EXTRA_REQUEST_ID, id)
+                    .putExtra(TorrentStreamingService.EXTRA_RESUME_FRACTION, resumeFraction),
             ),
         )
     }
@@ -1998,9 +2263,26 @@ class KeenActivity : AppCompatActivity() {
                         System.currentTimeMillis(),
                         "torrent_player_error",
                         url = streamUrl,
-                        detail = "${error.errorCodeName}: ${error.message}",
+                        detail = "${error.errorCodeName}: ${error.message} retry=$torrentPlayerRetries",
                     ),
                 )
+                // A stream fed by a swarm hiccups: a peer drops, a read blocks, the
+                // bridge stumbles. Ending the film on the first error is far too harsh —
+                // rebuild the pipeline and carry on from the same position instead, and
+                // only give up once it is clearly not recoverable.
+                val player = torrentPlayer
+                if (player != null && torrentPlayerRetries < TORRENT_PLAYER_MAX_RETRIES) {
+                    torrentPlayerRetries++
+                    val resumeAt = player.currentPosition.coerceAtLeast(0L)
+                    android.util.Log.w(
+                        "KeenBack",
+                        "player_error retry ${'$'}torrentPlayerRetries at ${'$'}resumeAt: ${error.errorCodeName}",
+                    )
+                    player.seekTo(resumeAt)
+                    player.prepare()
+                    player.playWhenReady = true
+                    return
+                }
                 Toast.makeText(
                     this@KeenActivity,
                     getString(R.string.torrent_playback_error),
@@ -2035,7 +2317,11 @@ class KeenActivity : AppCompatActivity() {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 // First frame on screen: from here a stall really is a seek.
-                if (isPlaying) torrentPlaybackStarted = true
+                if (isPlaying) {
+                    torrentPlaybackStarted = true
+                    // Playing again: the retry budget is for consecutive failures.
+                    torrentPlayerRetries = 0
+                }
                 // Pause = a deliberate moment; snapshot it for the Continue card.
                 if (!isPlaying && torrentPlayer?.playbackState == Player.STATE_READY) {
                     captureTorrentFrame("pause")
@@ -2082,6 +2368,8 @@ class KeenActivity : AppCompatActivity() {
         // has actually produced one), then keep it fresh with a rolling
         // 5-minute refresh plus grabs on pause/exit/TV-off.
         torrentFrameAttempts = 0
+        binding.root.removeCallbacks(torrentCheckpointRunnable)
+        binding.root.postDelayed(torrentCheckpointRunnable, TORRENT_CHECKPOINT_INTERVAL_MS)
         binding.root.removeCallbacks(torrentFrameCaptureRunnable)
         binding.root.postDelayed(torrentFrameCaptureRunnable, TORRENT_FRAME_FIRST_DELAY_MS)
     }
@@ -2144,7 +2432,7 @@ class KeenActivity : AppCompatActivity() {
             confirmUnstar(existing)
             return
         }
-        val dir = libraryStore.dirFor(key)
+        val dir = libraryStore.dirFor(key).apply { mkdirs() }
         libraryStore.put(
             com.keenzero.app.library.StarredLibraryStore.Entry(
                 key = key,
@@ -2176,10 +2464,36 @@ class KeenActivity : AppCompatActivity() {
      * times — so the delete direction asks first. The deletion itself is total: the
      * record and the whole per-title directory.
      */
-    private fun confirmUnstar(entry: com.keenzero.app.library.StarredLibraryStore.Entry) {
+    private fun confirmUnstar(entry: com.keenzero.app.library.StarredLibraryStore.Entry) =
+        confirmRemoveLibraryEntry(entry)
+
+    /**
+     * Confirm removing a starred title, from the Downloaded row or the player's star.
+     *
+     * Always confirms: OK on a remote is one careless press away at any moment, and this
+     * destroys gigabytes. The message states what will actually be reclaimed, and an
+     * unfinished download is cancelled as well as deleted, so a background transfer does
+     * not carry on for a title the user just removed.
+     */
+    private fun confirmRemoveLibraryEntry(
+        entry: com.keenzero.app.library.StarredLibraryStore.Entry,
+    ) {
+        val complete = entry.state == com.keenzero.app.library.StarredLibraryStore.State.COMPLETE
+        val onDisk = libraryStore.bytesOnDisk(entry.key)
+        val size = if (onDisk > 0) android.text.format.Formatter.formatShortFileSize(this, onDisk) else null
+        val name = prettyMediaTitle(entry.title) ?: entry.title
+        val message = when {
+            !complete && size != null -> getString(R.string.library_remove_partial, name, size)
+            !complete -> getString(R.string.library_remove_partial_nosize, name)
+            size != null -> getString(R.string.library_remove_complete, name, size)
+            else -> getString(R.string.library_unstar_message, name)
+        }
         android.app.AlertDialog.Builder(this)
-            .setTitle(getString(R.string.library_unstar_title))
-            .setMessage(getString(R.string.library_unstar_message, entry.title))
+            .setTitle(
+                if (complete) getString(R.string.library_unstar_title)
+                else getString(R.string.library_remove_downloading_title),
+            )
+            .setMessage(message)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.library_unstar_confirm) { _, _ ->
                 startService(
@@ -2204,6 +2518,7 @@ class KeenActivity : AppCompatActivity() {
     }
 
     private fun hideNativeTorrentPlayer() {
+        binding.root.removeCallbacks(torrentCheckpointRunnable)
         binding.root.removeCallbacks(torrentFrameCaptureRunnable)
         binding.root.removeCallbacks(torrentScrubTick)
         torrentTimeBar = null
@@ -2561,22 +2876,38 @@ class KeenActivity : AppCompatActivity() {
         // is deliberately null (the normal host is destroyed on entry), so testing it
         // alone sent every compat-launched torrent home on exit instead of back to the
         // page it came from.
+        returnToSourcePageOrHome(reason)
+    }
+
+    /**
+     * Leave torrent playback and land where the user came from.
+     *
+     * Shared by every exit route (player Back, player error, and cancelling the loading
+     * overlay) because they kept drifting apart: the cancel path tested `webHost` alone,
+     * and `webHost` is deliberately null while compatibility mode is active, so backing
+     * out of a magnet launched from a compatibility-mode site always dropped to the home
+     * screen instead of the page it came from. Returning to the source page is the rule;
+     * home is only correct when there genuinely is no page underneath.
+     */
+    private fun returnToSourcePageOrHome(reason: String) {
         val compatActive = compatSession?.isActive == true
         val pageAvailable = compatActive || webHost?.isCreated == true
         if (pageAvailable && currentUrl != null && currentUrl != "about:blank") {
             uiState = AppUiState.BROWSING
+            binding.homeShell.visibility = View.GONE
             binding.browseShell.visibility = View.VISIBLE
             binding.browserContainer.visibility = View.VISIBLE
             binding.chromeBar.visibility = View.VISIBLE
+            continuityStore.markAtHome(false)
             if (compatActive) {
                 binding.pointerLayer.visibility = View.VISIBLE
             } else {
                 webHost?.webView?.requestFocus()
             }
         } else {
-            // Backing out of a home-launched playback is a deliberate return to
-            // the Continue surface — a cold start should land here too.
-            if (reason == "back") continuityStore.markAtHome(true)
+            // Only when nothing is underneath: a home-launched playback backing out is a
+            // deliberate return to the Continue surface, and a cold start lands here too.
+            if (reason == "back" || reason == "cancel") continuityStore.markAtHome(true)
             showHome(status = getString(R.string.status_home))
         }
     }
@@ -2612,6 +2943,9 @@ class KeenActivity : AppCompatActivity() {
     }
 
     private fun showTorrentOverlay() {
+        // Whatever raised it, the keyboard has no business over a loading stream.
+        dismissHomeKeyboard()
+        autoContinuePending = false
         lastGiantPercent = -1
         currentFocus?.let { hideKeyboard(it) }
         binding.torrentLoadingTitle.text = getString(R.string.torrent_loading_title)
@@ -3679,10 +4013,7 @@ class KeenActivity : AppCompatActivity() {
             // branch would swallow every future Back press.
             binding.torrentLoadingOverlay.visibility = View.GONE
             android.util.Log.i("KeenBack", "torrent_cancel overlayVis=${binding.torrentLoadingOverlay.visibility}")
-            if (webHost?.isCreated != true || currentUrl == null || currentUrl == "about:blank") {
-                continuityStore.markAtHome(true)
-                showHome(status = getString(R.string.status_home))
-            }
+            returnToSourcePageOrHome("cancel")
             return
         }
         // Compatibility mode owns Back only once the overlay surfaces above have had
@@ -4494,6 +4825,9 @@ class KeenActivity : AppCompatActivity() {
         /** ~60fps re-assert of the scrubber position during a hold-seek. */
         private const val TORRENT_SCRUB_FRAME_MS = 16L
 
+        /** How often the Downloaded row re-reads the library index while downloading. */
+        private const val DOWNLOAD_TICK_MS = 1_000L
+
         private const val STAR_BUTTON_FALLBACK_PX = 96
         private const val STAR_BUTTON_PADDING_PX = 18
 
@@ -4504,6 +4838,12 @@ class KeenActivity : AppCompatActivity() {
         /** After a stall: resume only with a real cushion, or it stalls straight back. */
         private const val TORRENT_BUFFER_AFTER_REBUFFER_MS = 20_000
         private const val TORRENT_TARGET_BUFFER_BYTES = 48 * 1024 * 1024
+
+        /** How often the playhead is checkpointed while a torrent plays. */
+        private const val TORRENT_CHECKPOINT_INTERVAL_MS = 15_000L
+
+        /** Consecutive playback errors to recover from before giving up on a stream. */
+        private const val TORRENT_PLAYER_MAX_RETRIES = 5
 
         private const val TORRENT_FRAME_MIN_POS_MS = 45_000L
 

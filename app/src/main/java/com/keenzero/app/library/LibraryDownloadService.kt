@@ -14,6 +14,7 @@ import org.libtorrent4j.Priority
 import org.libtorrent4j.SessionManager
 import org.libtorrent4j.SettingsPack
 import org.libtorrent4j.TorrentFlags
+import org.libtorrent4j.TorrentInfo
 import org.libtorrent4j.alerts.AddTorrentAlert
 import org.libtorrent4j.alerts.Alert
 import org.libtorrent4j.alerts.AlertType
@@ -147,13 +148,25 @@ class LibraryDownloadService : Service() {
                 .activeDownloads(1)
                 .connectionsLimit(CONNECTION_LIMIT)
                 .maxQueuedDiskBytes(DISK_QUEUE_BYTES),
+                // No listenInterfaces override: pinning one measurably made things worse
+                // (peers 1 -> 0), most likely because the IPv6 bind fails on this box and
+                // leaves the session without a usable listen socket. Default binding is
+                // what the streaming session uses, and that one finds peers.
         )
         store.update(key, state = StarredLibraryStore.State.DOWNLOADING)
         notifyChanged(key)
-        // Same call shape the streaming path has proven on this device. Sequential is
-        // not strictly needed when nothing is playing, but it keeps the partial file
-        // contiguous and the disk access pattern gentle on the box.
-        manager.download(origin, dir, TorrentFlags.SEQUENTIAL_DOWNLOAD)
+        val isMagnet = origin.startsWith("magnet:", ignoreCase = true)
+        Log.i(TAG, "starting download key=$key magnet=$isMagnet dir=${dir.absolutePath}")
+        if (isMagnet) {
+            manager.download(origin, dir, TorrentFlags.SEQUENTIAL_DOWNLOAD)
+        } else {
+            // A .torrent URL, not a magnet. download(String, ...) only understands magnet
+            // URIs, so handing it an http link left the session in DOWNLOADING_METADATA
+            // for ever with no peers: it had nothing to look for. Fetch the file and hand
+            // libtorrent real metadata, the same way the streaming path does.
+            val info = TorrentInfo.bdecode(fetchTorrentFile(origin))
+            manager.download(info, dir)
+        }
         startProgressLoop(key)
     }
 
@@ -176,6 +189,7 @@ class LibraryDownloadService : Service() {
 
     private fun startProgressLoop(key: String) {
         progressTask?.cancel(false)
+        val startedAt = System.currentTimeMillis()
         progressTask = ticker.scheduleWithFixedDelay({
             try {
                 val h = handle ?: return@scheduleWithFixedDelay
@@ -183,8 +197,32 @@ class LibraryDownloadService : Service() {
                 val status = h.status()
                 val done = status.totalDone()
                 val wanted = status.totalWanted()
-                store.update(key, downloadedBytes = done, totalBytes = wanted)
+                // No metadata after several minutes means the magnet found nobody who
+                // has it. Say so rather than showing a frozen percentage indefinitely.
+                if (wanted <= 0L &&
+                    System.currentTimeMillis() - startedAt > METADATA_TIMEOUT_MS
+                ) {
+                    Log.w(TAG, "No metadata after ${METADATA_TIMEOUT_MS / 1000}s; marking failed: $key")
+                    store.update(key, state = StarredLibraryStore.State.FAILED, speedBps = 0L)
+                    notifyChanged(key)
+                    teardown()
+                    stopSelf()
+                    return@scheduleWithFixedDelay
+                }
+                store.update(
+                    key,
+                    downloadedBytes = done,
+                    totalBytes = wanted,
+                    speedBps = status.downloadRate().toLong(),
+                )
                 val pct = if (wanted > 0) ((done * 100) / wanted).toInt().coerceIn(0, 100) else 0
+                Log.i(
+                    TAG,
+                    "tick state=${status.state()} pct=$pct done=$done wanted=$wanted " +
+                        "peers=${status.numPeers()} seeds=${status.numSeeds()} " +
+                        "conn=${status.numConnections()} rate=${status.downloadRate()}B/s " +
+                        "paused=${status.flags().and_(TorrentFlags.PAUSED).non_zero()}",
+                )
                 getSystemService(NotificationManager::class.java)
                     .notify(NOTIFICATION_ID, notification(store.find(key)?.title.orEmpty(), pct))
                 notifyChanged(key)
@@ -218,6 +256,22 @@ class LibraryDownloadService : Service() {
         notifyChanged(key)
         teardown()
         stopSelf()
+    }
+
+    /** Download a .torrent file so libtorrent can be given real metadata. */
+    private fun fetchTorrentFile(url: String): ByteArray {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        return try {
+            conn.connectTimeout = FETCH_TIMEOUT_MS
+            conn.readTimeout = FETCH_TIMEOUT_MS
+            conn.instanceFollowRedirects = true
+            if (conn.responseCode !in 200..299) {
+                throw java.io.IOException("Torrent file fetch failed: ${conn.responseCode}")
+            }
+            conn.inputStream.use { it.readBytes() }
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun notifyChanged(key: String?) {
@@ -263,9 +317,17 @@ class LibraryDownloadService : Service() {
          * Wi-Fi firmware reset under a 60-peer load — so a download alongside a stream
          * still totals comfortably less than what was seen to fall over.
          */
-        private const val CONNECTION_LIMIT = 12
+        private const val CONNECTION_LIMIT = 30
+
+        /**
+         * Distinct from the streaming session's default port. Two libtorrent sessions in
+         * two processes cannot share one listen port.
+         */
+        private const val LISTEN_PORT = 6891
         private const val DISK_QUEUE_BYTES = 12 * 1024 * 1024
         private const val PROGRESS_INTERVAL_MS = 2_000L
+        private const val METADATA_TIMEOUT_MS = 5 * 60 * 1000L
+        private const val FETCH_TIMEOUT_MS = 20_000
 
         const val ACTION_START = "com.keenzero.app.library.START"
         const val ACTION_CANCEL = "com.keenzero.app.library.CANCEL"

@@ -43,6 +43,8 @@ class TorrentStreamingService : Service() {
     @Volatile private var requestId: String? = null
     @Volatile private var mediaHandle: org.libtorrent4j.TorrentHandle? = null
     @Volatile private var startedAtMs: Long = 0L
+    /** Where playback will begin, 0..1 of the media file; 0 for a fresh start. */
+    @Volatile private var resumeFraction: Float = 0f
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,6 +77,7 @@ class TorrentStreamingService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+        resumeFraction = intent.getFloatExtra(EXTRA_RESUME_FRACTION, 0f)
         val cookies = intent.getStringExtra(EXTRA_COOKIES)
         val userAgent = intent.getStringExtra(EXTRA_USER_AGENT)
         worker.execute {
@@ -308,7 +311,14 @@ class TorrentStreamingService : Service() {
         val headBytes = headBufferBytesFor(mediaSize)
         val headCount = ((headBytes + info.pieceLength() - 1) / info.pieceLength())
             .toInt().coerceIn(1, lastPiece - firstPiece + 1)
-        val headPieces = (firstPiece until firstPiece + headCount).toList()
+        // Buffer where the player will actually start reading. Resuming a part-watched
+        // title used to fill the head of the file, announce 99%, and only then discover
+        // the player wanted a point half an hour in — a second, invisible wait.
+        val spanPieces = lastPiece - firstPiece + 1
+        val startPiece = (firstPiece + (spanPieces * resumeFraction).toInt())
+            .coerceIn(firstPiece, maxOf(firstPiece, lastPiece - headCount + 1))
+        val headPieces = (startPiece until minOf(lastPiece + 1, startPiece + headCount)).toList()
+        Log.i(TAG, "buffer window start=$startPiece count=$headCount fraction=$resumeFraction")
         val tailPieces =
             (maxOf(firstPiece + headCount, lastPiece - TAIL_BUFFER_PIECES + 1)..lastPiece).toList()
         val bufferPieces = headPieces + tailPieces
@@ -583,6 +593,9 @@ class TorrentStreamingService : Service() {
         /** Absolute path of the media file the bridge serves (Continue-card frame grabs). */
         const val EXTRA_MEDIA_PATH = "media_path"
         const val EXTRA_TITLE = "title"
+
+        /** Fraction of the file where playback will resume, so buffering starts there. */
+        const val EXTRA_RESUME_FRACTION = "resume_fraction"
         const val EXTRA_ERROR = "error"
         const val EXTRA_STAGE = "stage"
         const val EXTRA_PERCENT = "percent"

@@ -58,4 +58,10 @@
     <string name="library_still_downloading">Still downloading — not ready to play yet</string>
     <string name="library_missing_file">That download is no longer on this box</string>
     <string name="library_notification_title">Downloading to this box</string>
+    <string name="library_failed_chip">Failed</string>
+    <string name="library_queued_chip">Queued</string>
+    <string name="library_remove_downloading_title">Stop and remove?</string>
+    <string name="library_remove_partial">%1$s is not finished. Stopping now deletes the %2$s already downloaded.</string>
+    <string name="library_remove_partial_nosize">%1$s is not finished. Stopping now deletes it from this box.</string>
+    <string name="library_remove_complete">%1$s will be deleted from this box. %2$s will be freed.</string>
 </resources>

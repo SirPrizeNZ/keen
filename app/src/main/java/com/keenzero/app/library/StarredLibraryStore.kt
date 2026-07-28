@@ -35,6 +35,8 @@ class StarredLibraryStore(context: Context) {
         /** Absolute path of the media file once known, else null. */
         val mediaPath: String?,
         val starredAtMs: Long,
+        /** Current download rate in bytes/sec; only meaningful while DOWNLOADING. */
+        val speedBps: Long = 0L,
     ) {
         val progress: Float
             get() = if (totalBytes <= 0L) 0f else (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f)
@@ -89,6 +91,7 @@ class StarredLibraryStore(context: Context) {
                     totalBytes = o.optLong("totalBytes", 0L),
                     mediaPath = o.optString("mediaPath").takeIf { it.isNotBlank() },
                     starredAtMs = o.optLong("starredAtMs", 0L),
+                    speedBps = o.optLong("speedBps", 0L),
                 ),
             )
         }
@@ -114,6 +117,7 @@ class StarredLibraryStore(context: Context) {
         downloadedBytes: Long? = null,
         totalBytes: Long? = null,
         mediaPath: String? = null,
+        speedBps: Long? = null,
     ) {
         val current = find(key) ?: return
         put(
@@ -122,6 +126,7 @@ class StarredLibraryStore(context: Context) {
                 downloadedBytes = downloadedBytes ?: current.downloadedBytes,
                 totalBytes = totalBytes ?: current.totalBytes,
                 mediaPath = mediaPath ?: current.mediaPath,
+                speedBps = speedBps ?: current.speedBps,
             ),
         )
     }
@@ -153,7 +158,13 @@ class StarredLibraryStore(context: Context) {
         libraryRoot().listFiles()?.forEach { child ->
             if (child.isDirectory && child.name !in keys) child.deleteRecursively()
         }
-        val surviving = known.filter { dirFor(it.key).exists() }
+        // Only a COMPLETE record is expected to have files on disk. A queued or
+        // in-flight download may legitimately have nothing yet (the service creates the
+        // directory in another process), and dropping it here deleted the card seconds
+        // after starring.
+        val surviving = known.filter {
+            it.state != State.COMPLETE || dirFor(it.key).exists()
+        }
         if (surviving.size != known.size) {
             val next = JSONArray()
             surviving.forEach { next.put(it.toJson()) }
@@ -162,6 +173,9 @@ class StarredLibraryStore(context: Context) {
     }
 
     fun totalBytesOnDisk(): Long = dirSize(libraryRoot())
+
+    /** Bytes this title occupies, for telling the user what a delete will reclaim. */
+    fun bytesOnDisk(key: String): Long = dirSize(dirFor(key))
 
     private fun dirSize(f: File): Long = when {
         !f.exists() -> 0L
@@ -178,6 +192,7 @@ class StarredLibraryStore(context: Context) {
         .put("totalBytes", totalBytes)
         .put("mediaPath", mediaPath.orEmpty())
         .put("starredAtMs", starredAtMs)
+        .put("speedBps", speedBps)
 
     private fun entries(): JSONArray = try {
         val f = indexFile()

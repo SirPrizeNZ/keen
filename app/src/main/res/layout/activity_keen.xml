@@ -419,45 +419,6 @@
         android:paddingTop="32dp"
         android:paddingBottom="32dp">
 
-        <!-- Address row, pinned top-left: tiny mark + left-aligned input on one
-             line, well clear of the bottom IME. Always reachable on home. -->
-        <LinearLayout
-            android:id="@+id/homeTopBar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="top"
-            android:layout_marginStart="32dp"
-            android:layout_marginTop="20dp"
-            android:layout_marginEnd="32dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <ImageView
-                android:id="@+id/homeBarLogo"
-                android:layout_width="14dp"
-                android:layout_height="12dp"
-                android:contentDescription="@string/app_name"
-                android:scaleType="fitCenter"
-                android:src="@drawable/keen_mark" />
-
-            <EditText
-                android:id="@+id/homeUrlInput"
-                android:layout_width="480dp"
-                android:layout_height="wrap_content"
-                android:background="@android:color/transparent"
-                android:hint="@string/url_hint"
-                android:imeOptions="actionGo"
-                android:inputType="textUri"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:paddingVertical="6dp"
-                android:singleLine="true"
-                android:textColor="@android:color/white"
-                android:textColorHint="@color/keen_url_hint"
-                android:textSize="14sp"
-                android:importantForAutofill="no" />
-        </LinearLayout>
-
         <!-- First-run / empty state: faded centered mark. adjustResize keeps it
              centered in the space left above the auto-opened keyboard. -->
         <FrameLayout
@@ -490,7 +451,7 @@
             android:id="@+id/homeScroll"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_marginTop="56dp"
+            android:layout_marginTop="20dp"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:scrollbars="none">
@@ -505,6 +466,43 @@
             android:clipChildren="false"
             android:clipToPadding="false"
             android:orientation="vertical">
+            <!-- Address row. Lives INSIDE the scrolling column so it moves with the
+                     content instead of hanging over it: pinned to the shell it stayed put
+                     while the rows beneath scrolled under it. -->
+            <LinearLayout
+                android:id="@+id/homeTopBar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="28dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <ImageView
+                    android:id="@+id/homeBarLogo"
+                    android:layout_width="14dp"
+                    android:layout_height="12dp"
+                    android:contentDescription="@string/app_name"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/keen_mark" />
+
+                <EditText
+                    android:id="@+id/homeUrlInput"
+                    android:layout_width="480dp"
+                    android:layout_height="wrap_content"
+                    android:background="@android:color/transparent"
+                    android:hint="@string/url_hint"
+                    android:imeOptions="actionGo"
+                    android:inputType="textUri"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:paddingVertical="6dp"
+                    android:singleLine="true"
+                    android:textColor="@android:color/white"
+                    android:textColorHint="@color/keen_url_hint"
+                    android:textSize="14sp"
+                    android:importantForAutofill="no" />
+            </LinearLayout>
+
 
         <LinearLayout
             android:id="@+id/favsGroup"

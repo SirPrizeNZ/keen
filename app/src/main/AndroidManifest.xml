@@ -34,7 +34,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -62,7 +62,7 @@
             android:name=".library.LibraryDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync"
-            android:process=":library"
+            android:process=":torrent"
             android:stopWithTask="false" />
     </application>
 </manifest>

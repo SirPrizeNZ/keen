@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Handles onto a Downloaded card's progress chip and bar, so a download tick can
+         update the figure in place instead of rebuilding the row and stealing focus. -->
+    <item name="downloaded_chip_tag" type="id" />
+    <item name="downloaded_fill_tag" type="id" />
+</resources>

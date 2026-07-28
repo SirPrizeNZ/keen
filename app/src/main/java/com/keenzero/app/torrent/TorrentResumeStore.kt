@@ -23,6 +23,13 @@ class TorrentResumeStore(context: Context) {
      * Persist the latest position. Near-complete or barely-started playback
      * clears the entry so a replay starts from the beginning.
      */
+    /** Stored duration for [originKey], or 0 when unknown. */
+    fun durationMs(originKey: String): Long = try {
+        entries().optJSONObject(originKey)?.optLong("durationMs", 0L) ?: 0L
+    } catch (_: Exception) {
+        0L
+    }
+
     fun savePosition(originKey: String, positionMs: Long, durationMs: Long) {
         val all = entries()
         val nearEnd = durationMs > 0 &&

@@ -134,8 +134,8 @@ class JumboPercentView @JvmOverloads constructor(
                 for (i in text.indices) {
                     val cellLeft = x0 + i * cell
                     if (old[i] != text[i]) {
-                        drawGlyph(canvas, old[i], cellLeft, cell, baseline - roll * travel)
-                        drawGlyph(canvas, text[i], cellLeft, cell, baseline + (1f - roll) * travel)
+                        drawGlyph(canvas, old[i], cellLeft, cell, baseline - roll * travel, 1f - roll)
+                        drawGlyph(canvas, text[i], cellLeft, cell, baseline + (1f - roll) * travel, roll)
                     } else {
                         drawGlyph(canvas, text[i], cellLeft, cell, baseline)
                     }
@@ -144,8 +144,8 @@ class JumboPercentView @JvmOverloads constructor(
 
             else -> {
                 // Digit count changed (e.g. 99 → 100): scroll the whole number as one block.
-                drawRow(canvas, old, w, cell, baseline - roll * travel)
-                drawRow(canvas, text, w, cell, baseline + (1f - roll) * travel)
+                drawRow(canvas, old, w, cell, baseline - roll * travel, 1f - roll)
+                drawRow(canvas, text, w, cell, baseline + (1f - roll) * travel, roll)
             }
         }
     }
@@ -156,25 +156,51 @@ class JumboPercentView @JvmOverloads constructor(
         return max
     }
 
-    private fun drawRow(canvas: Canvas, text: String, w: Float, cell: Float, baseline: Float) {
+    private fun drawRow(
+        canvas: Canvas,
+        text: String,
+        w: Float,
+        cell: Float,
+        baseline: Float,
+        fade: Float = 1f,
+    ) {
         val x0 = (w - text.length * cell) / 2f
-        for (i in text.indices) drawGlyph(canvas, text[i], x0 + i * cell, cell, baseline)
+        for (i in text.indices) drawGlyph(canvas, text[i], x0 + i * cell, cell, baseline, fade)
     }
 
-    private fun drawGlyph(canvas: Canvas, ch: Char, cellLeft: Float, cell: Float, baseline: Float) {
+    /**
+     * @param fade 1 for a settled glyph; for a rolling one it ramps with the animation so
+     *   the digit dissolves as it travels. The positional gradient alone was not enough:
+     *   a numeral is about twice the height of one fade zone, so it left the band still
+     *   largely opaque and then vanished, which read as a hard cut rather than a fade.
+     */
+    private fun drawGlyph(
+        canvas: Canvas,
+        ch: Char,
+        cellLeft: Float,
+        cell: Float,
+        baseline: Float,
+        fade: Float = 1f,
+    ) {
         val s = ch.toString()
         val gw = paint.measureText(s)
+        val previous = paint.alpha
+        // Modulates the shader, so this rides on top of the positional gradient.
+        paint.alpha = (255f * fade.coerceIn(0f, 1f)).toInt()
         canvas.drawText(s, cellLeft + (cell - gw) / 2f, baseline, paint)
+        paint.alpha = previous
     }
 
     private companion object {
         // Fraction of the height taken by each (top and bottom) fade zone.
-        const val FADE_FRACTION = 0.22f
+        const val FADE_FRACTION = 0.30f
         // Numeral height as a fraction of the clear reading band between the fades.
         const val FILL_FRACTION = 0.92f
         const val WIDTH_FILL_FRACTION = 0.82f
-        // ~0x0E — very faint, reads as texture well behind the spinner.
-        const val BASE_ALPHA = 14
+        // ~0x1A (~10% white). Was 14 (~5%), which was texture rather than a readable figure —
+        // on a TV at viewing distance the number simply could not be made out. Still sits
+        // behind the spinner and stats rather than competing with them.
+        const val BASE_ALPHA = 26
         const val ROLL_DURATION_MS = 380L
         // How far, in reference-ink heights, a rolling digit travels out/in.
         const val TRAVEL_SLOTS = 1.0f

@@ -126,9 +126,23 @@ class TorrentHttpBridge(
             return count
         }
 
+        /**
+         * Block until the piece under the read cursor is on disk.
+         *
+         * Every call into libtorrent here is guarded, because the handle can go away
+         * underneath a live stream: the session drops the torrent the instant the
+         * download completes, so this box leaves the swarm and never uploads. Once that
+         * happens the handle is invalid and `havePiece` throws
+         * `RuntimeException: invalid torrent handle used`, which surfaced as a source
+         * error and killed playback of a film the moment it finished downloading.
+         *
+         * An invalid handle is not a failure: it means the file is complete on disk, so
+         * the right response is to stop asking libtorrent anything and serve the bytes.
+         */
         private fun awaitCurrentPiece() {
+            if (!handleUsable()) return
             val firstPiece = ((torrentOffset + position) / pieceLength).toInt()
-            if (!handle.havePiece(firstPiece)) {
+            if (!havePieceSafe(firstPiece)) {
                 // Seek past the downloaded window: stale deadlines keep the swarm
                 // busy at the old playhead — drop them so bandwidth moves here now.
                 try {
@@ -138,12 +152,17 @@ class TorrentHttpBridge(
             }
             // Refresh the playhead window on every HTTP seek/range read.
             val deadlineEnd = minOf(pieceCount, firstPiece + deadlineWindowFor(pieceLength))
-            for (piece in firstPiece until deadlineEnd) {
-                handle.setPieceDeadline(piece, (piece - firstPiece) * DEADLINE_STEP_MS)
+            try {
+                for (piece in firstPiece until deadlineEnd) {
+                    handle.setPieceDeadline(piece, (piece - firstPiece) * DEADLINE_STEP_MS)
+                }
+            } catch (_: Throwable) {
+                // Handle went away mid-loop: the file is complete, nothing left to ask for.
+                return
             }
             var waitedMs = 0L
             var nextNotifyMs = STALL_NOTIFY_FIRST_MS
-            while (!closed.get() && handle.isValid() && !handle.havePiece(firstPiece)) {
+            while (!closed.get() && handleUsable() && !havePieceSafe(firstPiece)) {
                 Thread.sleep(PIECE_POLL_MS)
                 waitedMs += PIECE_POLL_MS
                 if (waitedMs >= nextNotifyMs) {
@@ -157,7 +176,23 @@ class TorrentHttpBridge(
                     throw java.io.IOException("Timed out waiting for torrent piece $firstPiece")
                 }
             }
-            if (closed.get() || !handle.isValid()) throw java.io.IOException("Torrent stream closed")
+            // Only a closed bridge is a real end of stream. A vanished handle just means
+            // the download finished and we left the swarm — keep serving from disk.
+            if (closed.get()) throw java.io.IOException("Torrent stream closed")
+        }
+
+        /** True while libtorrent still owns this torrent; false once it has been removed. */
+        private fun handleUsable(): Boolean = try {
+            handle.isValid
+        } catch (_: Throwable) {
+            false
+        }
+
+        private fun havePieceSafe(piece: Int): Boolean = try {
+            handle.havePiece(piece)
+        } catch (_: Throwable) {
+            // Handle removed: the file is complete, so treat every piece as present.
+            true
         }
 
         override fun close() {
