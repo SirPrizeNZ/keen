@@ -345,6 +345,11 @@ class KeenActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 
+        // Once per app start: bring the index in line with the disk and pick up any
+        // download interrupted by a process death. Deliberately not in the row repaint.
+        libraryStore.reconcile()
+        resumeInterruptedDownloads()
+
         // Reclaim torrent cache left behind if the :torrent process was killed
         // mid-stream (its cleanup never ran). No session can be active this early.
         stopService(Intent(this, TorrentStreamingService::class.java))
@@ -610,8 +615,11 @@ class KeenActivity : AppCompatActivity() {
      * @return true when the row has anything in it.
      */
     private fun hydrateDownloadedRow(): Boolean {
-        libraryStore.reconcile()
-        resumeInterruptedDownloads()
+        // reconcile() and resumeInterruptedDownloads() used to run here. Both are
+        // once-per-session jobs — one rewrites the index, the other starts a service —
+        // and this method is also the repaint path for a one-second progress ticker, so
+        // they were running every second for as long as any record claimed to be
+        // downloading. They now run from onCreate, once.
         val entries = libraryStore.list()
         downloadedCardViews.clear()
         binding.downloadedRow.removeAllViews()
@@ -1399,9 +1407,20 @@ class KeenActivity : AppCompatActivity() {
             // recents list is capped, so a demo that plays real media costs the user
             // real history slots; this is how those are handed back.
             intent.getStringExtra(EXTRA_LAB_CLEAR_TITLE)?.takeIf { it.isNotBlank() }?.let { needle ->
-                val kept = continuityStore.loadRecents()
-                    .filterNot { it.title?.contains(needle, ignoreCase = true) == true }
-                continuityStore.saveRecents(kept)
+                fun matches(t: String?) = t?.contains(needle, ignoreCase = true) == true
+                continuityStore.saveRecents(
+                    continuityStore.loadRecents().filterNot { matches(it.title) },
+                )
+                // The recents list is only what the home screen *shows*. Cold start
+                // resumes from the media/browsing checkpoints, which are separate — so
+                // clearing the row alone left the box re-entering the demo stream on
+                // every launch and buffering it over the user's connection.
+                val ids = setOfNotNull(
+                    continuityStore.loadMedia()?.takeIf { matches(it.title) }?.contentId,
+                    continuityStore.load()?.takeIf { matches(it.title) }?.contentId,
+                )
+                if (ids.isNotEmpty()) continuityStore.removeByContentId(ids)
+                continuityStore.markAtHome(true)
             }
             binding.root.post { hydrateContinuitySurface() }
             return
@@ -2731,7 +2750,19 @@ class KeenActivity : AppCompatActivity() {
      * The whole file is on disk here, so a frame can simply be decoded — taken ~10% in to
      * skip studio idents and black leader, which is where a title card usually isn't.
      */
+    /**
+     * Titles whose poster has already been attempted this session.
+     *
+     * Without this the attempt repeats on every repaint of the Downloaded row, because
+     * the only thing suppressing it is the cached file existing — and a capture that
+     * legitimately produces nothing (an unreadable container, a black or garbled frame)
+     * never writes one. On a finished 1.3 GB title that meant a full MediaMetadataRetriever
+     * pass over the file every second, for ever.
+     */
+    private val libraryPosterAttempted = mutableSetOf<String>()
+
     private fun captureLibraryPoster(path: String, key: String) {
+        if (!libraryPosterAttempted.add(key)) return
         Thread({
             val file = java.io.File(path)
             if (!file.exists()) return@Thread
@@ -2889,15 +2920,24 @@ class KeenActivity : AppCompatActivity() {
                     } else {
                         // Exit-refresh landed after teardown: stamp the frame onto
                         // the stored media checkpoint if it is still this torrent.
+                        var changedCheckpoint = false
                         continuityStore.loadMedia()?.let { cp ->
                             val sameTorrent = cp.playerType == "torrent" &&
                                 com.keenzero.app.torrent.TorrentResumeStore.keyOf(cp.url.orEmpty()) == originKey
                             if (sameTorrent && cp.posterUrl != frameKey) {
                                 continuityStore.save(cp.copy(posterUrl = frameKey), force = true)
+                                changedCheckpoint = true
                             }
                         }
-                        // Card may already be on screen with the fallback — swap in the frame.
-                        if (uiState == AppUiState.HOME) hydrateContinuitySurface()
+                        // Card may already be on screen with the fallback — swap in the
+                        // frame. Only when the checkpoint actually changed: rebuilding
+                        // the surface unconditionally re-ran the Downloaded row, which
+                        // re-requested this very capture, which rebuilt the surface. A
+                        // one-second loop that re-decoded a gigabyte-scale file on every
+                        // pass and re-ran every entry animation with it.
+                        if (uiState == AppUiState.HOME && changedCheckpoint) {
+                            hydrateContinuitySurface()
+                        }
                     }
                 }
             } catch (_: Throwable) {
