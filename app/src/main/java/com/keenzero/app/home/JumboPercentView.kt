@@ -285,7 +285,8 @@ class JumboPercentView @JvmOverloads constructor(
         // on a TV at viewing distance the number simply could not be made out. Still sits
         // behind the spinner and stats rather than competing with them.
         const val BASE_ALPHA = 26
-        const val ROLL_DURATION_MS = 380L
+        // Longer to match the greater distance: same speed, further to go.
+        const val ROLL_DURATION_MS = 460L
 
         /** Gap between successive units while catching up to a new real value. */
         const val STEP_MS = 55L
@@ -299,8 +300,16 @@ class JumboPercentView @JvmOverloads constructor(
          * one place the old behaviour looked most like a hang.
          */
         const val REAL_CEILING = 96
-        // How far, in reference-ink heights, a rolling digit travels out/in.
-        const val TRAVEL_SLOTS = 1.0f
+        /**
+         * How far, in reference-ink heights, a rolling digit travels out and in.
+         *
+         * One ink height meant the outgoing digit had only cleared its own box by the
+         * time the roll finished — the eye read it as a cross-dissolve in place rather
+         * than as a number moving. At this distance the digit is plainly travelling,
+         * which is the whole point of an odometer: the movement, not the value, is what
+         * says the download is going somewhere.
+         */
+        const val TRAVEL_SLOTS = 2.2f
         val EASE = PathInterpolator(0.2f, 0f, 0f, 1f)
         const val REFERENCE_GLYPHS = "0123456789"
     }

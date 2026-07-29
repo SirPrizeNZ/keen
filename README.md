@@ -18,6 +18,9 @@
 
 **Keen is an open-source Android TV browser built for hostile streaming sites.**
 
+Install it and it is ready. No accounts, no configuration, no add-ons to choose.
+Open any site, and when you find something to watch, press once.
+
 It blocks aggressive ads and popup chains, unlocks hardware-decoded video and surround sound,
 and lets you stream or save magnet links and torrents with one press.
 
@@ -27,7 +30,10 @@ and lets you stream or save magnet links and torrents with one press.
 [Contributing](#contributing) ·
 [Licence](#licence)
 
-<img src="assets/keen-hero.gif" alt="Keen running on Android TV" width="900">
+<picture>
+  <source type="image/webp" srcset="assets/keen-hero.webp">
+  <img src="assets/keen-hero-poster.png" alt="Keen running on Android TV: home screen, a magnet link buffering, then fullscreen playback" width="900">
+</picture>
 
 </div>
 

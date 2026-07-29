@@ -223,6 +223,9 @@ class KeenActivity : AppCompatActivity() {
     private val downloadedCardViews =
         mutableMapOf<String, Pair<android.widget.TextView, View>>()
 
+    /** Keys and states the Downloaded row was last built from; a change means rebuild. */
+    private var downloadedRowSignature: String? = null
+
     /** Interrupted downloads are restarted once per activity start, not per repaint. */
     private var resumedDownloadsThisSession = false
 
@@ -713,13 +716,19 @@ class KeenActivity : AppCompatActivity() {
      */
     private fun applyDownloadProgress() {
         val entries = libraryStore.list()
-        val needsRebuild = entries.any { it.key !in downloadedCardViews } ||
-            downloadedCardViews.keys.any { key -> entries.none { it.key == key } } ||
-            entries.any {
-                it.state == com.keenzero.app.library.StarredLibraryStore.State.COMPLETE ||
-                    it.state == com.keenzero.app.library.StarredLibraryStore.State.FAILED
-            }
+        // Rebuild when the *shape* of the row changes — a title added or removed, or one
+        // that has changed state — not merely because a finished title is present.
+        //
+        // The old test rebuilt whenever any entry was COMPLETE or FAILED, which is a
+        // standing condition rather than an event: with one finished download in the
+        // library every tick tore the row down and rebuilt it, re-running the entrance
+        // animations and re-decoding every poster once a second.
+        val signature = entries.joinToString("|") { "${it.key}:${it.state}" }
+        val needsRebuild = signature != downloadedRowSignature ||
+            entries.any { it.key !in downloadedCardViews } ||
+            downloadedCardViews.keys.any { key -> entries.none { it.key == key } }
         if (needsRebuild) {
+            downloadedRowSignature = signature
             hydrateDownloadedRow()
             return
         }
@@ -1566,6 +1575,10 @@ class KeenActivity : AppCompatActivity() {
                     wv?.loadUrl("chrome://crash")
                 }
             }, 1000L)
+            return
+        }
+        if (intent.getBooleanExtra(EXTRA_LAB_MOCK_LOADING, false)) {
+            startMockLoadingOverlay()
             return
         }
         intent.getStringExtra(EXTRA_LAB_URL)
@@ -2988,6 +3001,8 @@ class KeenActivity : AppCompatActivity() {
         // layout re-centred everything above — the stage title visibly jumped as the
         // stream moved from "connecting to peers" to "buffering". Holding its space
         // keeps the title and spinner nailed in place while it fades in and out.
+        binding.torrentLoadingStats.animate().cancel()
+        binding.torrentLoadingStats.alpha = 0f
         binding.torrentLoadingStats.visibility = View.INVISIBLE
         // No real percent yet on a fresh session — the jumbo watermark only makes sense
         // once there's a real number behind it, so it stays hidden until buffering starts.
@@ -3051,6 +3066,54 @@ class KeenActivity : AppCompatActivity() {
         binding.root.postDelayed({ hideTorrentOverlay() }, TORRENT_COLLAPSE_HOLD_MS)
     }
 
+    /**
+     * Drive the loading overlay from invented numbers, with no torrent behind it.
+     *
+     * Every part of this overlay — the stage wording, the stat lock-up's spacing, the
+     * counter's pacing and the roll distance — is a layout and motion problem, and
+     * checking any of it against a real stream means fetching real content, waiting on
+     * real peers, and getting a different sequence of numbers every run. This walks the
+     * same code path the service drives with a fixed, repeatable script instead, so the
+     * design can be judged on its own and nothing is downloaded to look at a margin.
+     */
+    private fun startMockLoadingOverlay() {
+        showTorrentOverlay()
+        val handler = binding.root
+        var elapsedMs = 0L
+        fun tick() {
+            val t = elapsedMs / 1000f
+            when {
+                // Connecting: no percentage yet, peers arriving.
+                t < MOCK_CONNECT_SEC -> updateTorrentOverlay(
+                    stage = TorrentStreamingService.STAGE_CONNECTING,
+                    percent = -1,
+                    peers = (t * 4).toInt().coerceAtMost(23),
+                    seeds = (t * 2).toInt().coerceAtMost(11),
+                    speedBps = 0L,
+                )
+                // Buffering: a percentage that climbs in the coarse jumps the real
+                // service reports, so the counter's own pacing is what is on trial.
+                else -> {
+                    val p = (((t - MOCK_CONNECT_SEC) / MOCK_BUFFER_SEC) * 100f).toInt()
+                    updateTorrentOverlay(
+                        stage = TorrentStreamingService.STAGE_BUFFERING,
+                        percent = (p / 7) * 7,
+                        peers = 23,
+                        seeds = 11,
+                        speedBps = (2_400_000L..3_900_000L).random(),
+                    )
+                }
+            }
+            elapsedMs += MOCK_TICK_MS
+            if (elapsedMs < (MOCK_CONNECT_SEC + MOCK_BUFFER_SEC + 2) * 1000) {
+                handler.postDelayed({ tick() }, MOCK_TICK_MS)
+            } else {
+                hideTorrentOverlayWithCollapse()
+            }
+        }
+        tick()
+    }
+
     private fun updateTorrentOverlay(stage: String, percent: Int, peers: Int, seeds: Int, speedBps: Long) {
         if (!torrentOverlayVisible) return
         val stageText = when (stage) {
@@ -3097,17 +3160,37 @@ class KeenActivity : AppCompatActivity() {
             binding.statSeeders.text = seeds.toString()
             binding.statLeechers.text = (peers - seeds).coerceAtLeast(0).toString()
             binding.statSpeed.text = if (speedBps > 0) formatMbps(speedBps) else "0"
-            if (binding.torrentLoadingStats.alpha < 1f) {
-                binding.torrentLoadingStats.visibility = View.VISIBLE
-                binding.torrentLoadingStats.animate().alpha(1f).setDuration(320).start()
-            }
+            showStatLockUp(true)
         } else {
-            // INVISIBLE, never GONE: this row is the only thing in the loading column
-        // whose presence changes, and the column is centred, so removing it from the
-        // layout re-centred everything above — the stage title visibly jumped as the
-        // stream moved from "connecting to peers" to "buffering". Holding its space
-        // keeps the title and spinner nailed in place while it fades in and out.
-        binding.torrentLoadingStats.visibility = View.INVISIBLE
+            showStatLockUp(false)
+        }
+    }
+
+    /**
+     * Fade the peer stat lock-up in or out, without ever giving up its space.
+     *
+     * INVISIBLE, never GONE: this row is the only thing in the loading column whose
+     * presence changes, and the column is centred, so removing it from the layout
+     * re-centres everything above it — the stage title visibly jumped as a stream moved
+     * from "connecting to peers" to "buffering".
+     *
+     * Visibility and alpha are always set together. Driving the fade from alpha while
+     * resetting only visibility between sessions left the row invisible-but-opaque, so
+     * the "should I fade in?" test read as already-shown and the stats never came back
+     * after the first stream of an app run.
+     */
+    private fun showStatLockUp(show: Boolean) {
+        val row = binding.torrentLoadingStats
+        val alreadyShown = row.visibility == View.VISIBLE && row.alpha >= 1f
+        if (show == alreadyShown) return
+        row.animate().cancel()
+        if (show) {
+            row.visibility = View.VISIBLE
+            row.animate().alpha(1f).setDuration(320).start()
+        } else {
+            row.animate().alpha(0f).setDuration(160)
+                .withEndAction { row.visibility = View.INVISIBLE }
+                .start()
         }
     }
 
@@ -4897,6 +4980,12 @@ class KeenActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** Runs the loading overlay on invented numbers — see startMockLoadingOverlay. */
+        const val EXTRA_LAB_MOCK_LOADING = "com.keenzero.app.extra.LAB_MOCK_LOADING"
+        private const val MOCK_TICK_MS = 500L
+        private const val MOCK_CONNECT_SEC = 6f
+        private const val MOCK_BUFFER_SEC = 14f
+
         const val EXTRA_LAB_URL = "com.keenzero.app.extra.LAB_URL"
         const val EXTRA_EXPORT_EVIDENCE = "com.keenzero.app.extra.EXPORT_EVIDENCE"
         const val EXTRA_LAB_AUTO_JOURNEY = "com.keenzero.app.extra.LAB_AUTO_JOURNEY"

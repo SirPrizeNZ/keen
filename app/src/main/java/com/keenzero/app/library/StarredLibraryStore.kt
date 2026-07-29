@@ -145,21 +145,30 @@ class StarredLibraryStore(context: Context) {
     private fun recoverFromDisk(): List<Entry> {
         val dirs = libraryRoot().listFiles()?.filter { it.isDirectory } ?: return emptyList()
         return dirs.mapNotNull { dir ->
-            val fromMeta = runCatching {
+            // Media on disk is the entire basis for adopting a directory. A sidecar
+            // alone is not enough and must never be enough: the download service writes
+            // one on every progress update, so an interrupted download leaves a sidecar
+            // saying DOWNLOADING with nothing behind it. Honouring that resurrected a
+            // permanently-in-flight record the index could not get rid of — which kept
+            // the home screen's progress ticker running for ever, rebuilding the
+            // Downloaded row and re-decoding its artwork once a second.
+            val media = largestMediaFile(dir) ?: return@mapNotNull null
+            val sidecar = runCatching {
                 val f = File(dir, META_FILE)
                 if (f.exists()) entryOf(JSONObject(f.readText())) else null
             }.getOrNull()
-            if (fromMeta != null) return@mapNotNull fromMeta
-            val media = largestMediaFile(dir) ?: return@mapNotNull null
+            // The sidecar supplies the title and origin — the things that cannot be
+            // read off the filesystem — but never the state. What is on disk is a
+            // finished file, whatever the record said when it was last written.
             Entry(
                 key = dir.name,
-                origin = "",
-                title = media.nameWithoutExtension,
+                origin = sidecar?.origin.orEmpty(),
+                title = sidecar?.title ?: media.nameWithoutExtension,
                 state = State.COMPLETE,
                 downloadedBytes = media.length(),
                 totalBytes = media.length(),
                 mediaPath = media.absolutePath,
-                starredAtMs = dir.lastModified(),
+                starredAtMs = sidecar?.starredAtMs?.takeIf { it > 0 } ?: dir.lastModified(),
             )
         }
     }

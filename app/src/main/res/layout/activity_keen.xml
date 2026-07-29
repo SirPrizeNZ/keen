@@ -243,7 +243,7 @@
                  Hidden until a real seeder/leecher breakdown arrives, then fades in. -->
             <LinearLayout
                 android:id="@+id/torrentLoadingStats"
-                android:layout_width="190dp"
+                android:layout_width="228dp"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="14dp"
                 android:orientation="horizontal"
@@ -263,6 +263,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:includeFontPadding="false"
+                        android:maxLines="1"
                         android:textColor="@color/keen_text"
                         android:textSize="22sp"
                         android:textStyle="bold" />
@@ -272,7 +273,8 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:includeFontPadding="false"
-                        android:letterSpacing="0.14"
+                        android:maxLines="1"
+                        android:letterSpacing="0.08"
                         android:text="@string/torrent_stat_seeders"
                         android:textColor="@color/keen_muted"
                         android:textSize="11sp"
@@ -291,6 +293,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:includeFontPadding="false"
+                        android:maxLines="1"
                         android:textColor="@color/keen_text"
                         android:textSize="22sp"
                         android:textStyle="bold" />
@@ -300,7 +303,8 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:includeFontPadding="false"
-                        android:letterSpacing="0.14"
+                        android:maxLines="1"
+                        android:letterSpacing="0.08"
                         android:text="@string/torrent_stat_leechers"
                         android:textColor="@color/keen_muted"
                         android:textSize="11sp"
@@ -319,6 +323,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:includeFontPadding="false"
+                        android:maxLines="1"
                         android:textColor="@color/keen_text"
                         android:textSize="22sp"
                         android:textStyle="bold" />
@@ -328,7 +333,8 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:includeFontPadding="false"
-                        android:letterSpacing="0.14"
+                        android:maxLines="1"
+                        android:letterSpacing="0.08"
                         android:text="@string/torrent_stat_speed"
                         android:textColor="@color/keen_muted"
                         android:textSize="11sp"
