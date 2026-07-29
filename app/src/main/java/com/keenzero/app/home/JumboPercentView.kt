@@ -33,9 +33,15 @@ class JumboPercentView @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        // Weight-based, not a family-name lookup: guaranteed heaviest weight
-        // regardless of whether "sans-serif-black" resolves on a given device.
-        typeface = Typeface.create(Typeface.DEFAULT, 900, false)
+        // A heavier cut of Google Sans than anything the family ships as a static.
+        // Its weight axis stops at 700, so this face is instanced at wght=700 plus
+        // GRAD=200 — the grade axis thickens strokes without widening the glyphs, so
+        // the digits get genuinely fatter instead of just bigger and looser. Subset to
+        // the ten digits and a percent sign, which is all this view ever draws, so the
+        // extra face costs 8 KB.
+        typeface = androidx.core.content.res.ResourcesCompat
+            .getFont(context, com.keenzero.app.R.font.google_sans_jumbo)
+            ?: Typeface.create(Typeface.DEFAULT, 900, false)
     }
     private val bounds = Rect()
 
@@ -43,6 +49,80 @@ class JumboPercentView @JvmOverloads constructor(
     private var previousText = ""
     private var rollAnimator: ValueAnimator? = null
     private var roll = 1f // 1f == settled; <1f == a digit change is rolling
+
+    /**
+     * Report a real percentage. The readout walks to it one unit at a time.
+     *
+     * Two problems this solves, both about what the number *implies* rather than what
+     * it says. The source reports in coarse jumps, so the readout used to leap in tens
+     * — and a number that skips reads as a number being estimated, where a number that
+     * counts reads as work happening quickly. And on a large file the stream would
+     * reach 99 and sit there for fifteen seconds while the last pieces landed, which
+     * reads as a hang at the exact moment the user is closest to watching something.
+     *
+     * So: every intervening value is shown ([STEP_MS] apart), real progress is held
+     * below [REAL_CEILING] so the readout never parks on 99, and between updates it
+     * creeps on by itself. The last few points belong to [finish], called when playback
+     * actually starts — which is the only honest thing 100 can mean.
+     */
+    fun setPercent(percent: Int) {
+        // Paint the starting figure straight away. Otherwise the first thing drawn is
+        // whatever the walker reaches after its first tick, and the view sits empty
+        // until then — visible as a blank where the readout should have appeared.
+        if (currentText.isEmpty()) setPercentText(displayed.toString().padStart(2, '0'))
+        val capped = percent.coerceIn(0, 100).coerceAtMost(REAL_CEILING)
+        if (capped <= target) {
+            // Monotonic. A torrent's completion estimate can revise downward when new
+            // metadata lands, and a countdown is not what "loading" should look like.
+            scheduleWalk()
+            return
+        }
+        target = capped
+        scheduleWalk()
+    }
+
+    /** New session: forget the old figure so the next one counts up from nothing. */
+    fun reset() {
+        removeCallbacks(walkStep)
+        walkPosted = false
+        displayed = 0
+        target = 0
+        currentText = ""
+        previousText = ""
+        rollAnimator?.cancel()
+        roll = 1f
+        invalidate()
+    }
+
+    /** The stream is starting: release the reserved top and run out to 100. */
+    fun finish() {
+        target = 100
+        scheduleWalk()
+    }
+
+    private fun scheduleWalk() {
+        if (walkPosted) return
+        walkPosted = true
+        postDelayed(walkStep, if (displayed < target) STEP_MS else CREEP_MS)
+    }
+
+    private val walkStep = Runnable {
+        walkPosted = false
+        when {
+            displayed < target -> displayed++
+            // Nothing new from the source. Creep so the readout is never frozen, but
+            // only up to a point above the last real value — enough to look alive,
+            // not enough to invent progress.
+            displayed < (target + CREEP_ALLOWANCE).coerceAtMost(REAL_CEILING) -> displayed++
+            else -> return@Runnable
+        }
+        setPercentText(displayed.toString().padStart(2, '0'))
+        scheduleWalk()
+    }
+
+    private var displayed = 0
+    private var target = 0
+    private var walkPosted = false
 
     fun setPercentText(value: String) {
         if (value == currentText) return
@@ -192,16 +272,33 @@ class JumboPercentView @JvmOverloads constructor(
     }
 
     private companion object {
-        // Fraction of the height taken by each (top and bottom) fade zone.
-        const val FADE_FRACTION = 0.30f
+        // Fraction of the height taken by each (top and bottom) fade zone. Narrowed
+        // from 0.30 to make room for larger numerals without pushing them into the
+        // fade; the roll still dissolves, over a shorter distance.
+        const val FADE_FRACTION = 0.20f
         // Numeral height as a fraction of the clear reading band between the fades.
-        const val FILL_FRACTION = 0.92f
+        // Together with the wider band above this puts the digits 25% taller than they
+        // were (0.40h * 0.92 -> 0.60h * 0.77).
+        const val FILL_FRACTION = 0.77f
         const val WIDTH_FILL_FRACTION = 0.82f
         // ~0x1A (~10% white). Was 14 (~5%), which was texture rather than a readable figure —
         // on a TV at viewing distance the number simply could not be made out. Still sits
         // behind the spinner and stats rather than competing with them.
         const val BASE_ALPHA = 26
         const val ROLL_DURATION_MS = 380L
+
+        /** Gap between successive units while catching up to a new real value. */
+        const val STEP_MS = 55L
+        /** Gap between the self-driven creeps that keep a stalled readout moving. */
+        const val CREEP_MS = 1_400L
+        /** How far past the last real value the creep is allowed to wander. */
+        const val CREEP_ALLOWANCE = 3
+        /**
+         * Real progress is never shown above this. The last few points are reserved for
+         * [finish], so the readout cannot park on 99 while the final pieces land — the
+         * one place the old behaviour looked most like a hang.
+         */
+        const val REAL_CEILING = 96
         // How far, in reference-ink heights, a rolling digit travels out/in.
         const val TRAVEL_SLOTS = 1.0f
         val EASE = PathInterpolator(0.2f, 0f, 0f, 1f)

@@ -7,8 +7,35 @@
         <item name="android:textColorSecondary">@color/keen_muted</item>
         <item name="colorPrimary">@color/keen_focus</item>
         <item name="colorAccent">@color/keen_accent</item>
+        <!--
+          Text-editing chrome (caret, selection handles, selection highlight) is tinted
+          with colorControlActivated, which otherwise falls back to colorAccent — the
+          green used for progress, and the only green anywhere near the address bar.
+          Keen's editing UI is white on black like everything else around it.
+        -->
+        <item name="colorControlActivated">@android:color/white</item>
+        <item name="android:textColorHighlight">#40FFFFFF</item>
         <item name="android:statusBarColor">@color/keen_bg</item>
         <item name="android:navigationBarColor">@color/keen_bg</item>
         <item name="android:windowFullscreen">true</item>
+
+        <!--
+          Google Sans everywhere, set through the default widget styles rather than as a
+          bare android:fontFamily on the theme: TextView resolves fontFamily from its own
+          style and textAppearance, not from the theme, so the obvious theme-level
+          attribute silently does nothing. Anything wanting a different weight overrides
+          this with its own android:fontFamily.
+        -->
+        <item name="android:textViewStyle">@style/Keen.TextView</item>
+        <item name="android:editTextStyle">@style/Keen.EditText</item>
+        <item name="editTextStyle">@style/Keen.EditText</item>
+    </style>
+
+    <style name="Keen.TextView" parent="android:Widget.TextView">
+        <item name="android:fontFamily">@font/google_sans_medium</item>
+    </style>
+
+    <style name="Keen.EditText" parent="Widget.AppCompat.EditText">
+        <item name="android:fontFamily">@font/google_sans_medium</item>
     </style>
 </resources>

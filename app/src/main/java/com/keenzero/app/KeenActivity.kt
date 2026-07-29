@@ -89,6 +89,13 @@ class KeenActivity : AppCompatActivity() {
     private var currentUrl: String? = null
     /** First URL of this browse session (home chooser → site). Back only returns to chooser here. */
     private var browseEntryUrl: String? = null
+
+    /**
+     * The WebView history index this browsing session started at, captured on the entry
+     * page's first page-finished. Back walks history only while the index is above it;
+     * at or below, the remaining entries belong to a previous session and Back leaves.
+     */
+    private var browseEntryHistoryIndex: Int? = null
     private var webViewEverCreated: Boolean = false
     private var latestCheckpoint: ContinuityCheckpoint? = null
     private var pendingRestore: ContinuityCheckpoint? = null
@@ -191,6 +198,19 @@ class KeenActivity : AppCompatActivity() {
     private val favouritesStore by lazy { com.keenzero.app.favourites.FavouritesStore(this) }
     private val urlHistoryStore by lazy { com.keenzero.app.history.UrlHistoryStore(this) }
     private val libraryStore by lazy { com.keenzero.app.library.StarredLibraryStore(this) }
+
+    /** True while the K marks are showing their spinner state. */
+    /** True while the address bar's loading line is running. */
+    private var navLoadingShown = false
+
+    /** Last resort: end the line if nothing else ever said the load was over. */
+    private val navLoadingWatchdog = Runnable { setNavLoading(false) }
+
+    /** Ends a line started optimistically on a press that never became a load. */
+    private val navLoadingProvisionalClose = Runnable { setNavLoading(false) }
+
+    /** Caps how long a real load may run the line, whatever the page claims. */
+    private val navLoadingSettle = Runnable { setNavLoading(false) }
 
     /** Star injected into the player controls, left of the subtitle button. */
     private var playerStarButton: android.widget.ImageButton? = null
@@ -385,6 +405,14 @@ class KeenActivity : AppCompatActivity() {
         // Both address fields finish it from what has been opened before.
         attachUrlCompletion(binding.browseUrlEdit)
         attachUrlCompletion(binding.homeUrlInput)
+
+        // Re-run on every layout of the address row: the mark tracks the text's metrics,
+        // so it re-derives whenever anything about the field changes. Posted rather than
+        // applied inline because it may adjust child sizes, which cannot happen during
+        // the layout pass that reported them.
+        binding.homeTopBar.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            binding.homeTopBar.post(::alignHomeMarkToAddressText)
+        }
 
         onBackPressedDispatcher.addCallback(
             this,
@@ -894,7 +922,7 @@ class KeenActivity : AppCompatActivity() {
                     text = badge
                     setTextColor(android.graphics.Color.WHITE)
                     textSize = 13f
-                    typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                    typeface = googleSansBold
                 setPadding(dp(8), dp(3), dp(8), dp(3))
                 setBackgroundColor(0xCC000000.toInt())
             }
@@ -910,6 +938,7 @@ class KeenActivity : AppCompatActivity() {
             setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_muted))
             textSize = 15f
             alpha = 0.75f
+            typeface = googleSansMedium
             text = titleText
         }
         container.addView(card); container.addView(title)
@@ -960,6 +989,70 @@ class KeenActivity : AppCompatActivity() {
         return container
     }
 
+    /**
+     * Google Sans, subset to Latin.
+     *
+     * The full family is ~2 MB per weight because it carries Cyrillic, Greek and the
+     * extended Latin ranges; Keen's chrome is ASCII plus a handful of punctuation marks,
+     * so the shipped files are subset down to ~44 KB each. Views built in XML pick this
+     * up from the theme's widget styles; views built in code have to be told.
+     */
+    private val googleSansBold by lazy {
+        androidx.core.content.res.ResourcesCompat.getFont(this, R.font.google_sans_bold)
+    }
+    private val googleSansMedium by lazy {
+        androidx.core.content.res.ResourcesCompat.getFont(this, R.font.google_sans_medium)
+    }
+
+    /**
+     * Sit the home screen's K exactly on the address text: its ink spans the same top
+     * and bottom as an 'h' in the field beside it.
+     *
+     * Done in code, from the field's own font metrics, rather than as a hand-measured
+     * margin in the layout. The margin approach was correct three times and wrong three
+     * times, because the row is centred and every change to the field — the typeface,
+     * the text size, `includeFontPadding`, the caret — moves the text within it and
+     * takes the mark out of alignment again. Reading the metrics means the mark follows
+     * the text wherever it goes, and there is nothing left to re-measure.
+     *
+     * Position is applied as a translation, not a margin, so it cannot feed back into
+     * the layout pass that produced it.
+     */
+    private fun alignHomeMarkToAddressText() {
+        val field = binding.homeUrlInput
+        val mark = binding.homeBarLogo
+        val frame = mark.parent as? View ?: return
+        val art = mark.drawable ?: return
+        if (field.height == 0 || art.intrinsicHeight <= 0) return
+        val baseline = field.baseline
+        if (baseline < 0) return
+
+        // The 'h' specifically: an ascender, so the mark spans the tallest part of the
+        // lowercase text rather than the font's nominal ascent, which sits above
+        // anything actually drawn.
+        val ink = android.graphics.Rect()
+        field.paint.getTextBounds("h", 0, 1, ink)
+        val targetHeight = ink.height()
+        if (targetHeight <= 0) return
+        val aspect = art.intrinsicWidth.toFloat() / art.intrinsicHeight.toFloat()
+        val targetWidth = Math.round(targetHeight * aspect)
+
+        var resized = false
+        mark.layoutParams?.let { lp ->
+            if (lp.width != targetWidth || lp.height != targetHeight) {
+                lp.width = targetWidth
+                lp.height = targetHeight
+                mark.layoutParams = lp
+                resized = true
+            }
+        }
+        // A resize invalidates the offsets below; the layout it triggers calls back here.
+        if (resized) return
+
+        val inkTopInField = baseline + ink.top   // ink.top is negative: above the baseline
+        frame.translationY = (field.top + inkTopInField - frame.top).toFloat()
+    }
+
     /** Focus-border drawable at 50% white, used as an animated foreground cue. */
     private fun focusBorder(cornerDp: Float, oval: Boolean) =
         com.keenzero.app.home.BorderDrawable(
@@ -970,178 +1063,116 @@ class KeenActivity : AppCompatActivity() {
             oval,
         )
 
-    /** One roundel (icon + label) per favourite, added to `favsRow` in code. */
+    /**
+     * One saved site per tile, added to `favsRow` in code.
+     *
+     * A word on a dark slab, and nothing else. The roundels this replaced carried a
+     * favicon, a letter fallback, a focus ring, a halo and a caption — five things to
+     * say "wikipedia", most of them fetched over the network and none of them legible
+     * from a sofa. The site's own name, set in the app's typeface, is the whole design.
+     *
+     * The name is the registrable label alone: `www.example.com` reads as `example`.
+     * That is the part a person actually calls the site.
+     */
     private fun buildFavRoundel(fav: com.keenzero.app.favourites.FavouritesStore.Fav): View {
         fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+        val name = siteName(fav.host.ifBlank { fav.label })
 
-        val letter = android.widget.TextView(this).apply {
-            layoutParams = android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-            )
-            text = fav.label.take(1).uppercase()
-            textSize = 20f
-            setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_text))
-            alpha = 0.85f
-            gravity = android.view.Gravity.CENTER
-        }
-        val icon = android.widget.ImageView(this).apply {
-            layoutParams = android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-            )
-            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-            visibility = View.GONE
-        }
-        val roundelBorder = focusBorder(cornerDp = 0f, oval = true)
-        val roundel = android.widget.FrameLayout(this).apply {
-            layoutParams = android.widget.FrameLayout.LayoutParams(dp(52), dp(52), android.view.Gravity.CENTER)
-            setBackgroundResource(R.drawable.fav_roundel_bg)
-            foreground = roundelBorder
-            isDuplicateParentStateEnabled = true
-            // No clipToOutline here: clipping a *circle* via the outline is low quality
-            // on Android — it facets the curve. The oval background renders smoothly and
-            // the focus border is an antialiased BorderDrawable; the favicon is clipped to
-            // a circle in loadFavIcon via a circular drawable instead.
-            addView(letter)
-            addView(icon)
-        }
-        // Soft translucent aura behind the roundel — fades in on focus instead of
-        // a hard ring, since a real drop shadow is invisible on a black surface.
-        val halo = View(this).apply {
-            layoutParams = android.widget.FrameLayout.LayoutParams(dp(64), dp(64), android.view.Gravity.CENTER)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(0x1AFFFFFF)
-            }
-            alpha = 0f
-        }
-        val roundelWrap = android.widget.FrameLayout(this).apply {
-            layoutParams = android.widget.LinearLayout.LayoutParams(dp(68), dp(68))
-            addView(halo)
-            addView(roundel)
-        }
         val label = android.widget.TextView(this).apply {
-            layoutParams = android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) }
-            text = fav.label
-            textSize = 12f
-            setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_muted))
-            gravity = android.view.Gravity.CENTER
+            text = name
+            textSize = 17f
+            typeface = googleSansMedium
+            setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_text))
             maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            alpha = 0.7f
+            // No ellipsis: a name longer than the tile is cut by the fade below, which
+            // is the point — "wikipedi…" announces the truncation, a fade just lets the
+            // word run out of room.
+            ellipsize = null
+            includeFontPadding = false
+            setSingleLine(true)
+            gravity = android.view.Gravity.CENTER_VERTICAL
         }
-        val item = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        // The tile is exactly as wide as the first FAV_NAME_CHARS characters of this
+        // name in this font, so every tile is sized by its own text rather than to a
+        // guessed constant that would clip some names and pad others.
+        val visibleWidth = label.paint.measureText(name.take(FAV_NAME_CHARS)).toInt()
+        val overflows = name.length > FAV_NAME_CHARS
+
+        val tileBorder = focusBorder(cornerDp = FAV_TILE_CORNER_DP, oval = false)
+        val tile = android.widget.FrameLayout(this).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams(
-                dp(68),
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { marginEnd = dp(16) }
+                visibleWidth + dp(FAV_TILE_PAD_DP) * 2,
+                dp(FAV_TILE_HEIGHT_DP),
+            ).apply { marginEnd = dp(12) }
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = FAV_TILE_CORNER_DP * resources.displayMetrics.density
+                setColor(FAV_TILE_BG)
+            }
+            foreground = tileBorder
+            clipToPadding = false
+            setPadding(dp(FAV_TILE_PAD_DP), 0, dp(FAV_TILE_PAD_DP), 0)
             isFocusable = true
             isFocusableInTouchMode = true
-            addView(roundelWrap)
-            addView(label)
-            setOnClickListener { openNavigation(fav.url) }
-            setOnFocusChangeListener { _, hasFocus ->
-                // No scaling — the focus cue is a border easing inward on the roundel,
-                // plus a soft aura and the label brightening.
-                roundelBorder.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
-                halo.animate().alpha(if (hasFocus) 1f else 0f).setDuration(if (hasFocus) 260 else 160).start()
-                label.animate().alpha(if (hasFocus) 1f else 0.7f).setDuration(160).start()
-            }
+            addView(
+                label,
+                android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
         }
-        loadFavIcon(fav.host, icon, letter)
-        return item
+        if (overflows) {
+            // The cut is hidden by fading the tile's own colour back in over the last of
+            // the text. Android's built-in fading edge fades to transparent, which on
+            // this tile would reveal the black page behind it and read as a hole rather
+            // than as a word running off the edge — hence an explicit gradient in the
+            // tile's colour, with the right-hand corners matched so it never paints
+            // square over the rounded edge.
+            val radius = FAV_TILE_CORNER_DP * resources.displayMetrics.density
+            val fade = View(this).apply {
+                layoutParams = android.widget.FrameLayout.LayoutParams(
+                    dp(FAV_FADE_WIDTH_DP),
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.Gravity.END,
+                )
+                background = android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(FAV_TILE_BG and 0x00FFFFFF, FAV_TILE_BG),
+                ).apply {
+                    cornerRadii = floatArrayOf(
+                        0f, 0f, radius, radius, radius, radius, 0f, 0f,
+                    )
+                }
+            }
+            // Added to the frame, not the padded content, so it covers the tile's right
+            // padding too — otherwise the text reappears in the gap past the gradient.
+            tile.addView(fade)
+            tile.clipChildren = true
+        }
+        tile.setOnClickListener { openNavigation(fav.url) }
+        tile.setOnFocusChangeListener { _, hasFocus ->
+            tileBorder.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
+            label.animate().alpha(if (hasFocus) 1f else 0.82f).setDuration(160).start()
+        }
+        label.alpha = 0.82f
+        return tile
     }
 
     /**
-     * Favicon for a favourite roundel: single-file disk cache keyed by host,
-     * then apple-touch-icon → favicon.ico. Letter fallback stays visible until
-     * (and unless) a usable icon is decoded.
+     * The name a person would use for a host: `www.example.com` → `example`,
+     * `en.wikipedia.org` → `wikipedia`, `bbc.co.uk` → `bbc`.
+     *
+     * That last case is why this is not simply "the second-to-last label": under a
+     * two-part public suffix that rule returns `co`. The common ones are listed rather
+     * than pulling in a full public-suffix list for a home-screen caption.
      */
-    private fun loadFavIcon(host: String, into: android.widget.ImageView, fallback: View) {
-        Thread({
-            try {
-                val dir = java.io.File(filesDir, "favs")
-                dir.mkdirs()
-                val cacheFile = java.io.File(dir, "$host.img")
-                val bitmap = if (cacheFile.exists()) {
-                    android.graphics.BitmapFactory.decodeFile(cacheFile.absolutePath)
-                } else {
-                    // Prefer a large, high-res icon (apple-touch-icon is typically
-                    // 180 px) over the tiny favicon.ico. Walk common high-res paths,
-                    // keep the biggest that decodes, and stop early once one is large
-                    // enough. Real-world favicons carry brand colour — desaturate so the
-                    // roundel row stays strictly black & white.
-                    var best: android.graphics.Bitmap? = null
-                    for (path in FAVICON_CANDIDATE_PATHS) {
-                        val candidate = fetchIconBitmap("https://$host$path") ?: continue
-                        if (best == null || candidate.width > best!!.width) best = candidate
-                        if ((best?.width ?: 0) >= 128) break
-                    }
-                    val fetched = best?.let(::toGrayscale)
-                    fetched?.also { bmp ->
-                        java.io.FileOutputStream(cacheFile).use { out ->
-                            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
-                        }
-                    }
-                }
-                if (bitmap != null && bitmap.width >= 16) {
-                    runOnUiThread {
-                        // Circular drawable clips the square favicon to the roundel's
-                        // circle without clipToOutline (which would facet the edge).
-                        into.setImageDrawable(
-                            androidx.core.graphics.drawable.RoundedBitmapDrawableFactory
-                                .create(resources, bitmap).apply { isCircular = true },
-                        )
-                        into.alpha = 0f
-                        into.visibility = View.VISIBLE
-                        into.animate().alpha(1f).setDuration(220).start()
-                        fallback.animate().alpha(0f).setDuration(220)
-                            .withEndAction { fallback.visibility = View.GONE }
-                            .start()
-                    }
-                }
-            } catch (_: Throwable) {
-            }
-        }, "keen-favicon").apply { isDaemon = true }.start()
-    }
-
-    private fun toGrayscale(src: android.graphics.Bitmap): android.graphics.Bitmap {
-        val out = android.graphics.Bitmap.createBitmap(
-            src.width,
-            src.height,
-            android.graphics.Bitmap.Config.ARGB_8888,
-        )
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            colorFilter = android.graphics.ColorMatrixColorFilter(
-                android.graphics.ColorMatrix().apply { setSaturation(0f) },
-            )
-        }
-        android.graphics.Canvas(out).drawBitmap(src, 0f, 0f, paint)
-        return out
-    }
-
-    private fun fetchIconBitmap(url: String): android.graphics.Bitmap? {
-        val conn = java.net.URL(url).openConnection() as? java.net.HttpURLConnection ?: return null
-        return try {
-            conn.connectTimeout = 4_000
-            conn.readTimeout = 6_000
-            conn.instanceFollowRedirects = true
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 9) Keen")
-            if (conn.responseCode !in 200..299) return null
-            val bytes = conn.inputStream.use { it.readBytes() }
-            if (bytes.size !in 100..2_000_000) return null
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        } catch (_: Throwable) {
-            null
-        } finally {
-            conn.disconnect()
-        }
+    private fun siteName(host: String): String {
+        val clean = host.trim().removePrefix("www.").trimEnd('.')
+        val parts = clean.split('.').filter { it.isNotBlank() }
+        if (parts.size < 2) return clean.ifBlank { host }
+        val lastTwo = parts.takeLast(2).joinToString(".")
+        val suffixLabels = if (lastTwo in TWO_PART_SUFFIXES) 2 else 1
+        return parts.getOrNull(parts.size - suffixLabels - 1) ?: parts.first()
     }
 
     private fun continueFromCheckpoint() {
@@ -2128,6 +2159,7 @@ class KeenActivity : AppCompatActivity() {
     }
 
     private fun startTorrentSession(originLabel: String, configure: (Intent) -> Intent) {
+        setNavLoading(true)
         stopTorrentStreaming()
         continuityStore.markAtHome(false)
         val id = UUID.randomUUID().toString()
@@ -2899,9 +2931,9 @@ class KeenActivity : AppCompatActivity() {
             binding.browserContainer.visibility = View.VISIBLE
             binding.chromeBar.visibility = View.VISIBLE
             continuityStore.markAtHome(false)
-            if (compatActive) {
-                binding.pointerLayer.visibility = View.VISIBLE
-            } else {
+            // Both kinds of page are pointer surfaces; only the focus target differs.
+            binding.pointerLayer.visibility = View.VISIBLE
+            if (!compatActive) {
                 webHost?.webView?.requestFocus()
             }
         } else {
@@ -2943,18 +2975,26 @@ class KeenActivity : AppCompatActivity() {
     }
 
     private fun showTorrentOverlay() {
+        // The overlay is now the progress feedback; the mark goes back to being a mark.
+        setNavLoading(false)
         // Whatever raised it, the keyboard has no business over a loading stream.
         dismissHomeKeyboard()
         autoContinuePending = false
         lastGiantPercent = -1
         currentFocus?.let { hideKeyboard(it) }
         binding.torrentLoadingTitle.text = getString(R.string.torrent_loading_title)
-        binding.torrentLoadingStats.visibility = View.GONE
+        // INVISIBLE, never GONE: this row is the only thing in the loading column
+        // whose presence changes, and the column is centred, so removing it from the
+        // layout re-centred everything above — the stage title visibly jumped as the
+        // stream moved from "connecting to peers" to "buffering". Holding its space
+        // keeps the title and spinner nailed in place while it fades in and out.
+        binding.torrentLoadingStats.visibility = View.INVISIBLE
         // No real percent yet on a fresh session — the jumbo watermark only makes sense
         // once there's a real number behind it, so it stays hidden until buffering starts.
         // INVISIBLE, not GONE: keeps it participating in layout so its width/height are
         // already known (not 0) the instant the first buffering percent needs to size against it.
         binding.torrentLoadingPercentGiant.animate().cancel()
+        binding.torrentLoadingPercentGiant.reset()
         binding.torrentLoadingPercentGiant.visibility = View.INVISIBLE
         binding.torrentLoadingPercentGiant.alpha = 0f
         binding.torrentLoadingOverlay.animate().cancel()
@@ -3003,6 +3043,10 @@ class KeenActivity : AppCompatActivity() {
      * spinner being cut off mid-cycle the instant the stream is ready.
      */
     private fun hideTorrentOverlayWithCollapse() {
+        // The stream is ready, so the readout may finally say so. This is the only
+        // place 100 is honest: the reserved top is released here rather than being
+        // reached by a progress figure that then sat still waiting for the last pieces.
+        binding.torrentLoadingPercentGiant.finish()
         binding.torrentLoadingSpinner.collapse()
         binding.root.postDelayed({ hideTorrentOverlay() }, TORRENT_COLLAPSE_HOLD_MS)
     }
@@ -3019,9 +3063,19 @@ class KeenActivity : AppCompatActivity() {
             -> getString(R.string.torrent_stage_buffering)
             else -> getString(R.string.torrent_loading_title)
         }
-        // Real percent means real progress. The number itself now lives in the jumbo
-        // watermark behind everything instead of the small title, so the bar chase doesn't
-        // need to encode it geometrically — it just keeps running throughout.
+        // The jumbo readout is up for the whole wait, not only for buffering.
+        //
+        // It used to appear the moment the first buffering percent arrived, which meant
+        // connecting to peers — often the longest part — had no readout at all, and then
+        // one materialised partway through. Getting to playback is one continuous wait,
+        // so it is one continuous counter: it comes up at 00 while peers are found and
+        // simply carries on when real percentages start arriving. The looping ring is
+        // what says "still working" during connecting; the counter only reports.
+        if (binding.torrentLoadingPercentGiant.visibility != View.VISIBLE) {
+            binding.torrentLoadingPercentGiant.setPercent(0)
+            binding.torrentLoadingPercentGiant.visibility = View.VISIBLE
+            binding.torrentLoadingPercentGiant.animate().alpha(1f).setDuration(320).start()
+        }
         if ((stage == TorrentStreamingService.STAGE_BUFFERING ||
                 stage == TorrentStreamingService.STAGE_SEEK_BUFFERING) && percent >= 0
         ) {
@@ -3030,12 +3084,9 @@ class KeenActivity : AppCompatActivity() {
             val clamped = percent.coerceIn(0, 100).coerceAtLeast(lastGiantPercent)
             lastGiantPercent = clamped
             binding.torrentLoadingSpinner.setProgress(clamped / 100f)
-            binding.torrentLoadingPercentGiant.setPercentText(getString(R.string.torrent_percent_giant, clamped))
-            if (binding.torrentLoadingPercentGiant.visibility != View.VISIBLE) {
-                binding.torrentLoadingPercentGiant.visibility = View.VISIBLE
-                binding.torrentLoadingPercentGiant.animate().alpha(1f).setDuration(320).start()
-            }
+            binding.torrentLoadingPercentGiant.setPercent(clamped)
         } else {
+            // No real figure yet: the ring loops rather than claiming a position.
             binding.torrentLoadingSpinner.startIndeterminate()
         }
         binding.torrentLoadingTitle.text = stageText
@@ -3046,13 +3097,17 @@ class KeenActivity : AppCompatActivity() {
             binding.statSeeders.text = seeds.toString()
             binding.statLeechers.text = (peers - seeds).coerceAtLeast(0).toString()
             binding.statSpeed.text = if (speedBps > 0) formatMbps(speedBps) else "0"
-            if (binding.torrentLoadingStats.visibility != View.VISIBLE) {
+            if (binding.torrentLoadingStats.alpha < 1f) {
                 binding.torrentLoadingStats.visibility = View.VISIBLE
-                binding.torrentLoadingStats.alpha = 0f
                 binding.torrentLoadingStats.animate().alpha(1f).setDuration(320).start()
             }
         } else {
-            binding.torrentLoadingStats.visibility = View.GONE
+            // INVISIBLE, never GONE: this row is the only thing in the loading column
+        // whose presence changes, and the column is centred, so removing it from the
+        // layout re-centred everything above — the stage title visibly jumped as the
+        // stream moved from "connecting to peers" to "buffering". Holding its space
+        // keeps the title and spinner nailed in place while it fades in and out.
+        binding.torrentLoadingStats.visibility = View.INVISIBLE
         }
     }
 
@@ -3068,6 +3123,7 @@ class KeenActivity : AppCompatActivity() {
         dismissPageError()
         continuityStore.markAtHome(false)
         recordEvent(NavigationEvent(System.currentTimeMillis(), "user_open_url", url = url))
+        setNavLoading(true)
         // Feeds the address bar's inline completion. Recorded on open rather than on
         // page-finish so a site that fails to load once still completes next time —
         // the user's intent is what is worth remembering, not the server's mood.
@@ -3083,7 +3139,10 @@ class KeenActivity : AppCompatActivity() {
         webViewEverCreated = true
         // Session root: Back should not return to a link-directory site chooser until we leave this site stack.
         // The torrent player (stopTorrent=false) is an overlay page, not a new session root.
-        if (stopTorrent) browseEntryUrl = url
+        if (stopTorrent) {
+            browseEntryUrl = url
+            browseEntryHistoryIndex = null
+        }
         currentUrl = url
         val restoreCp = pendingRestore
         if (restore && restoreCp != null) {
@@ -3095,6 +3154,12 @@ class KeenActivity : AppCompatActivity() {
         binding.browseShell.visibility = View.VISIBLE
         binding.browserContainer.visibility = View.VISIBLE
         binding.chromeBar.visibility = View.VISIBLE
+        // Home hides the pointer layer (it is a focus surface, not a pointer one), and
+        // only the compatibility path used to bring it back — so every ordinary page
+        // opened after a visit to home had no cursor at all, on any site. The layer
+        // hosts the cursor view itself, so hidden means the D-pad moves an invisible
+        // point around the page.
+        binding.pointerLayer.visibility = View.VISIBLE
         lastChromeUrl = url
         refreshBrowseChrome()
         setLoadProgress(0)
@@ -3152,6 +3217,7 @@ class KeenActivity : AppCompatActivity() {
     private fun openUrlInCompatibility(url: String) {
         webViewEverCreated = true
         browseEntryUrl = url
+        browseEntryHistoryIndex = null
         currentUrl = url
         webHost?.let { host ->
             host.destroy("compat_enter")
@@ -3279,6 +3345,38 @@ class KeenActivity : AppCompatActivity() {
         val left = (logoLoc[0] - rootLoc[0]).toFloat()
         val top = (logoLoc[1] - rootLoc[1]).toFloat()
         return android.graphics.RectF(left, top, left + logo.width, top + logo.height)
+    }
+
+    /**
+     * Show or hide the loading line at the foot of the address bar.
+     *
+     * This replaced a spinner drawn on the K itself. The spinner was legible but it was
+     * the wrong instrument: it sat in the middle of the chrome, moved constantly, and
+     * drew the eye to the one thing on screen the user was not waiting for. A line at
+     * the bottom edge of the bar reports the same fact at the edge of attention, which
+     * is where a progress report belongs.
+     *
+     * The line's own motion — the eased advance, the trickle between callbacks, the
+     * sweep to full and fade — lives in [setLoadProgress] and [animateLoadProgress].
+     * Starting it here at a small non-zero fraction matters: feedback has to be
+     * immediate on the press, and a bar of zero width is indistinguishable from none.
+     */
+    private fun setNavLoading(active: Boolean) {
+        if (navLoadingShown == active) return
+        navLoadingShown = active
+        binding.root.removeCallbacks(navLoadingProvisionalClose)
+        binding.root.removeCallbacks(navLoadingSettle)
+        // A progress line that outlives whatever started it is worse than none: it says
+        // the box is still working when nothing is. Every start arms its own ceiling.
+        binding.root.removeCallbacks(navLoadingWatchdog)
+        if (active) {
+            binding.root.postDelayed(navLoadingWatchdog, NAV_LOADING_MAX_MS)
+            setLoadProgress(NAV_LOADING_START_PERCENT)
+        } else {
+            // Sweep to full and fade, rather than cutting: the line has to finish its
+            // journey or the page reads as having given up rather than arrived.
+            setLoadProgress(100)
+        }
     }
 
     private fun setLoadProgress(percent: Int) {
@@ -3416,6 +3514,43 @@ class KeenActivity : AppCompatActivity() {
                     mainFrameLoadErrored = false
                     dismissPageError()
                     armStallTimeout()
+                    // Every main-frame load spins the mark, not just the ones Keen
+                    // started itself. Following a link or submitting a search used to
+                    // give no feedback at all — the page simply sat there until the new
+                    // one painted, which on a slow site reads as the remote having
+                    // missed the press.
+                    binding.root.removeCallbacks(navLoadingProvisionalClose)
+                    setNavLoading(true)
+                    // Independent of anything the page reports. Some sites never cross
+                    // the progress threshold and never commit a paint the WebView tells
+                    // us about, and their load "finishes" only once a tail of backend
+                    // requests does. Past this point the spinner is no longer describing
+                    // anything the user is waiting for.
+                    binding.root.removeCallbacks(navLoadingSettle)
+                    binding.root.postDelayed(navLoadingSettle, NAV_LOADING_SETTLE_MS)
+                }
+            }
+            // First paint of the main frame: the page is on screen and can be read and
+            // scrolled. Whatever is still in flight is the site's own housekeeping.
+            "onPageCommitVisible" -> {
+                if (ev.url == "about:blank") return
+                runOnUiThread { setNavLoading(false) }
+            }
+            // The user pressed OK on something that navigates. This lands well before
+            // the load starts — often by a second or more on a slow server — and it is
+            // that gap the press felt lost in, so the mark starts turning on the press
+            // itself. Only for activations classified as a link or a form: a Play
+            // button or an unrecognised control would spin for nothing.
+            "ACTIVATION_GRANT" -> {
+                val detail = ev.detail.orEmpty()
+                if (!detail.contains("type=LINK") && !detail.contains("type=FORM")) return
+                runOnUiThread {
+                    setNavLoading(true)
+                    // If no navigation follows, this was a link that did nothing (an
+                    // anchor, a JS handler that bailed). Close on our own rather than
+                    // leaving the mark turning until the long watchdog.
+                    binding.root.removeCallbacks(navLoadingProvisionalClose)
+                    binding.root.postDelayed(navLoadingProvisionalClose, NAV_PROVISIONAL_MS)
                 }
             }
             "onReceivedError" -> {
@@ -3434,6 +3569,17 @@ class KeenActivity : AppCompatActivity() {
                 if (ev.url == "about:blank") return
                 runOnUiThread {
                     cancelStallTimeout()
+                    // First page to finish in this session is its entry, and its position
+                    // in the back-forward list is the floor Back may not walk below.
+                    if (browseEntryHistoryIndex == null) {
+                        browseEntryHistoryIndex = webHost?.historyIndex()
+                    }
+                    // The page is done, so the mark must go back to being a mark. The
+                    // progress threshold alone was not enough: plenty of pages never
+                    // report a value above it (cached loads jump straight to finished,
+                    // and some sites stall the reported percentage in the eighties),
+                    // which left the arc turning over content that had fully arrived.
+                    setNavLoading(false)
                     // onPageFinished also fires for the browser's own error page, so a
                     // load that already errored must keep its overlay.
                     if (!mainFrameLoadErrored) dismissPageError()
@@ -3452,6 +3598,7 @@ class KeenActivity : AppCompatActivity() {
     }
 
     private fun showPageError(reason: String) {
+        setNavLoading(false)
         // Never take over home or a native/torrent surface.
         if (uiState == AppUiState.HOME) return
         if (nativeTorrentPlayerActive || torrentOverlayVisible) return
@@ -3510,6 +3657,7 @@ class KeenActivity : AppCompatActivity() {
         webHost?.destroy("page_error_home")
         webHost = null
         browseEntryUrl = null
+        browseEntryHistoryIndex = null
         continuityStore.markAtHome(true)
         showHome(status = getString(R.string.status_home))
     }
@@ -3774,11 +3922,17 @@ class KeenActivity : AppCompatActivity() {
             },
             onProgress = { percent ->
                 runOnUiThread {
-                    setLoadProgress(percent)
+                    // Only while a load is being reported. Once the line has finished
+                    // and faded — on first paint, well before the last request lands —
+                    // a trailing progress callback must not bring it back.
+                    if (navLoadingShown) setLoadProgress(percent)
                     // Real progress past the fold means the page is not stalled — a
                     // "not responding" takeover would only cover usable content.
                     if (percent >= 80) cancelStallTimeout()
-                    if (percent >= 100) capturePagePoster()
+                    if (percent >= 100) {
+                        setNavLoading(false)
+                        capturePagePoster()
+                    }
                 }
             },
             chromeHeightPx = {
@@ -4047,11 +4201,18 @@ class KeenActivity : AppCompatActivity() {
             browseEntryUrl,
             currentUrl,
         )
+        // "Can go back" has to mean "within this session". A WebView reused between
+        // sessions keeps the previous one's entries, so the raw canGoBack() was true on
+        // the very first page of a new session and Back walked sideways into pages the
+        // user had never opened from here instead of returning home.
+        val entryIndex = browseEntryHistoryIndex
+        val inSessionBack = webHost?.canGoBack() == true &&
+            (entryIndex == null || (webHost?.historyIndex() ?: -1) > entryIndex)
         val action = com.keenzero.app.navigation.BrowsingBackPolicy.decide(
             surface = surface,
             htmlCustomViewActive = customViewFs,
             documentFullscreen = uiState == AppUiState.WEB_FULLSCREEN,
-            webViewCanGoBack = webHost?.canGoBack() == true,
+            webViewCanGoBack = inSessionBack,
             atBrowseEntry = atEntry,
             urlBarFocused = binding.browseUrlEdit.hasFocus(),
         )
@@ -4059,6 +4220,7 @@ class KeenActivity : AppCompatActivity() {
             "KeenBack",
             "decide action=$action surface=$surface customView=$customViewFs " +
                 "playbackMode=${webHost?.isPlaybackMode} canGoBack=${webHost?.canGoBack()} " +
+                "inSessionBack=$inSessionBack idx=${webHost?.historyIndex()} entryIdx=$entryIndex " +
                 "atEntry=$atEntry chromeVis=${binding.chromeBar.visibility}",
         )
         when (action) {
@@ -4109,6 +4271,7 @@ class KeenActivity : AppCompatActivity() {
                 webHost?.destroy("return_home")
                 webHost = null
                 browseEntryUrl = null
+                browseEntryHistoryIndex = null
                 // Deliberate back-out to home: cold starts stay here (Continue card).
                 continuityStore.markAtHome(true)
                 showHome(status = getString(R.string.status_home) + " (returned)")
@@ -4368,6 +4531,7 @@ class KeenActivity : AppCompatActivity() {
         webHost?.destroy("chrome_logo_home")
         webHost = null
         browseEntryUrl = null
+        browseEntryHistoryIndex = null
         continuityStore.markAtHome(true)
         showHome(status = getString(R.string.status_home) + " (logo)")
     }
@@ -4777,15 +4941,6 @@ class KeenActivity : AppCompatActivity() {
         private const val TORRENT_TIMEBAR_KEY_INCREMENT_MS = 60_000L
         /** Target width of the focus border micro-animation (grows inward). */
         private const val FOCUS_BORDER_WIDTH_DP = 3f
-        /** High-res-first icon paths tried when caching a favourite's roundel icon. */
-        private val FAVICON_CANDIDATE_PATHS = listOf(
-            "/apple-touch-icon.png",
-            "/apple-touch-icon-precomposed.png",
-            "/apple-touch-icon-180x180.png",
-            "/favicon-196x196.png",
-            "/favicon-192x192.png",
-            "/favicon.ico",
-        )
         /** Single DPAD tap in the torrent player: gentle 10 s step. */
         private const val TORRENT_SEEK_TAP_MS = 10_000L
         /** Hold-to-seek rate for the first [TORRENT_SEEK_ACCEL_DELAY_SEC] of a hold
@@ -4827,6 +4982,52 @@ class KeenActivity : AppCompatActivity() {
 
         /** How often the Downloaded row re-reads the library index while downloading. */
         private const val DOWNLOAD_TICK_MS = 1_000L
+
+        /**
+         * Where the line starts the moment a navigation begins.
+         *
+         * Non-zero on purpose: the whole point of starting on the press is that the
+         * user sees something immediately, and a zero-width bar is no different from
+         * an absent one. From here [startLoadProgressTrickle] keeps it creeping until
+         * real progress arrives.
+         */
+        private const val NAV_LOADING_START_PERCENT = 6
+
+        /** Hard ceiling on a load's line, so it can never be left running for ever. */
+        private const val NAV_LOADING_MAX_MS = 25_000L
+
+        /**
+         * How long a press is given to turn into a navigation before its optimistic
+         * spin is closed. Long enough to cover a slow server's first byte, short enough
+         * that a link which does nothing does not leave the mark turning.
+         */
+        private const val NAV_PROVISIONAL_MS = 2_500L
+
+        /**
+         * Hard cap on a real load's spin, measured from the page starting.
+         *
+         * The 25s watchdog exists to catch a stuck spinner; this is a different claim:
+         * that after a few seconds the spinner has stopped being informative whether the
+         * page is done or not. Either the content arrived — in which case the remaining
+         * requests are the site's own business — or it did not, and a turning arc is not
+         * what tells the user that.
+         */
+        private const val NAV_LOADING_SETTLE_MS = 4_000L
+
+        /** Saved-site tiles: a name on a dark slab. See buildFavRoundel. */
+        private const val FAV_NAME_CHARS = 10
+        private const val FAV_TILE_HEIGHT_DP = 44
+        private const val FAV_TILE_PAD_DP = 16
+        private const val FAV_TILE_CORNER_DP = 8f
+        private const val FAV_FADE_WIDTH_DP = 26
+        private const val FAV_TILE_BG = 0xFF1E1E20.toInt()
+
+        /** Public suffixes with two labels, so `bbc.co.uk` does not read as "co". */
+        private val TWO_PART_SUFFIXES = setOf(
+            "co.uk", "co.nz", "co.za", "co.jp", "co.kr", "co.in", "co.il",
+            "com.au", "com.br", "com.cn", "com.mx", "com.tr", "com.sg", "com.hk",
+            "net.au", "net.nz", "org.uk", "org.nz", "org.au", "ac.uk", "gov.uk",
+        )
 
         private const val STAR_BUTTON_FALLBACK_PX = 96
         private const val STAR_BUTTON_PADDING_PX = 18

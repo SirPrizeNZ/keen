@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Gap between the K mark and the start of the address text, about the width of an
+      "m" at 14sp. The two address rows reach the same gap by different routes and must
+      stay in step: the home mark has no internal padding, so the field carries all of
+      it, while the browse-bar mark sits inside a 6dp-padded focusable box and the field
+      adds only the remainder. Measured on device before this was unified: home 11.5dp,
+      browse 19.5dp.
+    -->
+    <dimen name="url_logo_gap">10dp</dimen>
+    <dimen name="url_logo_gap_chrome">4dp</dimen>
+</resources>

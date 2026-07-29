@@ -21,16 +21,46 @@ import kotlin.math.min
 class CursorOverlay(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private val radius = 5.4f * density
+
+    /**
+     * The cursor inverts whatever is under it rather than being painted a fixed colour.
+     *
+     * A white dot is invisible on a white page, which is most of the web — Wikipedia
+     * being the case that surfaced it. DIFFERENCE against white gives black, against
+     * black gives white, and against a mid-tone gives its opposite, so the dot is
+     * legible on any background without having to know what the background is.
+     *
+     * Two consequences are load-bearing:
+     *  - the view must NOT have its own layer (see [hasOverlappingRendering] and the
+     *    absent setLayerType), or the blend would apply against the layer's own empty
+     *    pixels instead of the page beneath it;
+     *  - the idle fade cannot use View.alpha for the same reason, so it is applied to
+     *    these paints instead — see [renderAlpha].
+     */
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
+        blendMode = android.graphics.BlendMode.DIFFERENCE
         isDither = false
     }
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(77, 255, 255, 255)
         style = Paint.Style.STROKE
         strokeWidth = 2.5f * density
+        blendMode = android.graphics.BlendMode.DIFFERENCE
         isDither = false
     }
+
+    /** 0..1, applied to the paints because View.alpha would force an offscreen layer. */
+    private var renderAlpha = 1f
+        set(value) {
+            val clamped = value.coerceIn(0f, 1f)
+            if (field != clamped) {
+                field = clamped
+                fill.alpha = (255 * clamped).toInt()
+                ring.alpha = (77 * clamped).toInt()
+                invalidate()
+            }
+        }
     var cursorX = 0f
         private set
     var cursorY = 0f
@@ -45,10 +75,16 @@ class CursorOverlay(context: Context) : View(context) {
     init {
         isClickable = false
         isFocusable = false
-        setLayerType(LAYER_TYPE_HARDWARE, null)
+        // No layer: the DIFFERENCE blend has to reach the page underneath.
         visibility = GONE
         alpha = 1f
     }
+
+    /**
+     * False so View.alpha (and any parent's) never triggers an offscreen save layer,
+     * which would isolate the blend from the content it is supposed to invert.
+     */
+    override fun hasOverlappingRendering(): Boolean = false
 
     fun showAtCentre() {
         centreWhenLaidOut = cursorX == 0f && cursorY == 0f
@@ -63,7 +99,7 @@ class CursorOverlay(context: Context) : View(context) {
         cancelFade()
         mainHandler.removeCallbacks(idleFadeRunnable)
         visibility = GONE
-        alpha = 1f
+        renderAlpha = 1f
     }
 
     /**
@@ -73,7 +109,7 @@ class CursorOverlay(context: Context) : View(context) {
         lastActivityAt = SystemClock.elapsedRealtime()
         cancelFade()
         if (visibility != VISIBLE) visibility = VISIBLE
-        if (alpha < 0.99f) alpha = 1f
+        if (renderAlpha < 0.99f) renderAlpha = 1f
         mainHandler.removeCallbacks(idleFadeRunnable)
         mainHandler.postDelayed(idleFadeRunnable, IDLE_FADE_MS)
     }
@@ -101,7 +137,7 @@ class CursorOverlay(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (alpha <= 0.01f) return
+        if (renderAlpha <= 0.01f) return
         canvas.drawCircle(cursorX, cursorY, radius + ring.strokeWidth, ring)
         canvas.drawCircle(cursorX, cursorY, radius, fill)
     }
@@ -130,11 +166,11 @@ class CursorOverlay(context: Context) : View(context) {
             return
         }
         cancelFade()
-        fadeAnimator = ValueAnimator.ofFloat(alpha.coerceIn(0f, 1f), 0f).apply {
+        fadeAnimator = ValueAnimator.ofFloat(renderAlpha, 0f).apply {
             duration = FADE_DURATION_MS
             interpolator = DecelerateInterpolator()
             addUpdateListener { anim ->
-                alpha = anim.animatedValue as Float
+                renderAlpha = anim.animatedValue as Float
             }
             start()
         }

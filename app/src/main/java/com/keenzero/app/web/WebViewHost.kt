@@ -766,6 +766,18 @@ class WebViewHost(
 
     fun canGoBack(): Boolean = webView?.canGoBack() == true
 
+    /**
+     * Position in the WebView's back-forward list.
+     *
+     * Needed because [canGoBack] answers a different question than Back should be asking.
+     * A WebView reused across browsing sessions still holds the previous session's
+     * entries, so `canGoBack()` stays true at the first page of a new one — Back then
+     * walks into pages the user never opened from here instead of leaving for home.
+     * Comparing this against the index the session started at is what distinguishes
+     * "there is history" from "there is history *of this session*".
+     */
+    fun historyIndex(): Int = webView?.copyBackForwardList()?.currentIndex ?: -1
+
     fun goBack() {
         webView?.goBack()
     }

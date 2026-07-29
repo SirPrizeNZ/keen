@@ -66,7 +66,6 @@ class RemoteInputRouter(
      */
     private var mediaPointerLock = false
     private var centreHeld = false
-    private var modeToggledByLongPress = false
     val interactionIndex = InteractionIndex()
     private var indexDirty = true
     private var rebuildPending = false
@@ -1875,7 +1874,6 @@ class RemoteInputRouter(
             KeyEvent.ACTION_DOWN -> {
                 if (event.repeatCount == 0) {
                     centreHeld = true
-                    modeToggledByLongPress = false
                     onUserInput()
                     // IME Done often delivers only a brief ENTER down — collapse immediately.
                     if (isImeEnter) {
@@ -1883,10 +1881,11 @@ class RemoteInputRouter(
                         centreHeld = false
                         return true
                     }
-                    // Long-press mode switch only on D-pad centre.
-                    if (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
-                        scheduleLongPressToggle()
-                    }
+                    // No long-press mode switch. Holding OK used to flip the remote
+                    // between pointer and DOM focus, which meant a press held a fraction
+                    // too long silently changed how every subsequent key behaved — with
+                    // no way to tell which mode you were in. The mode is now only ever
+                    // changed deliberately, from the Menu key.
                 }
             }
             KeyEvent.ACTION_UP -> {
@@ -1894,36 +1893,16 @@ class RemoteInputRouter(
                 if (isImeEnter) {
                     // Already handled on DOWN.
                     centreHeld = false
-                    modeToggledByLongPress = false
                     return true
                 }
-                if (centreHeld && !modeToggledByLongPress) {
+                if (centreHeld) {
                     activate(webView, imeEnter = false)
                 }
                 centreHeld = false
-                modeToggledByLongPress = false
             }
             else -> return false
         }
         return true
-    }
-
-    private fun scheduleLongPressToggle() {
-        cancelLongPressToggle()
-        // Do not mode-switch during video fullscreen — long OK is often used on player chrome.
-        if (mediaPointerLock) return
-        // Do not mode-switch while a search-results list is bound (OK is for selecting a row).
-        if (modalOwner == ModalOwner.ACTIVE) return
-        val r = Runnable {
-            if (centreHeld && !modeToggledByLongPress && !mediaPointerLock &&
-                modalOwner != ModalOwner.ACTIVE
-            ) {
-                modeToggledByLongPress = true
-                toggleMode()
-            }
-        }
-        longPressRunnable = r
-        mainHandler.postDelayed(r, LONG_PRESS_MS)
     }
 
     /**
@@ -1934,7 +1913,6 @@ class RemoteInputRouter(
         mediaPointerLock = locked
         if (locked) {
             cancelLongPressToggle()
-            modeToggledByLongPress = false
             centreHeld = false
             // Always re-assert pointer + cursor for player UI (subs / quality / audio).
             // Cursor layer sits above HTML fullscreen — keep it awake and visible.
@@ -2771,7 +2749,6 @@ class RemoteInputRouter(
             KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_NUMPAD_ENTER,
         )
-        const val LONG_PRESS_MS = 450L
         /** "Hover over the star or next to it, close to it" — the star is a small
          * target, so OK is accepted a little outside its literal bounds too. */
         const val STAR_HIT_PAD_PX = 28f

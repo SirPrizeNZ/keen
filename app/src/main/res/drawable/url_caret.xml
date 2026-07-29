@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Typing caret for the address fields.
+
+  Without this the platform draws its default cursor, which is tinted with the theme's
+  colorAccent — a green bar on a screen with nothing else green on it — and stretched to
+  the full line box, which with the address field's vertical padding made it far taller
+  than the text it sits in. This is a plain white hairline; the fields pair it with
+  includeFontPadding="false" so the line box, and therefore the caret, is the height of
+  the text rather than the font's full ascent-to-descent.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <size android:width="2dp" />
+    <solid android:color="@android:color/white" />
+</shape>

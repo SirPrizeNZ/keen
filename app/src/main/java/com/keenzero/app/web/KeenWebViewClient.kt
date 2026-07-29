@@ -102,6 +102,26 @@ class KeenWebViewClient(
         )
     }
 
+    /**
+     * The main frame has painted its first content.
+     *
+     * This is the honest answer to "is the page usable yet", and it is a different
+     * question from the one progress and page-finished answer. Those track *resource
+     * loading* — trackers, beacons, fonts, lazy images, whatever a site's backend feels
+     * like fetching after the fact — and a page can sit there for many seconds finishing
+     * work the reader neither sees nor needs. By the time this fires the article is on
+     * screen and scrollable, which is the moment the spinner has stopped being true.
+     */
+    override fun onPageCommitVisible(view: WebView?, url: String?) {
+        onEvent(
+            NavigationEvent(
+                t = System.currentTimeMillis(),
+                type = "onPageCommitVisible",
+                url = url,
+            ),
+        )
+    }
+
     override fun onPageFinished(view: WebView?, url: String?) {
         challengeDetector?.onContentLoaded(url)
         onUrlChanged(url)

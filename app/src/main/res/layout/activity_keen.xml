@@ -30,25 +30,39 @@
                 android:orientation="vertical"
                 android:paddingTop="6dp">
 
+                <!-- Fixed height on purpose. With wrap_content this row was as tall as
+                     whichever child happened to be tallest, so every change to the
+                     address field's font metrics or to the star's margins re-centred
+                     the K and the star along with it — three separate rounds of
+                     "align the logo" chasing each other. Pinning the height makes
+                     center_vertical mean something stable, and the per-icon nudges
+                     below stay correct. 40dp clears the 32dp star. -->
                 <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    android:layout_height="40dp"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
+                    <!-- No background plate. The focusable_icon drawable that used to
+                         sit behind the mark left a round grey disc showing whenever this
+                         view held focus — which it does on the way back from a stream,
+                         so the K appeared to have grown a badge. Loading feedback is the
+                         line at the foot of this bar, not anything drawn on the mark.
+
+                         The top margin is measured on device so the mark's cap spans
+                         exactly the 'h' of "https"; padding sets its height. -->
                     <ImageView
                         android:id="@+id/chromeLogo"
                         android:layout_width="28dp"
                         android:layout_height="26dp"
                         android:layout_marginStart="10dp"
-                        android:layout_marginTop="3dp"
+                        android:layout_marginTop="1.5dp"
                         android:alpha="1.0"
-                        android:background="@drawable/focusable_icon"
                         android:clickable="true"
                         android:contentDescription="@string/app_name"
                         android:focusable="true"
                         android:nextFocusRight="@id/browseUrlEdit"
-                        android:padding="6dp"
+                        android:padding="7.5dp"
                         android:scaleType="fitCenter"
                         android:src="@drawable/keen_mark" />
 
@@ -65,22 +79,28 @@
                         android:inputType="textUri"
                         android:nextFocusLeft="@id/chromeLogo"
                         android:nextFocusRight="@id/chromeFavButton"
-                        android:paddingHorizontal="12dp"
+                        android:paddingStart="@dimen/url_logo_gap_chrome"
+                        android:paddingEnd="12dp"
                         android:paddingTop="8dp"
                         android:paddingBottom="4dp"
                         android:singleLine="true"
+                        android:includeFontPadding="false"
+                        android:textCursorDrawable="@drawable/url_caret"
                         android:textColor="@android:color/white"
                         android:textColorHint="@color/keen_url_hint"
                         android:textSize="14sp"
                         android:importantForAutofill="no" />
 
-                    <!-- Favourite the current site (top-right of the address row). -->
+                    <!-- Favourite the current site (top-right of the address row).
+                         Carries the same bottom-margin lift as the mark at the other end
+                         of the row, so the two sit on one line rather than the star
+                         hanging a few pixels below the K. -->
                     <ImageView
                         android:id="@+id/chromeFavButton"
                         android:layout_width="32dp"
                         android:layout_height="32dp"
                         android:layout_marginEnd="12dp"
-                        android:layout_marginTop="3dp"
+                        android:layout_marginTop="1.75dp"
                         android:alpha="0.35"
                         android:background="@drawable/focusable_icon"
                         android:clickable="true"
@@ -161,7 +181,7 @@
             android:layout_gravity="center_horizontal|bottom"
             android:layout_marginBottom="96dp"
             android:background="@drawable/seek_preview_bg"
-            android:fontFamily="sans-serif-medium"
+            android:fontFamily="@font/google_sans_medium"
             android:paddingHorizontal="20dp"
             android:paddingVertical="10dp"
             android:textColor="#FFF2F4F8"
@@ -223,12 +243,13 @@
                  Hidden until a real seeder/leecher breakdown arrives, then fades in. -->
             <LinearLayout
                 android:id="@+id/torrentLoadingStats"
-                android:layout_width="264dp"
+                android:layout_width="190dp"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="14dp"
                 android:orientation="horizontal"
                 android:baselineAligned="false"
-                android:visibility="gone">
+                android:alpha="0"
+                android:visibility="invisible">
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -241,6 +262,7 @@
                         android:id="@+id/statSeeders"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
                         android:textColor="@color/keen_text"
                         android:textSize="22sp"
                         android:textStyle="bold" />
@@ -248,7 +270,8 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="3dp"
+                        android:layout_marginTop="2dp"
+                        android:includeFontPadding="false"
                         android:letterSpacing="0.14"
                         android:text="@string/torrent_stat_seeders"
                         android:textColor="@color/keen_muted"
@@ -267,6 +290,7 @@
                         android:id="@+id/statLeechers"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
                         android:textColor="@color/keen_text"
                         android:textSize="22sp"
                         android:textStyle="bold" />
@@ -274,7 +298,8 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="3dp"
+                        android:layout_marginTop="2dp"
+                        android:includeFontPadding="false"
                         android:letterSpacing="0.14"
                         android:text="@string/torrent_stat_leechers"
                         android:textColor="@color/keen_muted"
@@ -293,6 +318,7 @@
                         android:id="@+id/statSpeed"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
                         android:textColor="@color/keen_text"
                         android:textSize="22sp"
                         android:textStyle="bold" />
@@ -300,7 +326,8 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="3dp"
+                        android:layout_marginTop="2dp"
+                        android:includeFontPadding="false"
                         android:letterSpacing="0.14"
                         android:text="@string/torrent_stat_speed"
                         android:textColor="@color/keen_muted"
@@ -337,7 +364,7 @@
             android:id="@+id/errorTitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:fontFamily="sans-serif-medium"
+            android:fontFamily="@font/google_sans_medium"
             android:text="@string/error_title"
             android:textColor="@color/keen_text"
             android:textSize="26sp" />
@@ -375,7 +402,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fontFamily="sans-serif-medium"
+                android:fontFamily="@font/google_sans_medium"
                 android:text="@string/error_retry"
                 android:textColor="@color/keen_text"
                 android:textSize="16sp" />
@@ -477,13 +504,23 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <ImageView
-                    android:id="@+id/homeBarLogo"
-                    android:layout_width="14dp"
-                    android:layout_height="12dp"
-                    android:contentDescription="@string/app_name"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/keen_mark" />
+                <!-- Position and size are set at runtime by alignHomeMarkToAddressText(),
+                     from the address field's own font metrics, so the mark's ink spans
+                     the same top and bottom as an 'h' beside it whatever the field's
+                     typeface, size or padding become. The values here are only what is
+                     drawn before the first layout resolves. -->
+                <FrameLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content">
+
+                    <ImageView
+                        android:id="@+id/homeBarLogo"
+                        android:layout_width="13dp"
+                        android:layout_height="12dp"
+                        android:contentDescription="@string/app_name"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/keen_mark" />
+                </FrameLayout>
 
                 <EditText
                     android:id="@+id/homeUrlInput"
@@ -493,10 +530,12 @@
                     android:hint="@string/url_hint"
                     android:imeOptions="actionGo"
                     android:inputType="textUri"
-                    android:paddingStart="10dp"
+                    android:paddingStart="@dimen/url_logo_gap"
                     android:paddingEnd="10dp"
                     android:paddingVertical="6dp"
                     android:singleLine="true"
+                    android:includeFontPadding="false"
+                    android:textCursorDrawable="@drawable/url_caret"
                     android:textColor="@android:color/white"
                     android:textColorHint="@color/keen_url_hint"
                     android:textSize="14sp"
@@ -538,11 +577,11 @@
                 android:id="@+id/continueHeading"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fontFamily="sans-serif-bold"
+                android:fontFamily="@font/google_sans_bold"
                 android:letterSpacing="-0.015"
                 android:text="@string/continue_watching"
                 android:textColor="@color/keen_muted"
-                android:textSize="26sp" />
+                android:textSize="22sp" />
 
             <!-- Up to 5 recently played titles, horizontally scrollable. Cards are
                  built in code (buildContinueCard) so the row stays data-driven. -->
@@ -550,7 +589,7 @@
                 android:id="@+id/continueScroll"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
+                android:layout_marginTop="11dp"
                 android:clipChildren="false"
                 android:clipToPadding="false"
                 android:scrollbars="none">
@@ -581,17 +620,17 @@
                 android:id="@+id/downloadedHeading"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fontFamily="sans-serif-bold"
+                android:fontFamily="@font/google_sans_bold"
                 android:letterSpacing="-0.015"
                 android:text="@string/downloaded_heading"
                 android:textColor="@color/keen_muted"
-                android:textSize="26sp" />
+                android:textSize="22sp" />
 
             <HorizontalScrollView
                 android:id="@+id/downloadedScroll"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
+                android:layout_marginTop="11dp"
                 android:clipChildren="false"
                 android:clipToPadding="false"
                 android:scrollbars="none">
