@@ -1386,18 +1386,34 @@ class KeenActivity : AppCompatActivity() {
                 "export" to intent.getBooleanExtra(EXTRA_EXPORT_EVIDENCE, false),
             ),
         )
+        // Undo of the seed below. Demo content that cannot be removed is not mock
+        // content, it is a mess left in someone's real library — so the seed and its
+        // reversal are defined together, from one list.
+        if (intent.getBooleanExtra(EXTRA_LAB_UI_PREVIEW_CLEAR, false)) {
+            recordEvent(NavigationEvent(System.currentTimeMillis(), "debug_ui_preview_clear"))
+            UI_PREVIEW_SITES.forEach { url ->
+                if (favouritesStore.isFavourite(url)) favouritesStore.toggle(url)
+            }
+            continuityStore.removeByContentId(setOf(UI_PREVIEW_CONTENT_ID))
+            // Anything else a demo left in Continue watching, matched on title. The
+            // recents list is capped, so a demo that plays real media costs the user
+            // real history slots; this is how those are handed back.
+            intent.getStringExtra(EXTRA_LAB_CLEAR_TITLE)?.takeIf { it.isNotBlank() }?.let { needle ->
+                val kept = continuityStore.loadRecents()
+                    .filterNot { it.title?.contains(needle, ignoreCase = true) == true }
+                continuityStore.saveRecents(kept)
+            }
+            binding.root.post { hydrateContinuitySurface() }
+            return
+        }
         if (intent.getBooleanExtra(EXTRA_LAB_UI_PREVIEW, false)) {
             recordEvent(NavigationEvent(System.currentTimeMillis(), "debug_ui_preview"))
-            listOf(
-                "https://github.com/",
-                "https://en.wikipedia.org/",
-                "https://news.ycombinator.com/",
-                "https://www.nasa.gov/",
-            ).forEach { url -> if (!favouritesStore.isFavourite(url)) favouritesStore.toggle(url) }
+            UI_PREVIEW_SITES
+                .forEach { url -> if (!favouritesStore.isFavourite(url)) favouritesStore.toggle(url) }
             continuityStore.save(
                 ContinuityCheckpoint(
                     url = "https://example.com/watch/preview",
-                    contentId = "keen-ui-preview",
+                    contentId = UI_PREVIEW_CONTENT_ID,
                     title = "Nocturne S02E06 1080p WEB-DL x264",
                     playerType = "web",
                     playbackPositionSec = 1584.0,
@@ -5006,6 +5022,17 @@ class KeenActivity : AppCompatActivity() {
         const val EXTRA_LAB_DUMP_REMOTE = "com.keenzero.app.extra.LAB_DUMP_REMOTE"
         /** Debug/lab: seed fake Favs + a Continue watching checkpoint to preview home UI. */
         const val EXTRA_LAB_UI_PREVIEW = "com.keenzero.app.extra.LAB_UI_PREVIEW"
+        /** Removes everything EXTRA_LAB_UI_PREVIEW seeded, and nothing else. */
+        const val EXTRA_LAB_UI_PREVIEW_CLEAR = "com.keenzero.app.extra.LAB_UI_PREVIEW_CLEAR"
+        /** Optional title substring: drops matching Continue-watching entries too. */
+        const val EXTRA_LAB_CLEAR_TITLE = "com.keenzero.app.extra.LAB_CLEAR_TITLE"
+        private const val UI_PREVIEW_CONTENT_ID = "keen-ui-preview"
+        private val UI_PREVIEW_SITES = listOf(
+            "https://github.com/",
+            "https://en.wikipedia.org/",
+            "https://news.ycombinator.com/",
+            "https://www.nasa.gov/",
+        )
         /** Debug/lab: also pop the torrent-loading spinner overlay for a few seconds. */
         const val EXTRA_LAB_UI_PREVIEW_SPINNER = "com.keenzero.app.extra.LAB_UI_PREVIEW_SPINNER"
         /** How long the loading scrim holds after collapse() starts, so the spinner's
