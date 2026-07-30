@@ -1397,6 +1397,29 @@ class KeenActivity : AppCompatActivity() {
         // Undo of the seed below. Demo content that cannot be removed is not mock
         // content, it is a mess left in someone's real library — so the seed and its
         // reversal are defined together, from one list.
+        // Favourites are the user's own data, and a demo capture needs a different set
+        // on screen than theirs. Dump-then-restore rather than edit-in-place: the dump is
+        // what makes the change reversible, so it exists before anything is removed.
+        if (intent.getBooleanExtra(EXTRA_LAB_FAVS_DUMP, false)) {
+            android.util.Log.i(
+                "KeenFavs",
+                "favs=" + favouritesStore.list().joinToString(",") { it.host + "|" + it.url },
+            )
+            return
+        }
+        intent.getStringExtra(EXTRA_LAB_FAVS_REMOVE)?.takeIf { it.isNotBlank() }?.let { hosts ->
+            val removed = favouritesStore.removeHosts(hosts.split(",").map { it.trim() }.toSet())
+            android.util.Log.i("KeenFavs", "removed=$removed")
+            binding.root.post { hydrateContinuitySurface() }
+            return
+        }
+        intent.getStringExtra(EXTRA_LAB_FAVS_ADD)?.takeIf { it.isNotBlank() }?.let { urls ->
+            urls.split(",").map { it.trim() }.filter { it.isNotBlank() }.forEach { url ->
+                if (!favouritesStore.isFavourite(url)) favouritesStore.toggle(url)
+            }
+            binding.root.post { hydrateContinuitySurface() }
+            return
+        }
         if (intent.getBooleanExtra(EXTRA_LAB_UI_PREVIEW_CLEAR, false)) {
             recordEvent(NavigationEvent(System.currentTimeMillis(), "debug_ui_preview_clear"))
             UI_PREVIEW_SITES.forEach { url ->
@@ -5064,6 +5087,12 @@ class KeenActivity : AppCompatActivity() {
         const val EXTRA_LAB_UI_PREVIEW = "com.keenzero.app.extra.LAB_UI_PREVIEW"
         /** Removes everything EXTRA_LAB_UI_PREVIEW seeded, and nothing else. */
         const val EXTRA_LAB_UI_PREVIEW_CLEAR = "com.keenzero.app.extra.LAB_UI_PREVIEW_CLEAR"
+        /** Logs the current favourites so a demo edit can be undone exactly. */
+        const val EXTRA_LAB_FAVS_DUMP = "com.keenzero.app.extra.LAB_FAVS_DUMP"
+        /** Comma-separated hosts to drop from favourites. */
+        const val EXTRA_LAB_FAVS_REMOVE = "com.keenzero.app.extra.LAB_FAVS_REMOVE"
+        /** Comma-separated URLs to add back to favourites. */
+        const val EXTRA_LAB_FAVS_ADD = "com.keenzero.app.extra.LAB_FAVS_ADD"
         /** Optional title substring: drops matching Continue-watching entries too. */
         const val EXTRA_LAB_CLEAR_TITLE = "com.keenzero.app.extra.LAB_CLEAR_TITLE"
         private const val UI_PREVIEW_CONTENT_ID = "keen-ui-preview"

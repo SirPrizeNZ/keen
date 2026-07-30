@@ -76,3 +76,8 @@ SECURITY_MODEL.md
 SITE_PACK_SPEC.md
 TECHNICAL_ARCHITECTURE.md
 docs/handoffs/
+
+# iCloud Drive ignores anything ending .nosync; build dirs are symlinked there
+# so sync cannot duplicate files Gradle is actively writing (it broke R8 with
+# stray "BuildConfig (1).class" copies).
+*.nosync
