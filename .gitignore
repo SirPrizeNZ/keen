@@ -81,3 +81,8 @@ docs/handoffs/
 # so sync cannot duplicate files Gradle is actively writing (it broke R8 with
 # stray "BuildConfig (1).class" copies).
 *.nosync
+
+# Never track the build symlinks that keep these dirs out of iCloud sync.
+.gradle
+build/
+app/build

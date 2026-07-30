@@ -24,8 +24,7 @@ Open any site, and when you find something to watch, press once.
 It blocks aggressive ads and popup chains, unlocks hardware-decoded video and surround sound,
 and lets you stream or save magnet links and torrents with one press.
 
-[Beta](#beta) ·
-[Stable](#stable) ·
+[Download](#download) ·
 [Installation](#installation) ·
 [Contributing](#contributing) ·
 [Licence](#licence)
@@ -131,9 +130,7 @@ Keen uses the Android System WebView already installed and maintained on your de
 
 It does not package another copy of Chromium inside the APK. This keeps Keen small and avoids the storage, memory and maintenance burden of a second browser engine.
 
-## Beta
-
-The beta contains the newest Keen features and is the recommended build for testing.
+## Download
 
 **[Download Keen v0.2.0-beta.1](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.1/keen-0.2.0-beta.1-32bit-armeabi-v7a.apk)** ·
 [Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.0-beta.1) ·
@@ -141,25 +138,14 @@ The beta contains the newest Keen features and is the recommended build for test
 
 18.3 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
-The beta uses the same signing key as the stable release, so it can be installed over stable without losing favourites, history or playback positions.
+This is the current build and the one to install. Expect occasional rough edges.
 
-Expect occasional rough edges.
-
-## Stable
-
-Recommended for users who prefer the most established release.
-
-**[Download Keen v0.1.154](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.154/keen-0.1.154-32bit-armeabi-v7a.apk)** ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.1.154) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.1.154/SHA256SUMS)
-
-18.3 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
-
-All published builds are available from [GitHub Releases](https://github.com/SirPrizeNZ/keen/releases).
+Every published build, including older ones, is listed under
+[GitHub Releases](https://github.com/SirPrizeNZ/keen/releases).
 
 ## Installation
 
-Keen is not currently distributed through the Google Play Store. Download either APK above and sideload it onto your Android TV or Google TV device.
+Keen is not currently distributed through the Google Play Store. Download the APK above and sideload it onto your Android TV or Google TV device.
 
 ### Install over Wi-Fi with ADB
 
@@ -174,7 +160,7 @@ adb connect <tv-ip>:<port>
 adb install -r <keen-apk-filename>
 ```
 
-For example, to install the beta:
+For example:
 
 ```bash
 adb install -r keen-0.2.0-beta.1-32bit-armeabi-v7a.apk
