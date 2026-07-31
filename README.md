@@ -132,16 +132,15 @@ It does not package another copy of Chromium inside the APK. This keeps Keen sma
 
 ## Download
 
-**[Download Keen v0.2.0-beta.1](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.1/keen-0.2.0-beta.1-32bit-armeabi-v7a.apk)** ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.0-beta.1) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.1/SHA256SUMS)
+**[Download Keen v0.2.0-beta.2](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.2/keen-0.2.0-beta.2-32bit-armeabi-v7a.apk)** ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.0-beta.2) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.2/SHA256SUMS)
 
-18.3 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
+18.4 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
-This is the current build and the one to install. Expect occasional rough edges.
-
-Every published build, including older ones, is listed under
-[GitHub Releases](https://github.com/SirPrizeNZ/keen/releases).
+Keen is in beta. This is the only published build and the one to install. It updates
+an existing install in place, keeping favourites, history, watch positions and saved
+downloads.
 
 ## Installation
 
@@ -163,7 +162,7 @@ adb install -r <keen-apk-filename>
 For example:
 
 ```bash
-adb install -r keen-0.2.0-beta.1-32bit-armeabi-v7a.apk
+adb install -r keen-0.2.0-beta.2-32bit-armeabi-v7a.apk
 ```
 
 To install the stable release:
