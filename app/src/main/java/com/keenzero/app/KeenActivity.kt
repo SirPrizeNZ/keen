@@ -949,7 +949,7 @@ class KeenActivity : AppCompatActivity() {
         container.setTag(R.id.downloaded_fill_tag, fill)
         val title = android.widget.TextView(this).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams(dp(190), android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(12) }
+                .apply { topMargin = dp(6) }
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             setTextColor(ContextCompat.getColor(this@KeenActivity, R.color.keen_muted))
@@ -1044,12 +1044,14 @@ class KeenActivity : AppCompatActivity() {
         val baseline = field.baseline
         if (baseline < 0) return
 
-        // The 'h' specifically: an ascender, so the mark spans the tallest part of the
-        // lowercase text rather than the font's nominal ascent, which sits above
-        // anything actually drawn.
+        // The 'E' specifically: cap height, so the mark reads as one of the capitals in
+        // the line beside it rather than as a smaller glyph tucked in front of them.
         val ink = android.graphics.Rect()
-        field.paint.getTextBounds("h", 0, 1, ink)
-        val targetHeight = ink.height()
+        field.paint.getTextBounds("E", 0, 1, ink)
+        // 4% over the measured cap height: the mark's own artwork carries a hair of
+        // transparent margin, so matching the raw number left it reading a touch short
+        // of the E beside it.
+        val targetHeight = Math.round(ink.height() * 1.04f)
         if (targetHeight <= 0) return
         val aspect = art.intrinsicWidth.toFloat() / art.intrinsicHeight.toFloat()
         val targetWidth = Math.round(targetHeight * aspect)
@@ -1067,7 +1069,10 @@ class KeenActivity : AppCompatActivity() {
         if (resized) return
 
         val inkTopInField = baseline + ink.top   // ink.top is negative: above the baseline
-        frame.translationY = (field.top + inkTopInField - frame.top).toFloat()
+        // Split the 4% overshoot above and below the cap so the mark stays centred on
+        // the E rather than hanging below the baseline.
+        val overshoot = (targetHeight - ink.height()) / 2f
+        frame.translationY = (field.top + inkTopInField - frame.top) - overshoot
     }
 
     /** Focus-border drawable at 50% white, used as an animated foreground cue. */
@@ -1108,6 +1113,17 @@ class KeenActivity : AppCompatActivity() {
             includeFontPadding = false
             setSingleLine(true)
             gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        // Centring the text box is not the same as centring the text: the font leaves
+        // more room above the caps than below the baseline, so the word sat low in the
+        // tile and the chip looked bottom-heavy. Centre the ink instead.
+        run {
+            val capInk = android.graphics.Rect()
+            label.paint.getTextBounds("E", 0, 1, capInk)
+            val fm = label.paint.fontMetrics
+            val above = -fm.ascent - capInk.height()
+            val below = fm.descent
+            label.translationY = -(above - below) / 2f
         }
         // The tile is exactly as wide as the first FAV_NAME_CHARS characters of this
         // name in this font, so every tile is sized by its own text rather than to a

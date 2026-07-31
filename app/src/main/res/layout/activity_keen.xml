@@ -525,7 +525,8 @@
                         android:layout_height="12dp"
                         android:contentDescription="@string/app_name"
                         android:scaleType="fitCenter"
-                        android:src="@drawable/keen_mark" />
+                        android:src="@drawable/keen_mark"
+                        android:tint="@color/keen_muted" />
                 </FrameLayout>
 
                 <EditText
@@ -533,6 +534,8 @@
                     android:layout_width="480dp"
                     android:layout_height="wrap_content"
                     android:background="@android:color/transparent"
+                    android:fontFamily="@font/google_sans_bold"
+                    android:letterSpacing="-0.015"
                     android:hint="@string/url_hint"
                     android:imeOptions="actionGo"
                     android:inputType="textUri"
@@ -543,8 +546,8 @@
                     android:includeFontPadding="false"
                     android:textCursorDrawable="@drawable/url_caret"
                     android:textColor="@android:color/white"
-                    android:textColorHint="@color/keen_url_hint"
-                    android:textSize="14sp"
+                    android:textColorHint="@color/keen_home_hint"
+                    android:textSize="22sp"
                     android:importantForAutofill="no" />
             </LinearLayout>
 
@@ -553,7 +556,7 @@
             android:id="@+id/favsGroup"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="28dp"
+            android:layout_marginBottom="17dp"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:orientation="vertical"
@@ -595,7 +598,7 @@
                 android:id="@+id/continueScroll"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="11dp"
+                android:layout_marginTop="4dp"
                 android:clipChildren="false"
                 android:clipToPadding="false"
                 android:scrollbars="none">
@@ -616,7 +619,7 @@
             android:id="@+id/downloadedGroup"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="34dp"
+            android:layout_marginTop="20dp"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:orientation="vertical"
@@ -636,7 +639,7 @@
                 android:id="@+id/downloadedScroll"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="11dp"
+                android:layout_marginTop="4dp"
                 android:clipChildren="false"
                 android:clipToPadding="false"
                 android:scrollbars="none">

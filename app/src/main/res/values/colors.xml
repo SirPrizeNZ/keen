@@ -22,4 +22,8 @@
          row read grey while the same field over a loaded page rendered pure white. Kept
          a shade under white so an empty field is still distinguishable from a real one. -->
     <color name="keen_url_hint">#FFC8CDD6</color>
+    <!-- Home placeholder: keen_muted, the exact colour of the K beside it and of the
+         row headings below, at 60% so the line still reads as a prompt rather than as
+         typed text. -->
+    <color name="keen_home_hint">#999AA3B2</color>
 </resources>
