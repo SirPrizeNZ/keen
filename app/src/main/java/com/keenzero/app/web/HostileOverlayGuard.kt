@@ -423,6 +423,41 @@ object HostileOverlayGuard {
         }
       }
     }catch(e){}
+    // In-flow ad slots. These sit in the document rather than over it, so the overlay
+    // rules never see them — and on a torrent index they are most of the page: the same
+    // "torrenting without a VPN is unsafe" banner repeated top, middle, bottom and down
+    // both margins, pushing the results the user came for off the screen.
+    //
+    // Matched on the site's own slot naming (the ad-* / adblock / banner conventions
+    // every one of these sites uses) AND on the slot carrying a foreign image or link,
+    // so a container merely named "additional" or "address" is never touched. Hidden,
+    // not removed: layout scripts that count their own nodes keep working.
+    try{
+      var slots=document.querySelectorAll(
+        // IAB slot sizes are how these pages name their ad columns — the two vertical
+        // "torrenting without a VPN is unsafe" skyscrapers down the margins are
+        // `col-left ad120` / `col-right ad120`, which a list of the horizontal sizes
+        // alone walked straight past.
+        '[class*="adblock"],[class*="ad120"],[class*="ad160"],[class*="ad180"],' +
+        '[class*="ad234"],[class*="ad250"],[class*="ad300"],[class*="ad336"],' +
+        '[class*="ad468"],[class*="ad728"],[class*="ad970"],' +
+        '[class*="adbanner"],[class*="ad-banner"],[class*="banner-ad"],' +
+        '[class*="skyscraper"],[id^="ad-"],[id^="ads-"]');
+      for(var s2=0;s2<slots.length&&s2<60;s2++){
+        var slot=slots[s2];
+        if(slot.getAttribute('data-keen-ad-hidden')) continue;
+        var creative=null;
+        try{ creative=slot.querySelector('img[src],iframe[src],a[href]'); }catch(e){}
+        if(!creative) continue;
+        var csrc=creative.src||creative.getAttribute('src')||creative.href||creative.getAttribute('href')||'';
+        if(!isForeignUrl(csrc)) continue;
+        try{
+          slot.setAttribute('data-keen-ad-hidden','1');
+          slot.style.setProperty('display','none','important');
+          removed++;
+        }catch(e){}
+      }
+    }catch(e){}
     var sel='div,section,aside,dialog,article,span,iframe,figure';
     var nodes;
     try{ nodes=document.querySelectorAll(sel); }catch(e){ return 0; }

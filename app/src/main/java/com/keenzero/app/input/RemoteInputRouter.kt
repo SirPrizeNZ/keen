@@ -1296,6 +1296,7 @@ class RemoteInputRouter(
             pageDragActive = true
             pageDragWebView = webView
             pageDragDownTime = now
+            pageDragLastEventTime = now
             pageDragX = ax
             pageDragFingerY = ay
             val down = MotionEvent.obtain(
@@ -1318,8 +1319,14 @@ class RemoteInputRouter(
             scrollPageVertical(webView, dy)
             return
         }
+        // Every event in this stream must carry a LATER timestamp than the one before it.
+        // A tap-driven step issued DOWN and MOVE with the same `now`, and a gesture whose
+        // points share an event time has an undefined velocity — Chromium's tracker read
+        // it as a fling, sometimes upward, which is why pressing up at the top of a page
+        // sent it racing downwards instead of moving the cursor.
+        pageDragLastEventTime = maxOf(now, pageDragLastEventTime + DRAG_STEP_MS)
         val move = MotionEvent.obtain(
-            pageDragDownTime, now, MotionEvent.ACTION_MOVE,
+            pageDragDownTime, pageDragLastEventTime, MotionEvent.ACTION_MOVE,
             pageDragX, pageDragFingerY, 0,
         ).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
         try {
@@ -1328,6 +1335,9 @@ class RemoteInputRouter(
             move.recycle()
         }
     }
+
+    /** Monotonic event clock for the synthetic page drag (see advanceAnchoredDrag). */
+    private var pageDragLastEventTime = 0L
 
     private fun endPageDrag() {
         if (!pageDragActive) return
@@ -1338,9 +1348,13 @@ class RemoteInputRouter(
         pageDragActive = false
         pageDragWebView = null
         if (wv == null) return
-        val now = SystemClock.uptimeMillis()
+        // CANCEL, not UP. UP hands Chromium the gesture's velocity and it flings on from
+        // there; a D-pad step should move the page exactly as far as it was dragged and
+        // then stop, so the next press starts from where the user can see they are.
+        val now = maxOf(SystemClock.uptimeMillis(), pageDragLastEventTime + DRAG_STEP_MS)
+        pageDragLastEventTime = now
         val up = MotionEvent.obtain(
-            downTime, now, MotionEvent.ACTION_UP, x, y, 0,
+            downTime, now, MotionEvent.ACTION_CANCEL, x, y, 0,
         ).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
         try {
             wv.dispatchTouchEvent(up)
@@ -2041,8 +2055,21 @@ class RemoteInputRouter(
                 window.__keenNativeIntent=Date.now();
                 var cssW=window.innerWidth||document.documentElement.clientWidth||viewW;
                 var cssH=window.innerHeight||document.documentElement.clientHeight||viewH;
-                var x=vx*(cssW/viewW);
-                var y=vy*(cssH/viewH);
+                // Device pixels inside the WebView map onto the VISUAL viewport, not the
+                // layout viewport. innerWidth reports the layout viewport, so on any page
+                // whose page scale is not 1 the pointer was converted with the wrong
+                // ratio and the hit test read an element in the wrong column.
+                var vvW=cssW, vvH=cssH, vvL=0, vvT=0;
+                try{
+                  if(window.visualViewport){
+                    vvW=window.visualViewport.width||cssW;
+                    vvH=window.visualViewport.height||cssH;
+                    vvL=window.visualViewport.offsetLeft||0;
+                    vvT=window.visualViewport.offsetTop||0;
+                  }
+                }catch(e){}
+                var x=vvL+vx*(vvW/viewW);
+                var y=vvT+vy*(vvH/viewH);
                 function goodHref(h){
                   if(!h) return false;
                   h=String(h).trim();
@@ -2257,17 +2284,44 @@ class RemoteInputRouter(
                 // means. One only: two links in a container is a genuine ambiguity and the
                 // pointer must be over the one it wants.
                 if(!promoted){
-                  var lone=null, lh=0, ln=el0;
-                  while(ln&&lh<4&&!lone){
+                  var kBest=null, kBestD=1e9, kHops=0, kNode=el0;
+                  while(kNode&&kHops<4){
                     try{
-                      if(ln.querySelectorAll){
-                        var as=ln.querySelectorAll('a[href]');
-                        if(as.length===1&&goodHref(hrefOf(as[0]))&&isPointerEligible(ln)) lone=as[0];
+                      if(kNode.querySelectorAll){
+                        var kAs=kNode.querySelectorAll('a[href]');
+                        for(var kI=0;kI<kAs.length&&kI<40;kI++){
+                          var kA=kAs[kI];
+                          if(!goodHref(hrefOf(kA))) continue;
+                          var kR=kA.getBoundingClientRect();
+                          if(kR.width<1||kR.height<1) continue;
+                          // Distance from the pointer to the anchor's box; 0 when inside.
+                          var kDx=Math.max(kR.left-x,0,x-kR.right);
+                          var kDy=Math.max(kR.top-y,0,y-kR.bottom);
+                          var kD=Math.sqrt(kDx*kDx+kDy*kDy);
+                          if(kD<kBestD){ kBestD=kD; kBest=kA; }
+                        }
                       }
                     }catch(e){}
-                    ln=ln.parentElement; lh++;
+                    if(kBest&&kBestD===0) break;
+                    kNode=kNode.parentElement; kHops++;
                   }
-                  if(lone) promoted=lone;
+                  if(kBest&&kBestD<=${ActivateHitTest.AIM_PAD_CSS}){
+                    var kGo=hrefOf(kBest);
+                    try{ var kAbs=document.createElement('a'); kAbs.href=kGo; kGo=kAbs.href; }catch(e){}
+                    // Same primary path a link takes when the pointer is dead on it:
+                    // location.assign reaches shouldOverrideUrlLoading, which is what hands
+                    // a magnet to native streaming. A synthetic click would not.
+                    if(isNavigableHref(kGo)){
+                      if(kBest.target==='_blank') kBest.target='_self';
+                      try{ location.assign(kGo); }catch(e){ try{ location.href=kGo; }catch(e2){} }
+                      var kBr=kBest.getBoundingClientRect();
+                      return JSON.stringify({ok:true,method:'location.assign',play:false,
+                        href:String(kGo).slice(0,160),aim:Math.round(kBestD),
+                        text:(kBest.innerText||'').trim().slice(0,40),tag:'A',x:x,y:y,
+                        box:[kBr.left|0,kBr.top|0,kBr.width|0,kBr.height|0]});
+                    }
+                    promoted=kBest;
+                  }
                 }
                 var leafTag=el0?(el0.tagName||''):'';
 
@@ -2545,6 +2599,7 @@ class RemoteInputRouter(
                   needTouch:false,synthetic:true,playerUi:false,
                   text:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40),
                   tag:t.tagName||'',cls:String(t.className||'').slice(0,40),x:x,y:y,
+                  vp:[cssW|0,vvW|0,vvL|0,vvT|0],
                   box:[tr.left|0,tr.top|0,tr.width|0,tr.height|0]});
               }catch(e){ return JSON.stringify({ok:false,reason:String(e),needTouch:true,synthetic:false}); }
             })($xi,$yi,$vw,$vh);""",
@@ -2801,6 +2856,8 @@ class RemoteInputRouter(
         const val PRECISION_CRAWL_MS = 160f
         /** Edge-scroll speed while D-pad held in an edge zone (dp/sec). */
         const val EDGE_SCROLL_DP = 520f
+        /** Minimum spacing between synthetic drag events, so velocity is well defined. */
+        const val DRAG_STEP_MS = 8L
         /** Edge band where page/rail scroll engages (dp). Wider = easier TV edge aim. */
         const val EDGE_ZONE_DP = 110f
         /** DOM single-step scroll as fraction of viewport. */

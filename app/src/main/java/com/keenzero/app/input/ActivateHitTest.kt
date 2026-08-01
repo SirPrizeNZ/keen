@@ -16,6 +16,16 @@ object ActivateHitTest {
     const val RAIL_CLASS_JS_REGEX =
         """/swiper(?!-slide)|carousel|rail|row-scroll|slider-track|items\b/i"""
 
+    /**
+     * How far outside a link the pointer may sit and still activate it, in CSS pixels.
+     *
+     * A remote aims a cursor at a word from across a room; an anchor's box hugs its
+     * glyphs, so "close enough" has to mean something. Small on purpose — nav links sit a
+     * few pixels apart, and a wider reach would open whichever link was nearest rather
+     * than the one the user is pointing at.
+     */
+    const val AIM_PAD_CSS = 12
+
     const val RAIL_WIDTH_FRAC = 0.55
     const val RAIL_WIDE_FRAC = 0.38
     const val RAIL_TALL_FRAC = 0.42
