@@ -2197,6 +2197,15 @@ class RemoteInputRouter(
                   }catch(e){ return false; }
                   return true;
                 }
+                /** The control a LABEL activates: its `control`, its `for=`, or one nested inside. */
+                function labelControl(el){
+                  try{
+                    if(el.control) return el.control;
+                    var f=el.getAttribute&&el.getAttribute('for');
+                    if(f){ var t=document.getElementById(f); if(t) return t; }
+                    return el.querySelector&&el.querySelector('input,select,textarea,button');
+                  }catch(e){ return null; }
+                }
                 function isInteractiveControl(el){
                   if(!el) return false;
                   var tag=(el.tagName||'').toUpperCase();
@@ -2204,7 +2213,13 @@ class RemoteInputRouter(
                   if(tag==='BUTTON') return true;
                   if(role==='button') return true;
                   if(tag==='A'&&goodHref(hrefOf(el))) return true;
-                  if(tag==='INPUT'||tag==='LABEL'||tag==='SUMMARY'||tag==='SELECT'||tag==='TEXTAREA') return true;
+                  if(tag==='INPUT'||tag==='SUMMARY'||tag==='SELECT'||tag==='TEXTAREA') return true;
+                  // A LABEL only does something when it has a control to activate.
+                  // thepiratebay.org wraps its results in a 484x799 label of dashes with
+                  // no control: it won the hit test over every title link underneath it,
+                  // so OK "clicked" the label and the page never moved. A label with no
+                  // control is decoration, whatever its size.
+                  if(tag==='LABEL') return !!labelControl(el);
                   return false;
                 }
                 /** Smallest visible interactive under pointer from full elementsFromPoint stack. */
@@ -2232,6 +2247,28 @@ class RemoteInputRouter(
                 }
                 var el0=st[0]||document.elementFromPoint(x,y);
                 var promoted=promoteInteractive(st);
+                // A row whose text is a link, aimed at a hair off the glyphs.
+                //
+                // On thepiratebay.org each result is <span class="item-title"><a …>. The
+                // anchor's inline box hugs the letters, so a cursor resting in the span's
+                // slack — anywhere past the end of a short title — hit the span, not the
+                // link, and OK did nothing on a row that plainly is a link. If the element
+                // under the pointer holds exactly one anchor, that anchor is what the row
+                // means. One only: two links in a container is a genuine ambiguity and the
+                // pointer must be over the one it wants.
+                if(!promoted){
+                  var lone=null, lh=0, ln=el0;
+                  while(ln&&lh<4&&!lone){
+                    try{
+                      if(ln.querySelectorAll){
+                        var as=ln.querySelectorAll('a[href]');
+                        if(as.length===1&&goodHref(hrefOf(as[0]))&&isPointerEligible(ln)) lone=as[0];
+                      }
+                    }catch(e){}
+                    ln=ln.parentElement; lh++;
+                  }
+                  if(lone) promoted=lone;
+                }
                 var leafTag=el0?(el0.tagName||''):'';
 
                 // A genuine bot challenge is on screen: hand it a REAL touch, always.
