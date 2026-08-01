@@ -360,6 +360,8 @@ class TorrentStreamingService : Service() {
                 peers = status.numPeers(),
                 seeds = status.numSeeds(),
                 speedBps = status.downloadRate().toLong(),
+                swarmSeeds = swarmSeedsOf(status),
+                swarmPeers = swarmPeersOf(status),
             )
         } catch (error: Throwable) {
             Log.w(TAG, "Seek buffer progress failed", error)
@@ -423,6 +425,16 @@ class TorrentStreamingService : Service() {
                     val percent = rawPercent.coerceAtLeast(reportedPercent)
                     reportedPercent = percent
                     val status = handle.status()
+                    Log.i(
+                        TAG,
+                        "tick pct=$percent whole=$whole/${bufferPieces.size} " +
+                            "peers=${status.numPeers()} seeds=${status.numSeeds()} " +
+                            "listPeers=${status.listPeers()} listSeeds=${status.listSeeds()} " +
+                            "complete=${status.numComplete()} incomplete=${status.numIncomplete()} " +
+                            "conn=${status.numConnections()} rate=${status.downloadRate()} " +
+                            "payload=${status.downloadPayloadRate()} done=${status.totalDone()} " +
+                            "state=${status.state()}",
+                    )
                     sendProgress(
                         id,
                         STAGE_BUFFERING,
@@ -430,6 +442,8 @@ class TorrentStreamingService : Service() {
                         peers = status.numPeers(),
                         seeds = status.numSeeds(),
                         speedBps = status.downloadRate().toLong(),
+                        swarmSeeds = swarmSeedsOf(status),
+                        swarmPeers = swarmPeersOf(status),
                     )
                 }
             } catch (error: Throwable) {
@@ -475,6 +489,8 @@ class TorrentStreamingService : Service() {
         peers: Int = -1,
         seeds: Int = -1,
         speedBps: Long = -1,
+        swarmSeeds: Int = -1,
+        swarmPeers: Int = -1,
     ) {
         sendBroadcast(
             Intent(ACTION_PROGRESS)
@@ -484,8 +500,36 @@ class TorrentStreamingService : Service() {
                 .putExtra(EXTRA_PERCENT, percent)
                 .putExtra(EXTRA_PEERS, peers)
                 .putExtra(EXTRA_SEEDS, seeds)
-                .putExtra(EXTRA_SPEED_BPS, speedBps),
+                .putExtra(EXTRA_SPEED_BPS, speedBps)
+                .putExtra(EXTRA_SWARM_SEEDS, swarmSeeds)
+                .putExtra(EXTRA_SWARM_PEERS, swarmPeers),
         )
+    }
+
+    /**
+     * Swarm size, as every desktop client reports it, rather than our own socket count.
+     *
+     * `numSeeds`/`numPeers` are *connections this box currently holds* — capped at
+     * [CONNECTION_LIMIT], built up over the first seconds and churning by one or two as
+     * peers come and go. That is why the box read "2 seeds, 1 leech" and then "1 / 0" on
+     * a torrent a laptop was showing as 9 / 5: both numbers were right, they were
+     * answering different questions, and ours is the one that looks like a dying torrent.
+     *
+     * `numComplete`/`numIncomplete` are the tracker's scrape figures — the whole swarm,
+     * the number the user recognises. They are -1 until an announce comes back, so fall
+     * back to the peers we know of from tracker/DHT/PEX (`listSeeds`/`listPeers`), and
+     * only then to live connections.
+     */
+    private fun swarmSeedsOf(status: org.libtorrent4j.TorrentStatus): Int = when {
+        status.numComplete() >= 0 -> status.numComplete()
+        status.listSeeds() > 0 -> status.listSeeds()
+        else -> status.numSeeds()
+    }
+
+    private fun swarmPeersOf(status: org.libtorrent4j.TorrentStatus): Int = when {
+        status.numIncomplete() >= 0 -> status.numIncomplete()
+        status.listPeers() > 0 -> (status.listPeers() - status.listSeeds()).coerceAtLeast(0)
+        else -> (status.numPeers() - status.numSeeds()).coerceAtLeast(0)
     }
 
     private fun sendFailure(id: String, message: String) {
@@ -601,6 +645,9 @@ class TorrentStreamingService : Service() {
         const val EXTRA_PERCENT = "percent"
         const val EXTRA_PEERS = "peers"
         const val EXTRA_SEEDS = "seeds"
+        /** Whole-swarm counts (tracker scrape / known peers), not our own connections. */
+        const val EXTRA_SWARM_SEEDS = "swarm_seeds"
+        const val EXTRA_SWARM_PEERS = "swarm_peers"
         const val EXTRA_SPEED_BPS = "speed_bps"
 
         const val STAGE_FETCHING_TORRENT = "fetching_torrent"

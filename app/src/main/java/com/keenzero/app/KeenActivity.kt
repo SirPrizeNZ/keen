@@ -284,6 +284,8 @@ class KeenActivity : AppCompatActivity() {
                         peers = intent.getIntExtra(TorrentStreamingService.EXTRA_PEERS, -1),
                         seeds = intent.getIntExtra(TorrentStreamingService.EXTRA_SEEDS, -1),
                         speedBps = intent.getLongExtra(TorrentStreamingService.EXTRA_SPEED_BPS, -1),
+                        swarmSeeds = intent.getIntExtra(TorrentStreamingService.EXTRA_SWARM_SEEDS, -1),
+                        swarmPeers = intent.getIntExtra(TorrentStreamingService.EXTRA_SWARM_PEERS, -1),
                     )
                 }
                 TorrentStreamingService.ACTION_READY -> {
@@ -2474,6 +2476,7 @@ class KeenActivity : AppCompatActivity() {
         currentFocus?.let { hideKeyboard(it) }
         binding.browseUrlEdit.clearFocus()
         binding.torrentPlayerView.player = player
+        styleSubtitles()
         // Scrubber (circle) walks the timeline a minute at a time when focused and
         // pressed/held left or right, instead of a duration-relative fraction.
         torrentTimeBar = binding.torrentPlayerView.findViewById<androidx.media3.ui.DefaultTimeBar>(
@@ -2491,6 +2494,34 @@ class KeenActivity : AppCompatActivity() {
         binding.root.postDelayed(torrentCheckpointRunnable, TORRENT_CHECKPOINT_INTERVAL_MS)
         binding.root.removeCallbacks(torrentFrameCaptureRunnable)
         binding.root.postDelayed(torrentFrameCaptureRunnable, TORRENT_FRAME_FIRST_DELAY_MS)
+    }
+
+    /**
+     * Subtitles at a size and weight we choose, not whatever the file or the television
+     * asks for.
+     *
+     * Two sources were making the English track heavy and oversized: subtitle files
+     * carry their own styling (SRT markup, ASS style blocks — bold is common), and
+     * media3 otherwise takes the system caption settings, which on a TV default to a
+     * large size. Both are switched off here, and the track is drawn in regular-weight
+     * sans at 0.045 of the view height rather than media3's 0.0533.
+     */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun styleSubtitles() {
+        val view = binding.torrentPlayerView.subtitleView ?: return
+        view.setApplyEmbeddedStyles(false)
+        view.setApplyEmbeddedFontSizes(false)
+        view.setStyle(
+            androidx.media3.ui.CaptionStyleCompat(
+                android.graphics.Color.WHITE,
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+                androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                android.graphics.Color.BLACK,
+                android.graphics.Typeface.SANS_SERIF,
+            ),
+        )
+        view.setFractionalTextSize(SUBTITLE_TEXT_SIZE_FRACTION)
     }
 
     /**
@@ -3062,6 +3093,12 @@ class KeenActivity : AppCompatActivity() {
     // shows a jarring slide like 99 → 65. Reset each time the loader reappears.
     private var lastGiantPercent = -1
 
+    // Last swarm figures seen this loader session (tracker scrape, or peers known from
+    // DHT/PEX). Held so the readout does not flicker back to our own connection count
+    // between announces. Reset with the percent each time the loader reappears.
+    private var lastSwarmSeeds = -1
+    private var lastSwarmPeers = -1
+
     // Subtle brightness breathe on the stage title while loading (opacity only).
     private var titlePulse: ObjectAnimator? = null
 
@@ -3089,6 +3126,8 @@ class KeenActivity : AppCompatActivity() {
         dismissHomeKeyboard()
         autoContinuePending = false
         lastGiantPercent = -1
+        lastSwarmSeeds = -1
+        lastSwarmPeers = -1
         currentFocus?.let { hideKeyboard(it) }
         binding.torrentLoadingTitle.text = getString(R.string.torrent_loading_title)
         // INVISIBLE, never GONE: this row is the only thing in the loading column
@@ -3209,7 +3248,15 @@ class KeenActivity : AppCompatActivity() {
         tick()
     }
 
-    private fun updateTorrentOverlay(stage: String, percent: Int, peers: Int, seeds: Int, speedBps: Long) {
+    private fun updateTorrentOverlay(
+        stage: String,
+        percent: Int,
+        peers: Int,
+        seeds: Int,
+        speedBps: Long,
+        swarmSeeds: Int = -1,
+        swarmPeers: Int = -1,
+    ) {
         if (!torrentOverlayVisible) return
         val stageText = when (stage) {
             TorrentStreamingService.STAGE_FETCHING_TORRENT -> getString(R.string.torrent_stage_fetching)
@@ -3218,7 +3265,14 @@ class KeenActivity : AppCompatActivity() {
             -> getString(R.string.torrent_stage_metadata)
             TorrentStreamingService.STAGE_BUFFERING,
             TorrentStreamingService.STAGE_SEEK_BUFFERING,
-            -> getString(R.string.torrent_stage_buffering)
+            // Buffering with nobody connected yet is still peer discovery, and saying
+            // "Buffering" over three blank stats is what made a working stream look
+            // stalled. Name the stage the wait is actually in.
+            -> if (peers <= 0) {
+                getString(R.string.torrent_stage_metadata)
+            } else {
+                getString(R.string.torrent_stage_buffering)
+            }
             else -> getString(R.string.torrent_loading_title)
         }
         // The jumbo readout is up for the whole wait, not only for buffering.
@@ -3252,9 +3306,35 @@ class KeenActivity : AppCompatActivity() {
         // Peer stat lock-up: only shown once we have a real seeder/leecher breakdown,
         // then it fades in and stays. Speed is always in MB/s to match the fixed label.
         if (seeds >= 0 && peers >= 0) {
-            binding.statSeeders.text = seeds.toString()
-            binding.statLeechers.text = (peers - seeds).coerceAtLeast(0).toString()
-            binding.statSpeed.text = if (speedBps > 0) formatMbps(speedBps) else "0"
+            // Swarm size, not our socket count — and sticky, because the scrape figure
+            // arrives a few ticks in and a swarm does not really shrink to nothing
+            // between two 750 ms samples. Without the latch the numbers flickered
+            // between the tracker's answer and our own connections.
+            if (swarmSeeds >= 0) lastSwarmSeeds = maxOf(lastSwarmSeeds, swarmSeeds)
+            if (swarmPeers >= 0) lastSwarmPeers = maxOf(lastSwarmPeers, swarmPeers)
+            val showSeeds = if (lastSwarmSeeds >= 0) lastSwarmSeeds else seeds
+            val showPeers = if (lastSwarmPeers >= 0) lastSwarmPeers else (peers - seeds).coerceAtLeast(0)
+            // A count of zero this early is a state, not a measurement: the swarm is
+            // still being found. Printing "0" told the user the torrent was dead while
+            // it was in fact about to start, which is the one thing this readout must
+            // never do — people turn it off and never learn it was working.
+            if (showSeeds <= 0 && showPeers <= 0) {
+                binding.statSeeders.text = STAT_PENDING
+                binding.statLeechers.text = STAT_PENDING
+            } else {
+                binding.statSeeders.text = showSeeds.coerceAtLeast(0).toString()
+                binding.statLeechers.text = showPeers.coerceAtLeast(0).toString()
+            }
+            // Same reasoning for the rate. Head pieces arrive at tens of KB/s, which in
+            // fixed MB/s rounds to "0.0" — a stream downloading perfectly well read as a
+            // stream doing nothing. The unit follows the number instead.
+            if (speedBps > 0 && speedBps < BYTES_PER_MB) {
+                binding.statSpeed.text = (speedBps / 1024L).coerceAtLeast(1L).toString()
+                binding.statSpeedLabel.setText(R.string.torrent_stat_speed_kb)
+            } else {
+                binding.statSpeed.text = if (speedBps > 0) formatMbps(speedBps) else STAT_PENDING
+                binding.statSpeedLabel.setText(R.string.torrent_stat_speed)
+            }
             showStatLockUp(true)
         } else {
             showStatLockUp(false)
@@ -5140,6 +5220,13 @@ class KeenActivity : AppCompatActivity() {
         /** Per-key step for the focused scrubber circle's native left/right scrub:
          * one minute of media, so pressing/holding walks it by the minute. */
         private const val TORRENT_TIMEBAR_KEY_INCREMENT_MS = 60_000L
+
+        /** Shown where a stat has no measurement yet — never a bare, dead-looking 0. */
+        private const val STAT_PENDING = "—"
+        private const val BYTES_PER_MB = 1_048_576L
+
+        /** Subtitle height as a fraction of the video view; media3's default is 0.0533. */
+        private const val SUBTITLE_TEXT_SIZE_FRACTION = 0.045f
         /** Target width of the focus border micro-animation (grows inward). */
         private const val FOCUS_BORDER_WIDTH_DP = 3f
         /** Single DPAD tap in the torrent player: gentle 10 s step. */
