@@ -96,7 +96,7 @@ The temporary streaming cache is removed when the session ends.
 
 ## Save with one press
 
-> Available in the current beta.
+> Available in the current release.
 
 Press the star in the player to keep what you are watching. The download continues independently in the background and appears in the Downloaded row on the Keen home screen when complete.
 
@@ -132,15 +132,14 @@ It does not package another copy of Chromium inside the APK. This keeps Keen sma
 
 ## Download
 
-**[Download Keen v0.2.0-beta.3](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.3/keen-0.2.0-beta.3-32bit-armeabi-v7a.apk)** ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.0-beta.3) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.0-beta.3/SHA256SUMS)
+**[Download Keen v0.2.8](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.8/keen-0.2.8-32bit-armeabi-v7a.apk)** ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.8) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.8/SHA256SUMS)
 
 18.4 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
-Keen is in beta. This is the only published build and the one to install. It updates
-an existing install in place, keeping favourites, history, watch positions and saved
-downloads.
+This is the current release and the one to install. It updates an existing install in
+place, keeping favourites, history, watch positions and saved downloads.
 
 ## Installation
 
@@ -162,13 +161,7 @@ adb install -r <keen-apk-filename>
 For example:
 
 ```bash
-adb install -r keen-0.2.0-beta.3-32bit-armeabi-v7a.apk
-```
-
-To install the stable release:
-
-```bash
-adb install -r keen-0.1.154-32bit-armeabi-v7a.apk
+adb install -r keen-0.2.8-32bit-armeabi-v7a.apk
 ```
 
 Use the exact IP address and port displayed by the television. Wireless debugging may use a port other than `5555`.
