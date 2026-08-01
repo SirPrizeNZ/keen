@@ -272,7 +272,17 @@ class TorrentStreamingService : Service() {
         if (!TorrentSpacePolicy.canDownloadWholeFile(root.usableSpace, mediaSize)) {
             // TODO(TASK-TORRENT-MVP-01): implement the feasibility doc's sparse
             // sliding window and F2FS hole-punch fallback for low-space files.
-            sendFailure(id, "Not enough free space for file plus 2 GB reserve; sliding window is not yet implemented")
+            // Say which file and how much room there is. The old wording ("plus 2 GB
+            // reserve; sliding window is not yet implemented") read as an internal note
+            // and, worse, as an accusation that the box was full — the honest reading is
+            // that this particular file is bigger than the disk.
+            fun gb(bytes: Long) = String.format(java.util.Locale.US, "%.1f GB", bytes / 1.0e9)
+            sendFailure(
+                id,
+                "${mediaFileName(files, largestIndex)} is ${gb(mediaSize)} and Keen has " +
+                    "${gb(root.usableSpace)} free. Keen needs room for the whole file plus " +
+                    "2 GB while streaming.",
+            )
             stopSelf()
             return
         }
@@ -520,6 +530,10 @@ class TorrentStreamingService : Service() {
      * back to the peers we know of from tracker/DHT/PEX (`listSeeds`/`listPeers`), and
      * only then to live connections.
      */
+    /** Bare file name of [index], for messages the user reads. */
+    private fun mediaFileName(files: org.libtorrent4j.FileStorage, index: Int): String =
+        files.filePath(index).substringAfterLast('/').ifBlank { "This file" }
+
     private fun swarmSeedsOf(status: org.libtorrent4j.TorrentStatus): Int = when {
         status.numComplete() >= 0 -> status.numComplete()
         status.listSeeds() > 0 -> status.listSeeds()

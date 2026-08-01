@@ -92,6 +92,38 @@ object HostileOverlayGuard {
       /missed (messages?|calls?)|voice message|\d+ new messages?|unread messages?|is typing|wants to (chat|talk)|new match|incoming (call|video)/i.test(t||'');
   }
   /**
+   * Scareware that impersonates the device: a card styled as a system or Google app
+   * notification — "Phone Storage may be Full / 548 photos from 7 years ago are about to
+   * be deleted", complete with a Drive logo — sliding in over a torrent site.
+   *
+   * Wording, not host: these creatives rotate origin every load, and the whole trick is
+   * the copy. Only reached after the position gate, so it can only ever remove a
+   * positioned layer, never page content. Deliberately narrow — a page may legitimately
+   * mention storage; a *floating overlay* announcing that your photos are about to be
+   * deleted is never the site you asked for.
+   */
+  /** URL from another registrable domain than this document's. */
+  function isForeignUrl(u){
+    try{
+      var h=new URL(u, location.href).hostname;
+      var host=location.hostname||'';
+      if(!h||h===host) return false;
+      var a=h.split('.').slice(-2).join('.'), b=host.split('.').slice(-2).join('.');
+      return a!==b;
+    }catch(e){ return false; }
+  }
+  function fakeSystemAlert(t){
+    t=t||'';
+    return /(storage|memory|space) (is |may be |almost )?(full|low|running out)/i.test(t) ||
+      /(not enough|insufficient|out of|low on) (storage|space|memory)/i.test(t) ||
+      /(photos|files|videos|contacts|data|messages).{0,40}(deleted|removed|erased|wiped|lost)\b/i.test(t) ||
+      /your (device|phone|tablet|tv|system|android|computer) (is|has been|was|may be) (infected|damaged|at risk|hacked|not protected|out of date)/i.test(t) ||
+      /(virus|malware|trojan|spyware)(es)? (detected|found)/i.test(t) ||
+      /battery (is |has been )?(damaged|critically low)/i.test(t) ||
+      /(clean|boost|optimi[sz]e|repair|scan) (it |your device |phone )?now/i.test(t) ||
+      /sim( card)? not supported|network may be monitored/i.test(t);
+  }
+  /**
    * Generic defence for "ad rendered over the video": inside a frame that owns a player,
    * a positioned layer whose content comes from ANOTHER origin is not player UI — real
    * controls are same-origin. This catches rotated creatives regardless of their copy,
@@ -297,6 +329,27 @@ object HostileOverlayGuard {
     if(camAdLanguage(t)){
       try{ console.warn('KZ_REMOVE_CAM_AD:'+location.host+':'+t.slice(0,60)); }catch(e){}
       return true;
+    }
+
+    // PRIMARY: a floating card pretending to be the device warning you about itself.
+    if(fakeSystemAlert(t)){
+      try{ console.warn('KZ_REMOVE_FAKE_SYSTEM_ALERT:'+location.host+':'+t.slice(0,60)); }catch(e){}
+      return true;
+    }
+
+    // PRIMARY: a third-party iframe floating over the page.
+    //
+    // Copy rules only work where the copy is readable, and a creative served in a
+    // cross-origin frame shows the parent nothing but an <iframe> element — which is how
+    // the fake "storage full" card survived a wording rule aimed straight at it. An
+    // in-flow banner is position:static and never reaches this gate; a *positioned*
+    // foreign iframe is an overlay, and an overlay the site does not own is an ad.
+    if(el.tagName==='IFRAME' && cover>=0.02 && cover<=0.8){
+      var isrc=el.src||el.getAttribute('src')||'';
+      if(isrc && !CHALLENGE_ORIGIN.test(isrc) && isForeignUrl(isrc)){
+        try{ console.warn('KZ_REMOVE_FLOATING_IFRAME:'+location.host+':'+isrc.slice(0,60)); }catch(e){}
+        return true;
+      }
     }
 
     // PRIMARY: any third-party creative layered over the video. Copy-independent, so it
