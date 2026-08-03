@@ -65,4 +65,14 @@
     <string name="library_remove_partial">%1$s is not finished. Stopping now deletes the %2$s already downloaded.</string>
     <string name="library_remove_partial_nosize">%1$s is not finished. Stopping now deletes it from this box.</string>
     <string name="library_remove_complete">%1$s will be deleted from this box. %2$s will be freed.</string>
+    <string name="fav_remove_title">Remove favourite?</string>
+    <string name="fav_remove_message">%1$s will be removed from the home screen. Nothing on this box is deleted.</string>
+    <string name="fav_remove_confirm">Remove</string>
+    <string name="fav_removed">Removed from favourites</string>
+    <string name="continue_remove_title">Remove from Continue watching?</string>
+    <string name="continue_remove_message">%1$s will be removed from the row. Anything downloaded to this box is kept.</string>
+    <string name="continue_remove_confirm">Remove</string>
+    <string name="continue_removed">Removed from Continue watching</string>
+    <string name="torrent_pick_file_title">This torrent holds %1$d videos</string>
+    <string name="torrent_starting_playback">Starting playback…</string>
 </resources>

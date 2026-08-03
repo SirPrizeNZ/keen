@@ -106,6 +106,15 @@ class KeenActivity : AppCompatActivity() {
     private var torrentPlayer: ExoPlayer? = null
     /** Identity of the active magnet/.torrent for resume-point persistence. */
     private var torrentOriginKey: String? = null
+
+    /** File index being streamed from a multi-file torrent; null when it has only one. */
+    private var torrentFileIndex: Int? = null
+
+    /** Resume identity for what is playing now: the torrent, narrowed to the chosen file. */
+    private val torrentResumeKey: String?
+        get() = torrentOriginKey?.let {
+            com.keenzero.app.torrent.TorrentResumeStore.fileKeyOf(it, torrentFileIndex)
+        }
     /** Raw magnet / .torrent URL of the active session — the Continue card re-activates it. */
     private var torrentOriginLabel: String? = null
     /** Display title from the torrent service (file name), for the Continue card. */
@@ -303,12 +312,19 @@ class KeenActivity : AppCompatActivity() {
                             detail = "title=${title.orEmpty()}",
                         ),
                     )
-                    hideTorrentOverlayWithCollapse()
+                    // Overlay stays up until onRenderedFirstFrame — opening the stream and
+                    // reading the container index is still ahead of us, and black screen
+                    // with no indicator reads as a failure.
+                    showTorrentStartingStage()
                     showNativeTorrentPlayer(streamUrl, title.orEmpty())
                 }
                 com.keenzero.app.library.LibraryDownloadService.ACTION_LIBRARY_CHANGED -> {
                     // The download service owns the records; we only reflect them.
                     if (uiState == AppUiState.HOME) applyDownloadProgress()
+                }
+                TorrentStreamingService.ACTION_CHOOSE_FILE -> {
+                    val id = intent.getStringExtra(TorrentStreamingService.EXTRA_REQUEST_ID)
+                    if (id != null && id == torrentRequestId) promptTorrentFileChoice(intent, id)
                 }
                 TorrentStreamingService.ACTION_ERROR -> {
                     val message = intent.getStringExtra(TorrentStreamingService.EXTRA_ERROR)
@@ -342,6 +358,7 @@ class KeenActivity : AppCompatActivity() {
                 addAction(TorrentStreamingService.ACTION_READY)
                 addAction(TorrentStreamingService.ACTION_ERROR)
                 addAction(TorrentStreamingService.ACTION_PROGRESS)
+                addAction(TorrentStreamingService.ACTION_CHOOSE_FILE)
                 addAction(com.keenzero.app.library.LibraryDownloadService.ACTION_LIBRARY_CHANGED)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -855,6 +872,7 @@ class KeenActivity : AppCompatActivity() {
             fraction = fraction,
             scroll = binding.continueScroll,
             onClick = { resumeCheckpoint(cp) },
+            onLongClick = { confirmRemoveRecent(cp) },
         )
     }
 
@@ -1185,6 +1203,10 @@ class KeenActivity : AppCompatActivity() {
             tile.clipChildren = true
         }
         tile.setOnClickListener { openNavigation(fav.url) }
+        tile.setOnLongClickListener {
+            confirmRemoveFavourite(fav)
+            true
+        }
         tile.setOnFocusChangeListener { _, hasFocus ->
             tileBorder.animateTo(hasFocus, FOCUS_BORDER_WIDTH_DP * resources.displayMetrics.density)
             label.animate().alpha(if (hasFocus) 1f else 0.82f).setDuration(160).start()
@@ -2256,6 +2278,8 @@ class KeenActivity : AppCompatActivity() {
         torrentOriginKey = com.keenzero.app.torrent.TorrentResumeStore.keyOf(originLabel)
         torrentOriginLabel = originLabel
         torrentTitle = null
+        // Stale from the previous stream; only a picker choice sets it.
+        torrentFileIndex = null
         // Entry from home / URL bar has no page under the overlay — bring up the
         // browse shell on a blank page. Entry from a site keeps the page visible
         // beneath the loading overlay so cancel returns exactly where the user was.
@@ -2378,6 +2402,20 @@ class KeenActivity : AppCompatActivity() {
             true,
         )
         player.addListener(object : Player.Listener {
+            /**
+             * Buffering hitting 100% is not the same as the film being on screen.
+             *
+             * The overlay used to collapse the moment ACTION_READY arrived, but the
+             * player still has to open the bridge and read the container's index — on an
+             * mkv the cues sit at the end of the file, so it issues a long range read
+             * before it can decode anything. That left ~20 s of pure black after the
+             * progress bar said done, which reads as a hang. Hold the indicator until a
+             * frame is actually on screen.
+             */
+            override fun onRenderedFirstFrame() {
+                hideTorrentOverlayWithCollapse()
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 recordEvent(
                     NavigationEvent(
@@ -2455,7 +2493,7 @@ class KeenActivity : AppCompatActivity() {
             .build()
         // Same magnet/.torrent watched before: resume where the user left off
         // (the media file itself was deleted on exit; only the position survives).
-        val resumeMs = torrentOriginKey?.let { torrentResumeStore.positionMs(it) } ?: 0L
+        val resumeMs = torrentResumeKey?.let { torrentResumeStore.positionMs(it) } ?: 0L
         if (resumeMs > 0) {
             player.setMediaItem(mediaItem, resumeMs)
             recordEvent(
@@ -2625,6 +2663,126 @@ class KeenActivity : AppCompatActivity() {
      * unfinished download is cancelled as well as deleted, so a background transfer does
      * not carry on for a title the user just removed.
      */
+    /**
+     * Which file of a multi-video torrent to stream.
+     *
+     * A 4-movie collection used to resolve silently to whichever file was biggest, so
+     * asking for one film could start another. Nothing is downloading while this is up —
+     * the service pauses before it prioritises anything — and the picked file is the only
+     * one that ever gets a non-IGNORE priority, so the other three never transfer a byte.
+     */
+    private fun promptTorrentFileChoice(intent: Intent, requestId: String) {
+        val indices = intent.getIntArrayExtra(TorrentStreamingService.EXTRA_FILE_INDICES) ?: return
+        val names = intent.getStringArrayExtra(TorrentStreamingService.EXTRA_FILE_NAMES) ?: return
+        val sizes = intent.getLongArrayExtra(TorrentStreamingService.EXTRA_FILE_SIZES) ?: return
+        if (indices.isEmpty() || names.size != indices.size || sizes.size != indices.size) return
+
+        // Which of these have already been watched through, so a pack you are working
+        // your way along tells you where you got to instead of looking identical every time.
+        val watched = torrentOriginKey?.let { torrentResumeStore.watchedIndices(it) } ?: emptySet()
+        val labels = names.mapIndexed { i, name ->
+            val pretty = prettyMediaTitle(name) ?: name
+            val tick = if (indices[i] in watched) "✓ " else ""
+            "$tick$pretty\n${android.text.format.Formatter.formatShortFileSize(this, sizes[i])}"
+        }.toTypedArray()
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle(getString(R.string.torrent_pick_file_title, indices.size))
+            // Picking IS the decision — one press, no confirm step. A radio list plus an
+            // OK button made choosing a film a two-press job on a remote for no gain;
+            // there is nothing to review between the two presses.
+            .setItems(labels) { _, which ->
+                torrentFileIndex = indices[which]
+                // The fraction sent at start-up belonged to the torrent, before anyone
+                // knew which film this would be. Now that we do, send this file's own
+                // resume point so the buffer window lands on its playhead.
+                val fraction = torrentResumeKey?.let { key ->
+                    val pos = torrentResumeStore.positionMs(key)
+                    val dur = torrentResumeStore.durationMs(key)
+                    if (pos > 0 && dur > 0) (pos.toFloat() / dur).coerceIn(0f, 0.98f) else 0f
+                } ?: 0f
+                startService(
+                    Intent(this, TorrentStreamingService::class.java)
+                        .setAction(TorrentStreamingService.ACTION_SELECT_FILE)
+                        .putExtra(TorrentStreamingService.EXTRA_REQUEST_ID, requestId)
+                        .putExtra(TorrentStreamingService.EXTRA_FILE_INDEX, indices[which])
+                        .putExtra(TorrentStreamingService.EXTRA_RESUME_FRACTION, fraction),
+                )
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "torrent_file_chosen",
+                        detail = "index=${indices[which]} of=${indices.size}",
+                    ),
+                )
+            }
+            // Back must not leave the service parked on a picker nobody can see again.
+            .setOnCancelListener { cancelTorrentRequest() }
+            .show()
+    }
+
+    /** Abandon a torrent request the user backed out of at the file picker. */
+    private fun cancelTorrentRequest() {
+        startService(
+            Intent(this, TorrentStreamingService::class.java)
+                .setAction(TorrentStreamingService.ACTION_STOP),
+        )
+        hideTorrentOverlay()
+        torrentRequestId = null
+    }
+
+    /**
+     * Long-press a favourite roundel to drop it, matching the Downloaded card.
+     *
+     * Removing a favourite is not the same act as deleting a download — nothing leaves
+     * the box — so the copy says so rather than reusing the Downloaded wording.
+     */
+    private fun confirmRemoveFavourite(fav: com.keenzero.app.favourites.FavouritesStore.Fav) {
+        val name = siteName(fav.host.ifBlank { fav.label })
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.fav_remove_title)
+            .setMessage(getString(R.string.fav_remove_message, name))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.fav_remove_confirm) { _, _ ->
+                val removed = favouritesStore.removeHosts(setOf(fav.host))
+                refreshPlayerStarIcon()
+                hydrateContinuitySurface()
+                Toast.makeText(this, R.string.fav_removed, Toast.LENGTH_SHORT).show()
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "favourite_remove",
+                        url = fav.url,
+                        detail = "host=${fav.host} removed=$removed",
+                    ),
+                )
+            }
+            .show()
+    }
+
+    /** Long-press a Continue watching card to drop it, matching the Downloaded card. */
+    private fun confirmRemoveRecent(cp: ContinuityCheckpoint) {
+        val name = prettyMediaTitle(cp.title) ?: cp.contentId ?: getString(R.string.continue_unknown_title)
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.continue_remove_title)
+            .setMessage(getString(R.string.continue_remove_message, name))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.continue_remove_confirm) { _, _ ->
+                val removed = continuityStore.removeRecent(cp)
+                hydrateContinuitySurface()
+                Toast.makeText(this, R.string.continue_removed, Toast.LENGTH_SHORT).show()
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "continue_remove",
+                        url = cp.url,
+                        detail = "removed=$removed",
+                    ),
+                )
+            }
+            .show()
+    }
+
     private fun confirmRemoveLibraryEntry(
         entry: com.keenzero.app.library.StarredLibraryStore.Entry,
     ) {
@@ -2685,8 +2843,18 @@ class KeenActivity : AppCompatActivity() {
     /** Persist the playhead for this magnet so re-activating it resumes there. */
     private fun saveTorrentResumePoint() {
         val player = torrentPlayer ?: return
-        val key = torrentOriginKey ?: return
+        val key = torrentResumeKey ?: return
         torrentResumeStore.savePosition(key, player.currentPosition, player.duration)
+        // Watching a pack's film to the end is what earns its tick in the picker. Keyed on
+        // the torrent, not the per-file resume key: the picker asks "which of these have
+        // I seen" and needs them all under one entry.
+        val index = torrentFileIndex
+        val originKey = torrentOriginKey
+        if (index != null && originKey != null &&
+            torrentResumeStore.isFinished(player.currentPosition, player.duration)
+        ) {
+            torrentResumeStore.markWatched(originKey, index)
+        }
         persistTorrentCheckpoint(player)
     }
 
@@ -3167,6 +3335,18 @@ class KeenActivity : AppCompatActivity() {
         binding.torrentLoadingSpinner.startIndeterminate()
         startTitlePulse()
         ensurePointerAboveContent()
+    }
+
+    /**
+     * Between "buffered" and "on screen": the player is opening the stream and reading
+     * the container index. Real work, no percentage to report, so the ring goes
+     * indeterminate and the caption says what is happening rather than showing a
+     * finished-looking 100% over a black screen.
+     */
+    private fun showTorrentStartingStage() {
+        if (!torrentOverlayVisible) return
+        binding.torrentLoadingSpinner.startIndeterminate()
+        binding.torrentLoadingTitle.text = getString(R.string.torrent_starting_playback)
     }
 
     private fun hideTorrentOverlay() {
@@ -4512,13 +4692,21 @@ class KeenActivity : AppCompatActivity() {
             com.keenzero.app.navigation.BrowsingBackPolicy.Action.HISTORY_BACK -> {
                 // Movie page → previous site page (search/list), never a link-directory site chooser mid-site.
                 exitAllHtmlFullscreen()
-                webHost?.historyBack()
+                // Walk the native back-forward list ourselves. Falling through to JS
+                // history.back() let an ad chain answer each press by pushing another
+                // entry, so Back climbed the stack into a new throwaway domain every time.
+                val walked = webHost?.historyBackSafe(browseEntryUrl) ?: false
+                if (!walked) {
+                    // No clean earlier entry: the only way out of a poisoned stack is off it.
+                    webHost?.historyBack()
+                }
                 recordEvent(
                     NavigationEvent(
                         System.currentTimeMillis(),
                         "history_back",
                         url = currentUrl,
-                        detail = "entry=$browseEntryUrl nativeCanGoBack=${webHost?.canGoBack()}",
+                        detail = "entry=$browseEntryUrl walked=$walked " +
+                            "nativeCanGoBack=${webHost?.canGoBack()}",
                     ),
                 )
             }
