@@ -25,7 +25,7 @@ class TorrentResumeStore(context: Context) {
      */
     /** Stored duration for [originKey], or 0 when unknown. */
     fun durationMs(originKey: String): Long = try {
-        entries().optJSONObject(originKey)?.optLong("durationMs", 0L) ?: 0L
+        entries().optJSONObject(originKey)?.optLong(KEY_DURATION, 0L) ?: 0L
     } catch (_: Exception) {
         0L
     }
@@ -39,11 +39,55 @@ class TorrentResumeStore(context: Context) {
         } else {
             all.put(
                 originKey,
-                JSONObject().put(KEY_POS, positionMs).put(KEY_TS, System.currentTimeMillis()),
+                JSONObject()
+                    .put(KEY_POS, positionMs)
+                    // Never written before, while durationMs() read it — so it always
+                    // answered 0, the resume fraction was always 0, and every resume
+                    // quietly buffered the head of the file instead of the playhead.
+                    .put(KEY_DURATION, durationMs)
+                    .put(KEY_TS, System.currentTimeMillis()),
             )
             prune(all)
         }
         prefs.edit().putString(PREF_ENTRIES, all.toString()).apply()
+    }
+
+    /**
+     * True when this position counts as having finished the film — the same rule
+     * [savePosition] uses to drop a resume point, so "no resume point" and "watched"
+     * can never disagree.
+     */
+    fun isFinished(positionMs: Long, durationMs: Long): Boolean =
+        durationMs > 0 &&
+            (durationMs - positionMs <= END_CREDITS_MS || positionMs * 100 / durationMs >= END_PERCENT)
+
+    /**
+     * Remember that a file inside a multi-file torrent has been watched through.
+     *
+     * Kept apart from the resume entries because those are deliberately *cleared* on
+     * finishing, so they cannot answer "have I seen this one". Keyed by torrent identity
+     * plus file index, which is what the picker needs to tick the right row.
+     */
+    fun markWatched(originKey: String, fileIndex: Int) {
+        val all = watched()
+        val list = all.optJSONArray(originKey) ?: org.json.JSONArray()
+        for (i in 0 until list.length()) if (list.optInt(i, -1) == fileIndex) return
+        list.put(fileIndex)
+        all.put(originKey, list)
+        while (all.length() > MAX_ENTRIES) all.remove(all.keys().next())
+        prefs.edit().putString(PREF_WATCHED, all.toString()).apply()
+    }
+
+    /** File indices of [originKey] already watched through. */
+    fun watchedIndices(originKey: String): Set<Int> {
+        val list = watched().optJSONArray(originKey) ?: return emptySet()
+        return (0 until list.length()).mapNotNull { list.optInt(it, -1).takeIf { v -> v >= 0 } }.toSet()
+    }
+
+    private fun watched(): JSONObject = try {
+        JSONObject(prefs.getString(PREF_WATCHED, null) ?: "{}")
+    } catch (_: Exception) {
+        JSONObject()
     }
 
     private fun entries(): JSONObject = try {
@@ -79,9 +123,22 @@ class TorrentResumeStore(context: Context) {
             return match?.groupValues?.get(1)?.lowercase() ?: origin.take(MAX_KEY_LENGTH)
         }
 
+        /**
+         * Resume identity for one file inside a multi-file torrent.
+         *
+         * Without the index a 4-film pack shared a single resume point, so stopping one
+         * film half way and starting another dropped the second one into the first one's
+         * playhead. [fileIndex] null keeps the plain key for single-file torrents, so
+         * existing entries still resolve.
+         */
+        fun fileKeyOf(originKey: String, fileIndex: Int?): String =
+            if (fileIndex == null) originKey else "$originKey#$fileIndex"
+
         private const val PREFS = "torrent_resume"
         private const val PREF_ENTRIES = "entries"
+        private const val PREF_WATCHED = "watched"
         private const val KEY_POS = "p"
+        private const val KEY_DURATION = "d"
         private const val KEY_TS = "t"
         /** Below this there is nothing meaningful to resume. */
         private const val MIN_SAVE_MS = 15_000L

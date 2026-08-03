@@ -46,6 +46,41 @@ class TorrentStreamingService : Service() {
     /** Where playback will begin, 0..1 of the media file; 0 for a fresh start. */
     @Volatile private var resumeFraction: Float = 0f
 
+    /** One file in the torrent, as plain data. */
+    private class FileSlot(
+        val index: Int,
+        val name: String,
+        val absPath: String,
+        val size: Long,
+        val offset: Long,
+    )
+
+    /**
+     * Everything the streaming setup needs, copied out of libtorrent's objects.
+     *
+     * [TorrentInfo] and its `files()` wrap native memory owned by the handle. Neither
+     * survives being held across two service commands: re-reading `handle.torrentFile()`
+     * after the picker returned null ("Magnet metadata unavailable"), and caching the
+     * TorrentInfo instead gave back a structure reporting zero files ("Torrent contains no
+     * files"). Read it all once, while it is definitely valid, and never look again.
+     */
+    private class TorrentLayout(
+        val numFiles: Int,
+        val pieceLength: Int,
+        val numPieces: Int,
+        val slots: List<FileSlot>,
+    )
+
+    /** Setup paused at the file picker, waiting for [ACTION_SELECT_FILE]. */
+    private class PendingChoice(
+        val id: String,
+        val root: File,
+        val handle: org.libtorrent4j.TorrentHandle,
+        val layout: TorrentLayout,
+    )
+
+    @Volatile private var pendingChoice: PendingChoice? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -58,6 +93,32 @@ class TorrentStreamingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopSelf()
+            return START_NOT_STICKY
+        }
+        // The user picked which file of a multi-video torrent to stream. Metadata is
+        // already in hand and the handle is live, so this resumes the paused setup
+        // rather than starting anything.
+        if (intent?.action == ACTION_SELECT_FILE) {
+            val chosen = intent.getIntExtra(EXTRA_FILE_INDEX, -1)
+            val pending = pendingChoice
+            if (pending == null || chosen < 0) {
+                stopSelf(startId)
+                return START_NOT_STICKY
+            }
+            pendingChoice = null
+            // Recomputed by the UI for the file actually chosen; the value from start-up
+            // was the torrent's, from before anyone knew which file this would be.
+            resumeFraction = intent.getFloatExtra(EXTRA_RESUME_FRACTION, resumeFraction)
+            worker.execute {
+                try {
+                    configureMedia(pending.id, pending.root, pending.handle, chosen, pending.layout)
+                } catch (error: Throwable) {
+                    Log.e(TAG, "File selection failed", error)
+                    sendFailure(pending.id, error.message ?: error.javaClass.simpleName)
+                    cleanup()
+                    stopSelf(startId)
+                }
+            }
             return START_NOT_STICKY
         }
         // Foreground for the whole stream: a background service loses its process
@@ -250,25 +311,61 @@ class TorrentStreamingService : Service() {
     }
 
     @Synchronized
-    private fun configureMedia(id: String, root: File, handle: org.libtorrent4j.TorrentHandle) {
+    private fun configureMedia(
+        id: String,
+        root: File,
+        handle: org.libtorrent4j.TorrentHandle,
+        /** Index the user picked, or null to choose automatically / ask. */
+        chosenIndex: Int? = null,
+        /** Metadata captured before the picker; avoids re-reading it off the handle. */
+        knownLayout: TorrentLayout? = null,
+    ) {
         if (id != requestId || bridge != null) return
-        val info = handle.torrentFile() ?: error("Magnet metadata unavailable")
-        val files = info.files()
-        check(files.numFiles() > 0) { "Torrent contains no files" }
+        val layout = knownLayout ?: readLayout(handle, root)
+        check(layout.numFiles > 0) { "Torrent contains no files" }
+        val slots = layout.slots
         var largestIndex = -1
         var largestAnyIndex = 0
-        for (index in 0 until files.numFiles()) {
-            if (files.fileSize(index) > files.fileSize(largestAnyIndex)) largestAnyIndex = index
-            val ext = files.filePath(index).substringAfterLast('.', "").lowercase()
-            if (ext in VIDEO_EXTENSIONS &&
-                (largestIndex < 0 || files.fileSize(index) > files.fileSize(largestIndex))
-            ) {
-                largestIndex = index
+        // Every playable file, so a season pack or a 4-movie collection can be offered
+        // to the user instead of silently resolving to whichever happens to be biggest.
+        val videoIndices = mutableListOf<Int>()
+        for (slot in slots) {
+            if (slot.size > slots[largestAnyIndex].size) largestAnyIndex = slot.index
+            val ext = slot.name.substringAfterLast('.', "").lowercase()
+            if (ext in VIDEO_EXTENSIONS) {
+                videoIndices.add(slot.index)
+                if (largestIndex < 0 || slot.size > slots[largestIndex].size) {
+                    largestIndex = slot.index
+                }
             }
         }
         // Prefer the largest recognizable video; fall back to largest file overall.
         if (largestIndex < 0) largestIndex = largestAnyIndex
-        val mediaSize = files.fileSize(largestIndex)
+
+        if (chosenIndex != null) {
+            largestIndex = chosenIndex
+        } else if (videoIndices.size > 1) {
+            // Stop fetching before asking. Every file sits at default priority until
+            // prioritizeFiles runs, and SEQUENTIAL_DOWNLOAD pulls from the front of the
+            // torrent — so the first file in the pack downloaded while the picker was up,
+            // whichever one the user was about to choose. Pausing is the blunt, reversible
+            // way to hold that; setting every file to IGNORE instead left the torrent in a
+            // state its metadata did not survive.
+            handle.pause()
+            pendingChoice = PendingChoice(id, root, handle, layout)
+            val ordered = videoIndices.sortedBy { slots[it].name.lowercase() }
+            sendBroadcast(
+                Intent(ACTION_CHOOSE_FILE)
+                    .setPackage(packageName)
+                    .putExtra(EXTRA_REQUEST_ID, id)
+                    .putExtra(EXTRA_FILE_INDICES, ordered.toIntArray())
+                    .putExtra(EXTRA_FILE_NAMES, ordered.map { slots[it].name }.toTypedArray())
+                    .putExtra(EXTRA_FILE_SIZES, ordered.map { slots[it].size }.toLongArray()),
+            )
+            return
+        }
+        val chosen = slots[largestIndex]
+        val mediaSize = chosen.size
         if (!TorrentSpacePolicy.canDownloadWholeFile(root.usableSpace, mediaSize)) {
             // TODO(TASK-TORRENT-MVP-01): implement the feasibility doc's sparse
             // sliding window and F2FS hole-punch fallback for low-space files.
@@ -279,7 +376,7 @@ class TorrentStreamingService : Service() {
             fun gb(bytes: Long) = String.format(java.util.Locale.US, "%.1f GB", bytes / 1.0e9)
             sendFailure(
                 id,
-                "${mediaFileName(files, largestIndex)} is ${gb(mediaSize)} and Keen has " +
+                "${chosen.name} is ${gb(mediaSize)} and Keen has " +
                     "${gb(root.usableSpace)} free. Keen needs room for the whole file plus " +
                     "2 GB while streaming.",
             )
@@ -287,29 +384,30 @@ class TorrentStreamingService : Service() {
             return
         }
 
-        val priorities = Array(files.numFiles()) { Priority.IGNORE }
+        val priorities = Array(layout.numFiles) { Priority.IGNORE }
         priorities[largestIndex] = Priority.DEFAULT
         handle.prioritizeFiles(priorities)
         handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
+        // No-op unless the picker paused it above.
+        handle.resume()
 
-        val mediaPath = files.filePath(largestIndex, root.absolutePath)
-        val mediaFile = File(mediaPath)
+        val mediaFile = File(chosen.absPath)
         val title = mediaFile.name.ifBlank { "Torrent video" }
-        val firstPiece = (files.fileOffset(largestIndex) / info.pieceLength()).toInt()
-        val lastPiece = ((files.fileOffset(largestIndex) + mediaSize - 1) / info.pieceLength()).toInt()
+        val firstPiece = (chosen.offset / layout.pieceLength).toInt()
+        val lastPiece = ((chosen.offset + mediaSize - 1) / layout.pieceLength).toInt()
         val server = TorrentHttpBridge(
             mediaFile = mediaFile,
             mediaSize = mediaSize,
             mimeType = mimeType(title),
             title = title,
-            torrentOffset = files.fileOffset(largestIndex),
-            pieceLength = info.pieceLength(),
-            pieceCount = info.numPieces(),
+            torrentOffset = chosen.offset,
+            pieceLength = layout.pieceLength,
+            pieceCount = layout.numPieces,
             handle = handle,
             // Player seeked past the downloaded window and reads are blocked:
             // surface buffering progress over the playhead window so the UI can
             // bring the loader back until playback can resume.
-            onStall = { piece -> sendSeekBufferProgress(id, piece, lastPiece, info.pieceLength()) },
+            onStall = { piece -> sendSeekBufferProgress(id, piece, lastPiece, layout.pieceLength) },
         )
         bridge = server
         server.startBridge()
@@ -319,7 +417,7 @@ class TorrentStreamingService : Service() {
         // on a black frame with no feedback. Tail pieces cover mp4 moov-at-end /
         // mkv cues that players fetch immediately via a range request.
         val headBytes = headBufferBytesFor(mediaSize)
-        val headCount = ((headBytes + info.pieceLength() - 1) / info.pieceLength())
+        val headCount = ((headBytes + layout.pieceLength - 1) / layout.pieceLength)
             .toInt().coerceIn(1, lastPiece - firstPiece + 1)
         // Buffer where the player will actually start reading. Resuming a part-watched
         // title used to fill the head of the file, announce 99%, and only then discover
@@ -341,7 +439,7 @@ class TorrentStreamingService : Service() {
         // parallel and the number never parks just short of done.
         headPieces.forEachIndexed { i, piece -> handle.setPieceDeadline(piece, i * 250) }
         tailPieces.forEach { piece -> handle.setPieceDeadline(piece, 250) }
-        startBufferLoop(id, server, title, mediaFile.absolutePath, bufferPieces, info.pieceLength())
+        startBufferLoop(id, server, title, mediaFile.absolutePath, bufferPieces, layout.pieceLength)
     }
 
     /** Mid-playback seek stall: buffering percent over the deadline window at [piece]. */
@@ -534,6 +632,30 @@ class TorrentStreamingService : Service() {
     private fun mediaFileName(files: org.libtorrent4j.FileStorage, index: Int): String =
         files.filePath(index).substringAfterLast('/').ifBlank { "This file" }
 
+    /**
+     * Copy the torrent's file table out of libtorrent while the handle definitely owns
+     * valid metadata. Everything downstream reads this, never the native objects.
+     */
+    private fun readLayout(handle: org.libtorrent4j.TorrentHandle, root: File): TorrentLayout {
+        val info = handle.torrentFile() ?: error("Magnet metadata unavailable")
+        val files = info.files()
+        val slots = (0 until files.numFiles()).map { index ->
+            FileSlot(
+                index = index,
+                name = mediaFileName(files, index),
+                absPath = files.filePath(index, root.absolutePath),
+                size = files.fileSize(index),
+                offset = files.fileOffset(index),
+            )
+        }
+        return TorrentLayout(
+            numFiles = files.numFiles(),
+            pieceLength = info.pieceLength(),
+            numPieces = info.numPieces(),
+            slots = slots,
+        )
+    }
+
     private fun swarmSeedsOf(status: org.libtorrent4j.TorrentStatus): Int = when {
         status.numComplete() >= 0 -> status.numComplete()
         status.listSeeds() > 0 -> status.listSeeds()
@@ -632,6 +754,10 @@ class TorrentStreamingService : Service() {
     companion object {
         const val ACTION_START = "com.keenzero.app.torrent.START"
         const val ACTION_STOP = "com.keenzero.app.torrent.STOP"
+        /** Service → UI: this torrent holds more than one video; ask which to stream. */
+        const val ACTION_CHOOSE_FILE = "com.keenzero.app.torrent.CHOOSE_FILE"
+        /** UI → service: stream this file index and ignore the rest. */
+        const val ACTION_SELECT_FILE = "com.keenzero.app.torrent.SELECT_FILE"
         const val ACTION_READY = "com.keenzero.app.torrent.READY"
         const val ACTION_ERROR = "com.keenzero.app.torrent.ERROR"
         const val ACTION_PROGRESS = "com.keenzero.app.torrent.PROGRESS"
@@ -649,6 +775,10 @@ class TorrentStreamingService : Service() {
         const val EXTRA_STREAM_URL = "stream_url"
 
         /** Absolute path of the media file the bridge serves (Continue-card frame grabs). */
+        const val EXTRA_FILE_INDICES = "file_indices"
+        const val EXTRA_FILE_NAMES = "file_names"
+        const val EXTRA_FILE_SIZES = "file_sizes"
+        const val EXTRA_FILE_INDEX = "file_index"
         const val EXTRA_MEDIA_PATH = "media_path"
         const val EXTRA_TITLE = "title"
 

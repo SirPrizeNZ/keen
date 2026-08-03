@@ -128,6 +128,33 @@ class ContinuityStore(context: Context) {
         return recents.size - kept.size
     }
 
+    /**
+     * Drop [cp] from Continue watching, plus the checkpoint slots pointing at it.
+     *
+     * Keyed with [recentsKeyOf], the same identity the row de-dupes on, so a magnet card
+     * removes cleanly — [removeByContentId] only matches an explicit contentId and would
+     * silently leave those behind.
+     *
+     * @return true when a card was removed.
+     */
+    fun removeRecent(cp: ContinuityCheckpoint): Boolean {
+        val key = recentsKeyOf(cp)
+        if (key.isBlank()) return false
+        val recents = loadRecents()
+        val kept = recents.filterNot { recentsKeyOf(it) == key }
+        val editor = prefs.edit()
+        if (kept.size != recents.size) {
+            val arr = JSONArray()
+            kept.take(MAX_RECENTS).forEach { arr.put(it.toJson()) }
+            editor.putString(KEY_RECENTS, arr.toString())
+        }
+        // Otherwise a cold start would auto-resume the card the user just deleted.
+        if (loadMedia()?.let { recentsKeyOf(it) } == key) editor.remove(KEY_MEDIA_CHECKPOINT)
+        if (load()?.let { recentsKeyOf(it) } == key) editor.remove(KEY_CHECKPOINT)
+        editor.commit()
+        return kept.size != recents.size
+    }
+
     /** Move [cp] to the front of the recents list, de-duped by stable key, capped. */
     private fun upsertedRecents(cp: ContinuityCheckpoint): JSONArray {
         val key = recentsKeyOf(cp)

@@ -48,8 +48,17 @@ class FavouritesStore(context: Context) {
             current.filterNot { it.host == host }.forEach { next.put(it.toJson()) }
         } else {
             current.takeLast(MAX_FAVS - 1).forEach { next.put(it.toJson()) }
+            // Open the page that was starred, not a synthesised site root.
+            //
+            // Storing "$scheme://$host/" threw away the only URL known to work. Observed
+            // on the Mi Box: thepiratebay.org/search.php and /index.html both load, while
+            // the bare root returns an error page — so starring a working TPB page
+            // produced a favourite that could never open. Identity stays host-level
+            // (dedupe, isFavourite and removeHosts all key off `host`); only the target
+            // changes.
             val scheme = Uri.parse(pageUrl).scheme ?: "https"
-            next.put(Fav(host, "$scheme://$host/", labelFor(host)).toJson())
+            val target = pageUrl?.takeIf { it.isNotBlank() } ?: "$scheme://$host/"
+            next.put(Fav(host, target, labelFor(host)).toJson())
         }
         prefs.edit().putString(PREF_ENTRIES, next.toString()).apply()
         return !exists
