@@ -18,6 +18,7 @@ import com.keenzero.app.input.RemoteInputRouter
 import com.keenzero.app.input.CursorOverlay
 import com.keenzero.app.navigation.NavigationFirewall
 import com.keenzero.app.blocking.BlockingRuntime
+import com.keenzero.app.blocking.RequestBlocker
 import com.keenzero.app.playback.PlayIntent
 import com.keenzero.app.playback.PlaybackOrchestrator
 import com.keenzero.app.playback.PlaybackJourneyState
@@ -542,6 +543,8 @@ class WebViewHost(
             },
             onMagnet = onMagnetIntent,
             onPageFinishedExtra = { view, url ->
+                // The escape target has committed; the stack behind it was the ad's, not the user's.
+                clearHistoryIfEscaped()
                 val pos = restorePositionSec
                 if (pos != null && pos > 0) {
                     view.evaluateJavascript("window.__keenRestorePosition=$pos;", null)
@@ -796,6 +799,108 @@ class WebViewHost(
                 null,
             )
         }
+    }
+
+    /** Index the last Back press was taken from, to spot a stack that grows under us. */
+    private var lastBackFromIndex: Int = -1
+
+    /**
+     * Back that a hostile page cannot steer.
+     *
+     * Observed on thepiratebay.org (2026-08-03): an ad chain left entries in the list and
+     * `canGoBack()` reported false at index 10 of 12, so [historyBack] fell through to JS
+     * `history.back()` — handing the press to the page. The page answered each press by
+     * pushing another entry, so the index climbed (10 → 11 → 12) and every Back landed on
+     * a fresh throwaway domain. The domains are dictionary-word DGAs
+     * (`kettledroopingcontinuation.com`), so no blocklist or vowel heuristic reaches them;
+     * only the traversal itself can be made safe.
+     *
+     * Two rules, both of which stay inside the native back-forward list:
+     *  - never step onto an entry whose host is blocked;
+     *  - if the index did not fall since the last press, the stack is being fed — jump
+     *    straight to the newest entry that shares [entryUrl]'s registrable domain, which
+     *    is the last page the user actually chose to open.
+     *
+     * @return false when no clean earlier entry exists; the caller should go home.
+     */
+    fun historyBackSafe(entryUrl: String?): Boolean {
+        val wv = webView ?: return false
+        val list = wv.copyBackForwardList()
+        val current = list.currentIndex
+        if (current <= 0) {
+            lastBackFromIndex = -1
+            return false
+        }
+
+        fun hostAt(i: Int): String? =
+            runCatching { RequestBlocker.hostOf(list.getItemAtIndex(i).url) }.getOrNull()
+
+        val entryHost = entryUrl?.let { RequestBlocker.hostOf(it) }
+        val trapped = lastBackFromIndex in 0..current
+
+        fun urlAt(i: Int): String? = runCatching { list.getItemAtIndex(i).url }.getOrNull()
+        /** Same document ignoring the fragment — the shape ad scripts stuff the list with. */
+        fun bare(u: String?): String? = u?.substringBefore('#')?.trimEnd('/')
+        val currentBare = bare(runCatching { list.currentItem?.url }.getOrNull())
+
+        // Newest earlier entry that is a genuinely different page we are willing to show.
+        var target = -1
+        for (i in current - 1 downTo 0) {
+            val u = urlAt(i) ?: continue
+            val h = RequestBlocker.hostOf(u)
+            if (h != null && BlockingRuntime.isHostBlocked(h)) continue
+            // `#!/tUI5vuI4VbZGQI` entries and exact duplicates are the same document:
+            // "going back" onto one moves nothing, which is the point of stuffing them.
+            if (bare(u) == currentBare) continue
+            // Escaping a fed stack: only land somewhere the user actually chose to be.
+            if (trapped && entryHost != null && (h == null || !RequestBlocker.sameRegistrable(h, entryHost))) continue
+            target = i
+            break
+        }
+        if (target < 0) {
+            android.util.Log.i("KeenBack", "back_no_clean_target current=$current trapped=$trapped")
+            lastBackFromIndex = -1
+            return false
+        }
+
+        val targetUrl = urlAt(target) ?: return false
+        if (wv.canGoBack()) {
+            lastBackFromIndex = current
+            android.util.Log.i("KeenBack", "back_traverse from=$current to=$target")
+            wv.goBackOrForward(target - current)
+            return true
+        }
+
+        // The controller reports canGoBack()=false while holding entries (observed on
+        // thepiratebay.org: size=6 current=5 canGoBack=false). Both goBack() and
+        // goBackOrForward() no-op in that state, which is what left Back dead and let the
+        // old JS history.back() fallback hand the press to the ad script. Load the chosen
+        // entry directly instead — it cannot be steered — and drop the poisoned stack
+        // behind us so Back from there is a normal, short history again.
+        android.util.Log.i("KeenBack", "back_direct from=$current to=$target url=${targetUrl.take(80)}")
+        lastBackFromIndex = -1
+        clearHistoryOnNextCommit = true
+        wv.loadUrl(targetUrl)
+        return true
+    }
+
+    /** Set when Back escaped a stack the controller refused to traverse. */
+    private var clearHistoryOnNextCommit = false
+
+    /**
+     * Drop a poisoned back-forward list once the escape target has committed.
+     * Called from page-finished; [WebView.clearHistory] keeps the current entry only.
+     */
+    fun clearHistoryIfEscaped() {
+        if (!clearHistoryOnNextCommit) return
+        clearHistoryOnNextCommit = false
+        webView?.clearHistory()
+        android.util.Log.i("KeenBack", "back_history_cleared")
+    }
+
+    /** Forget trap state when a navigation the user asked for commits. */
+    fun resetBackTrapState() {
+        lastBackFromIndex = -1
     }
 
     fun handleRemoteKey(event: KeyEvent): Boolean {

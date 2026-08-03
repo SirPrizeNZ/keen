@@ -292,6 +292,28 @@ object HostileOverlayGuard {
     if(!s || s.display==='none' || s.visibility==='hidden') return false;
     var op=parseFloat(s.opacity); if(isFinite(op) && op<0.05) return false;
     var pos=s.position;
+    // A fake system alert is never site chrome, whatever its position.
+    //
+    // The position gate below exists to protect a site's own sticky furniture, but it was
+    // also letting the "Storage may be Full / Not enough storage to continue" card through
+    // on thepiratebay.org: the creative arrives inside a frame where the card is ordinary
+    // in-flow content (position:static), and in the parent it is a src-less iframe, so the
+    // foreign-iframe rule below never sees a foreign URL either. It fell between the two.
+    //
+    // Bounded hard, because this runs before the gate: the copy rule is already narrow,
+    // and the text-length cap means only the card itself can match — any real page
+    // container carries far more text than an alert card ever does.
+    try{
+      var fr=el.getBoundingClientRect();
+      var fvw=window.innerWidth||0, fvh=window.innerHeight||0;
+      var ft=textOf(el)||'';
+      if(fvw>0 && fvh>0 && ft.length<=300 && fakeSystemAlert(ft) &&
+         fr.width>=80 && fr.height>=40 &&
+         (fr.width*fr.height)/(fvw*fvh)<=0.5){
+        try{ console.warn('KZ_REMOVE_FAKE_SYSTEM_ALERT_STATIC:'+location.host+':'+pos+':'+ft.slice(0,60)); }catch(e){}
+        return true;
+      }
+    }catch(e){}
     // Popups are almost always fixed (sometimes absolute). Never treat sticky site chrome as ads.
     if(pos!=='fixed' && pos!=='absolute') return false;
     if(pos==='sticky') return false;
@@ -507,7 +529,19 @@ object HostileOverlayGuard {
       if(!interesting) return;
       if(window.__keenSweepScheduled) return;
       window.__keenSweepScheduled=1;
-      setTimeout(function(){ window.__keenSweepScheduled=0; sweepHostile(); }, 120);
+      // Sweep before the browser paints the mutation that woke us.
+      //
+      // The old 120 ms debounce was a whole handful of frames: an overlay inserted itself,
+      // got painted, and only then was removed — which is the ad "flashing for a second"
+      // on thepiratebay.org. requestAnimationFrame runs after the DOM change and before
+      // the next paint, so a layer that never should have been seen never is. Still
+      // coalesced to one sweep per frame by __keenSweepScheduled, so a chatty page cannot
+      // turn this into a per-mutation scan on a 1 GB box; the setTimeout is the fallback
+      // for backgrounded frames, where rAF never fires.
+      var swept=0;
+      function runSweep(){ if(swept) return; swept=1; window.__keenSweepScheduled=0; sweepHostile(); }
+      if(window.requestAnimationFrame) requestAnimationFrame(runSweep);
+      setTimeout(runSweep, 120);
     });
     try{
       obs.observe(document.documentElement,{childList:true,subtree:true});
@@ -519,7 +553,20 @@ object HostileOverlayGuard {
       if(!document.getElementById('keen-hostile-css')){
         var st=document.createElement('style');
         st.id='keen-hostile-css';
-        st.textContent='[data-keen-hostile-overlay],.ad-trap,.overlay-ad,.popup-ad{display:none!important;pointer-events:none!important}';
+        // Pre-hide the same conventional ad slots the sweep already removes.
+        //
+        // The sweep runs after layout, so a slot painted, then vanished — on
+        // thepiratebay.org that reads as ads flashing for a fraction of a second on every
+        // page change. Hiding them in a document-start stylesheet means they never paint.
+        // These class/id shapes are ad-slot conventions (IAB sizes, "adbanner",
+        // "skyscraper"); site content does not use them.
+        st.textContent='[data-keen-hostile-overlay],.ad-trap,.overlay-ad,.popup-ad,' +
+          '[class*="adblock"],[class*="ad120"],[class*="ad160"],[class*="ad180"],' +
+          '[class*="ad234"],[class*="ad250"],[class*="ad300"],[class*="ad336"],' +
+          '[class*="ad468"],[class*="ad728"],[class*="ad970"],' +
+          '[class*="adbanner"],[class*="ad-banner"],[class*="banner-ad"],' +
+          '[class*="skyscraper"],[id^="ad-"],[id^="ads-"]' +
+          '{display:none!important;pointer-events:none!important}';
         (document.head||document.documentElement).appendChild(st);
       }
     }catch(e){}
