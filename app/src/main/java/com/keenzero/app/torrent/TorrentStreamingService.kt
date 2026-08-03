@@ -342,9 +342,19 @@ class TorrentStreamingService : Service() {
         // Prefer the largest recognizable video; fall back to largest file overall.
         if (largestIndex < 0) largestIndex = largestAnyIndex
 
+        // Only real features are worth asking about. A single-film torrent routinely
+        // carries artwork, a readme, a sample and a trailer beside the movie; offering
+        // those as choices turns a one-press play into a puzzle. Anything small, or named
+        // like a sample or trailer, is excluded — and if that leaves one candidate there
+        // is nothing to ask, so it plays.
+        val features = videoIndices.filter { index ->
+            val slot = slots[index]
+            slot.size >= MIN_FEATURE_BYTES && !JUNK_VIDEO_NAME.containsMatchIn(slot.name)
+        }
+
         if (chosenIndex != null) {
             largestIndex = chosenIndex
-        } else if (videoIndices.size > 1) {
+        } else if (features.size > 1) {
             // Stop fetching before asking. Every file sits at default priority until
             // prioritizeFiles runs, and SEQUENTIAL_DOWNLOAD pulls from the front of the
             // torrent — so the first file in the pack downloaded while the picker was up,
@@ -353,7 +363,7 @@ class TorrentStreamingService : Service() {
             // state its metadata did not survive.
             handle.pause()
             pendingChoice = PendingChoice(id, root, handle, layout)
-            val ordered = videoIndices.sortedBy { slots[it].name.lowercase() }
+            val ordered = features.sortedBy { slots[it].name.lowercase() }
             sendBroadcast(
                 Intent(ACTION_CHOOSE_FILE)
                     .setPackage(packageName)
@@ -802,6 +812,16 @@ class TorrentStreamingService : Service() {
         /** Mid-playback seek outran the downloaded window — not start-up buffering. */
         const val STAGE_SEEK_BUFFERING = "seek_buffering"
 
+
+        /**
+         * Below this a video is an extra, not the thing you asked for — samples,
+         * trailers, "proof" clips. Feature-length video does not fit in 50 MB, and a
+         * genuinely short film simply falls through to the automatic pick.
+         */
+        const val MIN_FEATURE_BYTES = 50L * 1024 * 1024
+
+        /** Named like an extra, whatever its size. */
+        val JUNK_VIDEO_NAME = Regex("""\b(sample|trailer|preview|proof|rarbg|screens?)\b""", RegexOption.IGNORE_CASE)
 
         val VIDEO_EXTENSIONS = setOf(
             "mp4", "mkv", "webm", "m4v", "mov", "avi", "ts", "m2ts", "mpg", "mpeg", "3gp",

@@ -3377,7 +3377,10 @@ class KeenActivity : AppCompatActivity() {
         )
         animator.duration = TORRENT_REVEAL_MS
         animator.interpolator = android.view.animation.PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
-        container.translationZ = 1f
+        // The player sits at elevation 20dp, the loading surface at 24dp. Lift the player
+        // clear of it for the animation, or the reveal runs underneath an opaque black
+        // layer and all the user sees is the old fade. 1px was not a lift.
+        container.translationZ = REVEAL_LIFT_DP * resources.displayMetrics.density
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
                 container.translationZ = 0f
@@ -5563,6 +5566,8 @@ class KeenActivity : AppCompatActivity() {
         /** Circular reveal from loading surface to picture. Long enough to read, short
          *  enough that it never sits between the user and the film. */
         private const val TORRENT_REVEAL_MS = 900L
+        /** Enough to clear the loading surface's 24dp from the player's 20dp. */
+        private const val REVEAL_LIFT_DP = 8f
 
         private const val TORRENT_FRAME_MIN_POS_MS = 45_000L
 

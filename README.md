@@ -132,9 +132,9 @@ It does not package another copy of Chromium inside the APK. This keeps Keen sma
 
 ## Download
 
-**[Download Keen v0.2.9](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.9/keen-0.2.9-32bit-armeabi-v7a.apk)** ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.9) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.9/SHA256SUMS)
+**[Download Keen v0.2.10](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.10/keen-0.2.10-32bit-armeabi-v7a.apk)** ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.10) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.10/SHA256SUMS)
 
 18.4 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
@@ -161,7 +161,7 @@ adb install -r <keen-apk-filename>
 For example:
 
 ```bash
-adb install -r keen-0.2.9-32bit-armeabi-v7a.apk
+adb install -r keen-0.2.10-32bit-armeabi-v7a.apk
 ```
 
 Use the exact IP address and port displayed by the television. Wireless debugging may use a port other than `5555`.
