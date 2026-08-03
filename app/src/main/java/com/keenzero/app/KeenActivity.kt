@@ -2413,7 +2413,7 @@ class KeenActivity : AppCompatActivity() {
              * frame is actually on screen.
              */
             override fun onRenderedFirstFrame() {
-                hideTorrentOverlayWithCollapse()
+                revealPlayerWithCircle()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -3347,6 +3347,45 @@ class KeenActivity : AppCompatActivity() {
         if (!torrentOverlayVisible) return
         binding.torrentLoadingSpinner.startIndeterminate()
         binding.torrentLoadingTitle.text = getString(R.string.torrent_starting_playback)
+    }
+
+    /**
+     * Open the film through a circle growing from the centre of the screen.
+     *
+     * The loading surface is not faded out — it is wiped, by the picture itself expanding
+     * over it, so the numbers and spinner leave with the same gesture that brings the
+     * video in. The player normally sits under the overlay, so it is lifted for the
+     * duration and put back afterwards.
+     *
+     * Easing is an emphasised decelerate: it commits quickly, then spends most of the
+     * duration easing into rest, which is what stops a circular wipe reading as mechanical.
+     */
+    private fun revealPlayerWithCircle() {
+        val container = binding.torrentPlayerContainer
+        if (!torrentOverlayVisible || container.width == 0 || container.height == 0) {
+            hideTorrentOverlayWithCollapse()
+            return
+        }
+        val cx = container.width / 2
+        val cy = container.height / 2
+        val animator = android.view.ViewAnimationUtils.createCircularReveal(
+            container,
+            cx,
+            cy,
+            0f,
+            kotlin.math.hypot(cx.toFloat(), cy.toFloat()),
+        )
+        animator.duration = TORRENT_REVEAL_MS
+        animator.interpolator = android.view.animation.PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+        container.translationZ = 1f
+        animator.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                container.translationZ = 0f
+                // Already wiped from view; this just tears it down.
+                hideTorrentOverlay()
+            }
+        })
+        animator.start()
     }
 
     private fun hideTorrentOverlay() {
@@ -5521,6 +5560,9 @@ class KeenActivity : AppCompatActivity() {
 
         /** Consecutive playback errors to recover from before giving up on a stream. */
         private const val TORRENT_PLAYER_MAX_RETRIES = 5
+        /** Circular reveal from loading surface to picture. Long enough to read, short
+         *  enough that it never sits between the user and the film. */
+        private const val TORRENT_REVEAL_MS = 900L
 
         private const val TORRENT_FRAME_MIN_POS_MS = 45_000L
 
