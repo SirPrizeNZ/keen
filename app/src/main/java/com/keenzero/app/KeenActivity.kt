@@ -2664,6 +2664,53 @@ class KeenActivity : AppCompatActivity() {
      * not carry on for a title the user just removed.
      */
     /**
+     * A page's `<select>`, presented the way a television can actually use.
+     *
+     * WebView anchors its own list under the control, which on a TV opens off the bottom
+     * of the screen and scrolls where the remote cannot follow. Same dialog as the stream
+     * file picker: centred, D-pad native, one press to choose, Back to dismiss without
+     * changing anything.
+     */
+    private fun showSelectPopup(payload: String) {
+        val json = try {
+            org.json.JSONObject(payload)
+        } catch (_: Exception) {
+            return
+        }
+        val token = json.optString("token").takeIf { it.isNotBlank() } ?: return
+        val options = json.optJSONArray("options") ?: return
+        if (options.length() == 0) return
+
+        val indices = ArrayList<Int>(options.length())
+        val labels = ArrayList<String>(options.length())
+        for (i in 0 until options.length()) {
+            val o = options.optJSONObject(i) ?: continue
+            if (o.optBoolean("disabled")) continue
+            val group = o.optString("group")
+            val label = o.optString("label")
+            indices.add(o.optInt("i", i))
+            labels.add(if (group.isNotBlank()) "$group · $label" else label)
+        }
+        if (labels.isEmpty()) return
+
+        val current = json.optInt("selected", -1)
+        // Mark where the page currently sits, so a long genre list says where you are.
+        val shown = labels.mapIndexed { i, label ->
+            if (indices[i] == current) "✓ $label" else label
+        }.toTypedArray()
+
+        val title = json.optString("name").takeIf { it.isNotBlank() }
+            ?: getString(R.string.select_popup_title)
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setItems(shown) { _, which ->
+                webHost?.applySelectChoice(token, indices[which])
+            }
+            .show()
+    }
+
+    /**
      * Which file of a multi-video torrent to stream.
      *
      * A 4-movie collection used to resolve silently to whichever file was biggest, so
@@ -4532,6 +4579,9 @@ class KeenActivity : AppCompatActivity() {
         )
         host.onChallengeLoop = { h, u, reason ->
             runOnUiThread { switchToCompatibilityMode(h, u, reason) }
+        }
+        host.onSelectPopup = { payload ->
+            runOnUiThread { showSelectPopup(payload) }
         }
         android.util.Log.i("KZ_CHALLENGE", "loop callback attached to new WebViewHost")
         webHost = host

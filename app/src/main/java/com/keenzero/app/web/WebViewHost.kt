@@ -90,6 +90,21 @@ class WebViewHost(
      */
     var onChallengeLoop: ((host: String, url: String, reason: String) -> Unit)? = null
 
+    /**
+     * A `<select>` was activated; the payload is the serialised option list. The host only
+     * reports it — presenting the choice belongs to the activity.
+     */
+    var onSelectPopup: ((payload: String) -> Unit)? = null
+
+    /** Commit the user's choice back into the page (and any frame that asked). */
+    fun applySelectChoice(token: String, index: Int) {
+        val safeToken = token.replace("'", "")
+        webView?.evaluateJavascript(
+            "if(window.__keenRelaySelect)window.__keenRelaySelect('$safeToken',$index);",
+            null,
+        )
+    }
+
     private val challengeDetector by lazy {
         com.keenzero.app.compat.ChallengeLoopDetector { host, url, reason ->
             val cb = onChallengeLoop
@@ -390,6 +405,10 @@ class WebViewHost(
                         detail = msg.take(500),
                     ),
                 )
+                if (msg.contains(SelectPopupJs.OPEN_PREFIX)) {
+                    val payload = msg.substringAfter(SelectPopupJs.OPEN_PREFIX)
+                    webView?.post { onSelectPopup?.invoke(payload) }
+                }
                 if (msg.contains("KZ_LATENCY_TELEMETRY:")) {
                     val jsonStr = msg.substringAfter("KZ_LATENCY_TELEMETRY:")
                     try {
@@ -1579,6 +1598,9 @@ class WebViewHost(
                 // sites the media is in nested cross-origin iframes the native side
                 // cannot reach with evaluateJavascript().
                 (if (noPlayer) "" else "\n" + FramePlayerJs.INSTALL_JS) +
+                // Every frame: a select inside a cross-origin iframe is exactly the case
+                // the native side cannot reach any other way.
+                "\n" + SelectPopupJs.INSTALL_JS +
                 (
                     if (noScroll) {
                         ""
