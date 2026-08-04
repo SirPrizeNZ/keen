@@ -2435,7 +2435,7 @@ class KeenActivity : AppCompatActivity() {
                     val resumeAt = player.currentPosition.coerceAtLeast(0L)
                     android.util.Log.w(
                         "KeenBack",
-                        "player_error retry ${'$'}torrentPlayerRetries at ${'$'}resumeAt: ${error.errorCodeName}",
+                        "player_error retry $torrentPlayerRetries at $resumeAt: ${error.errorCodeName}",
                     )
                     player.seekTo(resumeAt)
                     player.prepare()
@@ -3376,19 +3376,41 @@ class KeenActivity : AppCompatActivity() {
             kotlin.math.hypot(cx.toFloat(), cy.toFloat()),
         )
         animator.duration = TORRENT_REVEAL_MS
-        animator.interpolator = android.view.animation.PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+        // Emphasised decelerate, weighted further towards the settle: the circle opens
+        // decisively, then the last third of the travel is a slow glide into rest rather
+        // than an arrival. The low final control point is what buys that long tail.
+        animator.interpolator = android.view.animation.PathInterpolator(0.05f, 0.8f, 0.06f, 1f)
         // The player sits at elevation 20dp, the loading surface at 24dp. Lift the player
         // clear of it for the animation, or the reveal runs underneath an opaque black
         // layer and all the user sees is the old fade. 1px was not a lift.
         container.translationZ = REVEAL_LIFT_DP * resources.displayMetrics.density
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
+                // Order matters. Dropping the lift first put the player back under the
+                // loading surface (20dp vs 24dp) while that surface was still visible, so
+                // the spinner and counters reappeared for a frame after the reveal had
+                // already covered them. Take the surface away first, then drop the lift.
+                dismissTorrentOverlayNow()
                 container.translationZ = 0f
-                // Already wiped from view; this just tears it down.
-                hideTorrentOverlay()
             }
         })
         animator.start()
+    }
+
+    /**
+     * Tear the loading surface down in one frame, no fade.
+     *
+     * The circular reveal has already covered it, so there is nothing left to animate —
+     * and a fade here is exactly what let it show again on the way out.
+     */
+    private fun dismissTorrentOverlayNow() {
+        stopTitlePulse()
+        binding.torrentLoadingOverlay.animate().cancel()
+        binding.torrentLoadingOverlay.visibility = View.GONE
+        binding.torrentLoadingOverlay.alpha = 1f
+        binding.torrentLoadingSpinner.stop()
+        binding.torrentLoadingPercentGiant.visibility = View.INVISIBLE
+        binding.torrentLoadingPercentGiant.alpha = 0f
     }
 
     private fun hideTorrentOverlay() {
@@ -5565,7 +5587,7 @@ class KeenActivity : AppCompatActivity() {
         private const val TORRENT_PLAYER_MAX_RETRIES = 5
         /** Circular reveal from loading surface to picture. Long enough to read, short
          *  enough that it never sits between the user and the film. */
-        private const val TORRENT_REVEAL_MS = 900L
+        private const val TORRENT_REVEAL_MS = 1250L
         /** Enough to clear the loading surface's 24dp from the player's 20dp. */
         private const val REVEAL_LIFT_DP = 8f
 

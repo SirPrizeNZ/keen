@@ -106,6 +106,10 @@ class TorrentStreamingService : Service() {
                 return START_NOT_STICKY
             }
             pendingChoice = null
+            // The clock restarts from the choice: whatever the swarm did while the picker
+            // was open should not count against the metadata watchdog.
+            startedAtMs = System.currentTimeMillis()
+            Log.i(TAG, "picker_choice index=$chosen resuming")
             // Recomputed by the UI for the file actually chosen; the value from start-up
             // was the torrent's, from before anyone knew which file this would be.
             resumeFraction = intent.getFloatExtra(EXTRA_RESUME_FRACTION, resumeFraction)
@@ -363,6 +367,7 @@ class TorrentStreamingService : Service() {
             // state its metadata did not survive.
             handle.pause()
             pendingChoice = PendingChoice(id, root, handle, layout)
+            Log.i(TAG, "picker_open paused files=${features.size} of=${layout.numFiles}")
             val ordered = features.sortedBy { slots[it].name.lowercase() }
             sendBroadcast(
                 Intent(ACTION_CHOOSE_FILE)
@@ -575,6 +580,11 @@ class TorrentStreamingService : Service() {
         progressTask = ticker.scheduleWithFixedDelay({
             try {
                 if (id != requestId || mediaHandle != null) return@scheduleWithFixedDelay
+                // Time spent reading the file picker is not time the swarm failed to
+                // answer. mediaHandle is only set once setup finishes, so without this the
+                // 120 s metadata watchdog kept counting while the user chose a film, then
+                // declared the torrent dead and tore the session down underneath them.
+                if (pendingChoice != null) return@scheduleWithFixedDelay
                 val session = manager ?: return@scheduleWithFixedDelay
                 val elapsed = System.currentTimeMillis() - startedAtMs
                 if (elapsed > METADATA_TIMEOUT_MS) {
