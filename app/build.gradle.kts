@@ -25,8 +25,8 @@ android {
         // until a physical device model is confirmed and a deliberate floor change is approved.
         minSdk = 29
         targetSdk = 35
-        versionCode = 247
-        versionName = "0.2.13"
+        versionCode = 248
+        versionName = "0.2.14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -58,6 +58,22 @@ android {
             buildConfigField("String", "ABI_POLICY", "\"armeabi-v7a-first\"")
             buildConfigField("String", "PRIMARY_ABI", "\"armeabi-v7a\"")
             ndk { abiFilters += listOf("armeabi-v7a") }
+        }
+        // 64-bit build. Deliberately a separate artifact rather than a replacement:
+        // almost every mainstream TV box still ships a 32-bit userspace on 64-bit
+        // silicon (the Google TV Streamer and onn 4K Pro both report armeabi-v7a only,
+        // as does our own Android 14 test box), so a device that can run this one is
+        // the exception — Shield TV, 2nd-gen Fire TV Cube, and TV-shaped tablets.
+        // Installing the wrong one fails at install time, hence the distinct
+        // applicationId suffix: both can sit side by side while we work out which
+        // a given box takes.
+        create("arm64V8a") {
+            dimension = "abiPolicy"
+            applicationIdSuffix = ".v8a"
+            versionNameSuffix = "-v8a"
+            buildConfigField("String", "ABI_POLICY", "\"arm64-v8a-only\"")
+            buildConfigField("String", "PRIMARY_ABI", "\"arm64-v8a\"")
+            ndk { abiFilters += listOf("arm64-v8a") }
         }
     }
 
@@ -140,9 +156,15 @@ dependencies {
     // ExoPlayer reaches the platform (Amlogic) MediaCodec audio decoders.
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
-    // The MVP is intentionally v7a-first. This artifact contains the Java API and
-    // libtorrent JNI for the measured 32-bit Mi Box target.
-    implementation(libs.libtorrent4j.android.arm)
+    // libtorrent4j ships one artifact per ABI, each carrying the same Java API plus its
+    // own libtorrent4j.so. Wired per flavour so a single-ABI APK never carries the other
+    // architecture's 15 MB payload; abiFilters alone would not drop it, since these are
+    // separate jars rather than one fat AAR. Both are pinned to the same libtorrent4j
+    // version — a mismatch would put two copies of the Java API on the classpath.
+    "universalImplementation"(libs.libtorrent4j.android.arm)
+    "universalImplementation"(libs.libtorrent4j.android.arm64)
+    "armeabiV7aImplementation"(libs.libtorrent4j.android.arm)
+    "arm64V8aImplementation"(libs.libtorrent4j.android.arm64)
 
     testImplementation(libs.junit)
     // Real org.json for unit tests (Android stubs throw "not mocked").
