@@ -61,6 +61,7 @@ Its layered defence blocks:
 - Fake external-app launches
 - Intrusive overlays
 - Rotating machine-generated ad domains
+- Banner creatives dropped into the page with no advertising markup to identify them
 - Site-specific advertising and playback interference
 
 Keen also considers whether the user actually chose to navigate somewhere.
@@ -186,13 +187,17 @@ The `-r` flag updates an existing installation while preserving its local data.
 
 ### Tested hardware
 
-Keen is developed and tested on a Xiaomi MiTV-AFMU0 (twilight) running Android TV 14.
+Keen is developed and tested on a Xiaomi MiTV-AFMU0 (twilight) running Android TV 14, which
+is a 32-bit (`armeabi-v7a`) system.
 
-Testing on other Android TV and Google TV devices is welcome.
+The 64-bit build has not yet been run on 64-bit hardware — it is verified only as far as
+packaging. Reports from Shield TV and Fire TV Cube owners are particularly welcome, as is
+testing on any other Android TV or Google TV device.
 
 ## Roadmap
 
-- 64-bit (`arm64-v8a`) builds alongside the 32-bit package for newer boxes
+- Confirmation of the 64-bit build on real 64-bit hardware
+- Wider site compatibility, driven by whatever breaks on real televisions
 
 ## Responsible use
 
