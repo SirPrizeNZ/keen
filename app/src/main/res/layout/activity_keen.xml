@@ -173,6 +173,41 @@
             app:show_subtitle_button="true"
             app:surface_type="surface_view" />
 
+        <!-- Hold-to-seek timeline, owned by Keen.
+             Media3's own scrubber cannot be used for this: its controller writes the
+             real playback position back into the bar several times a second, which
+             fought our target and made the thumb jitter left and right instead of
+             skimming. This one has a single writer. -->
+        <FrameLayout
+            android:id="@+id/torrentScrubTrack"
+            android:layout_width="match_parent"
+            android:layout_height="6dp"
+            android:layout_gravity="bottom"
+            android:layout_marginHorizontal="64dp"
+            android:layout_marginBottom="150dp"
+            android:background="#40FFFFFF"
+            android:visibility="gone">
+
+            <View
+                android:id="@+id/torrentScrubFill"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#FFFFFFFF"
+                android:scaleX="0"
+                android:transformPivotX="0dp" />
+        </FrameLayout>
+
+        <!-- End of an episode in a season pack: offer the next one, filling as it
+             counts down. Sits opposite the seek preview so the two never collide. -->
+        <com.keenzero.app.home.CountdownButtonView
+            android:id="@+id/torrentNextEpisode"
+            android:layout_width="190dp"
+            android:layout_height="40dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="56dp"
+            android:layout_marginBottom="56dp"
+            android:visibility="gone" />
+
         <!-- Hold-to-seek feedback: target time + delta while DPAD left/right is held. -->
         <TextView
             android:id="@+id/torrentSeekPreview"
@@ -190,7 +225,7 @@
     </FrameLayout>
 
     <!-- Torrent startup feedback: covers the page from click to first playable pieces. -->
-    <FrameLayout
+    <com.keenzero.app.home.CircleCutoutFrameLayout
         android:id="@+id/torrentLoadingOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -343,7 +378,7 @@
                 </LinearLayout>
             </LinearLayout>
         </LinearLayout>
-    </FrameLayout>
+    </com.keenzero.app.home.CircleCutoutFrameLayout>
 
     <!-- Failed / stalled page state: branded, remote-friendly, with a focused Retry. -->
     <LinearLayout

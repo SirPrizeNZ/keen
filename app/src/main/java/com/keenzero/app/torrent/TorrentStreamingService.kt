@@ -81,6 +81,23 @@ class TorrentStreamingService : Service() {
 
     @Volatile private var pendingChoice: PendingChoice? = null
 
+    /**
+     * The live stream's setup, kept so a later file in the same pack can take over
+     * without a new torrent session.
+     *
+     * Playing the next episode is not a new download: the swarm connection, the metadata
+     * and every piece already on disk are the same torrent. Holding the layout and root
+     * here is what lets [ACTION_PLAY_FILE] re-point the bridge at another file in a
+     * fraction of a second, instead of tearing the session down and paying the full
+     * magnet-resolve wait between two episodes.
+     */
+    @Volatile private var liveMedia: PendingChoice? = null
+
+    /** Feature files in the live torrent, in name (episode) order, and which one is playing. */
+    @Volatile private var packOrder: List<Int> = emptyList()
+    @Volatile private var packNames: List<String> = emptyList()
+    @Volatile private var playingIndex: Int = -1
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -121,6 +138,37 @@ class TorrentStreamingService : Service() {
                     sendFailure(pending.id, error.message ?: error.javaClass.simpleName)
                     cleanup()
                     stopSelf(startId)
+                }
+            }
+            return START_NOT_STICKY
+        }
+        // Next episode: same torrent, different file. The handle stays live and every
+        // piece already fetched stays on disk — only the bridge and the buffer window
+        // move. Distinct from ACTION_SELECT_FILE, which answers the opening picker and
+        // requires a paused, not-yet-configured session.
+        if (intent?.action == ACTION_PLAY_FILE) {
+            val chosen = intent.getIntExtra(EXTRA_FILE_INDEX, -1)
+            val live = liveMedia
+            if (live == null || chosen < 0 || !live.handle.isValid) {
+                Log.w(TAG, "play_file ignored index=$chosen live=${live != null}")
+                return START_NOT_STICKY
+            }
+            startedAtMs = System.currentTimeMillis()
+            // A new episode starts at the top, whatever fraction the last one resumed at.
+            resumeFraction = intent.getFloatExtra(EXTRA_RESUME_FRACTION, 0f)
+            Log.i(TAG, "play_file index=$chosen")
+            worker.execute {
+                try {
+                    stopProgressLoop()
+                    // configureMedia refuses to run while a bridge is up (it is the
+                    // "already streaming" guard); this is the one place that is meant to
+                    // replace one, so close it first.
+                    bridge?.stop()
+                    bridge = null
+                    configureMedia(live.id, live.root, live.handle, chosen, live.layout)
+                } catch (error: Throwable) {
+                    Log.e(TAG, "Next-file switch failed", error)
+                    sendFailure(live.id, error.message ?: error.javaClass.simpleName)
                 }
             }
             return START_NOT_STICKY
@@ -379,6 +427,15 @@ class TorrentStreamingService : Service() {
             )
             return
         }
+        // From here the session is committed to a file. Remember what the pack holds and
+        // where in it we are, so the UI can offer the next episode when this one ends.
+        // Name order is the same order the picker lists them in — for the season packs
+        // this is aimed at, that is episode order.
+        liveMedia = PendingChoice(id, root, handle, layout)
+        packOrder = features.sortedBy { slots[it].name.lowercase() }
+        packNames = packOrder.map { slots[it].name }
+        playingIndex = largestIndex
+
         val chosen = slots[largestIndex]
         val mediaSize = chosen.size
         if (!TorrentSpacePolicy.canDownloadWholeFile(root.usableSpace, mediaSize)) {
@@ -428,6 +485,19 @@ class TorrentStreamingService : Service() {
         server.startBridge()
         mediaHandle = handle
 
+        // Hand the URL over the moment the bridge can answer, not when buffering finishes.
+        //
+        // The player used to be built on READY, so two long waits ran back to back: fill
+        // the buffer window, and only then let the player open the stream — which on an
+        // mkv means fetching the cues from the end of the file before a single frame can
+        // be decoded. Measured on the box, that second wait was ~35 s of "Starting
+        // playback…" after the counter already said 100%. Starting the player here runs
+        // its container read against the same pieces the buffer loop is already pulling,
+        // so the two overlap and the film is decoding by the time the buffer is full.
+        // Reads block in the bridge until pieces land, which is exactly what should
+        // happen; the loading surface stays up until a frame actually renders either way.
+        sendBroadcast(mediaIntent(ACTION_STREAM_OPEN, id, server, title, mediaFile.absolutePath))
+
         // Head pieces must exist before the player opens or the video element sits
         // on a black frame with no feedback. Tail pieces cover mp4 moov-at-end /
         // mkv cues that players fetch immediately via a range request.
@@ -456,6 +526,34 @@ class TorrentStreamingService : Service() {
         tailPieces.forEach { piece -> handle.setPieceDeadline(piece, 250) }
         startBufferLoop(id, server, title, mediaFile.absolutePath, bufferPieces, layout.pieceLength)
     }
+
+    /**
+     * The stream's identity, sent both when the bridge opens and when buffering completes.
+     *
+     * Both broadcasts describe the same file; only the timing differs, so they carry the
+     * same payload and the UI decides what to do with each.
+     */
+    private fun mediaIntent(
+        action: String,
+        id: String,
+        server: TorrentHttpBridge,
+        title: String,
+        mediaPath: String,
+    ): Intent = Intent(action)
+        .setPackage(packageName)
+        .putExtra(EXTRA_REQUEST_ID, id)
+        .putExtra(EXTRA_PLAYER_URL, server.playerUrl)
+        .putExtra(EXTRA_STREAM_URL, server.streamUrl)
+        .putExtra(EXTRA_TITLE, title)
+        // Card artwork decodes a frame straight off this file. Going through the bridge
+        // instead would re-arm the piece deadlines at the poster's timestamp and stall
+        // real playback.
+        .putExtra(EXTRA_MEDIA_PATH, mediaPath)
+        // What else is in this pack, so the player can offer the next episode without
+        // reopening the picker. Empty for a single film.
+        .putExtra(EXTRA_PACK_INDICES, packOrder.toIntArray())
+        .putExtra(EXTRA_PACK_NAMES, packNames.toTypedArray())
+        .putExtra(EXTRA_FILE_INDEX, playingIndex)
 
     /** Mid-playback seek stall: buffering percent over the deadline window at [piece]. */
     private fun sendSeekBufferProgress(id: String, piece: Int, lastPiece: Int, pieceLength: Int) {
@@ -514,18 +612,7 @@ class TorrentStreamingService : Service() {
                 val whole = bufferPieces.count { handle.havePiece(it) }
                 if (whole >= bufferPieces.size) {
                     stopProgressLoop()
-                    sendBroadcast(
-                        Intent(ACTION_READY)
-                            .setPackage(packageName)
-                            .putExtra(EXTRA_REQUEST_ID, id)
-                            .putExtra(EXTRA_PLAYER_URL, server.playerUrl)
-                            .putExtra(EXTRA_STREAM_URL, server.streamUrl)
-                            .putExtra(EXTRA_TITLE, title)
-                            // Card artwork decodes a frame straight off this file. Going
-                            // through the bridge instead would re-arm the piece deadlines
-                            // at the poster's timestamp and stall real playback.
-                            .putExtra(EXTRA_MEDIA_PATH, mediaPath),
-                    )
+                    sendBroadcast(mediaIntent(ACTION_READY, id, server, title, mediaPath))
                 } else {
                     // Byte-accurate: completed buffer pieces plus the finished blocks
                     // of any in-flight buffer piece. The buffer window is only a
@@ -778,7 +865,14 @@ class TorrentStreamingService : Service() {
         const val ACTION_CHOOSE_FILE = "com.keenzero.app.torrent.CHOOSE_FILE"
         /** UI → service: stream this file index and ignore the rest. */
         const val ACTION_SELECT_FILE = "com.keenzero.app.torrent.SELECT_FILE"
+        /** UI → service: move the live stream to another file in the same torrent. */
+        const val ACTION_PLAY_FILE = "com.keenzero.app.torrent.PLAY_FILE"
         const val ACTION_READY = "com.keenzero.app.torrent.READY"
+        /**
+         * Service → UI: the bridge will answer now; build the player and let it start
+         * opening the container while the buffer window is still filling.
+         */
+        const val ACTION_STREAM_OPEN = "com.keenzero.app.torrent.STREAM_OPEN"
         const val ACTION_ERROR = "com.keenzero.app.torrent.ERROR"
         const val ACTION_PROGRESS = "com.keenzero.app.torrent.PROGRESS"
 
@@ -800,6 +894,10 @@ class TorrentStreamingService : Service() {
         const val EXTRA_FILE_SIZES = "file_sizes"
         const val EXTRA_FILE_INDEX = "file_index"
         const val EXTRA_MEDIA_PATH = "media_path"
+
+        /** The whole pack in episode order, carried on READY for the next-episode button. */
+        const val EXTRA_PACK_INDICES = "pack_indices"
+        const val EXTRA_PACK_NAMES = "pack_names"
         const val EXTRA_TITLE = "title"
 
         /** Fraction of the file where playback will resume, so buffering starts there. */

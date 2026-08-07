@@ -81,6 +81,24 @@ class JumboPercentView @JvmOverloads constructor(
         scheduleWalk()
     }
 
+    /**
+     * Land on 100 now, rolling the digits there but skipping every value in between.
+     *
+     * Real progress is deliberately held below [REAL_CEILING] so the readout never parks
+     * on a finished-looking number while work remains — which means it can never reach 100
+     * on its own. Exactly one thing earns 100: the picture actually moving. The caller
+     * says so here, and the walk that would otherwise creep through the intervening
+     * numbers is abandoned so the figure is correct for the whole of the wipe that
+     * immediately follows it.
+     */
+    fun snapToComplete() {
+        removeCallbacks(walkStep)
+        walkPosted = false
+        displayed = 100
+        target = 100
+        setPercentText("100")
+    }
+
     /** New session: forget the old figure so the next one counts up from nothing. */
     fun reset() {
         removeCallbacks(walkStep)

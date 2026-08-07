@@ -110,6 +110,33 @@ class KeenActivity : AppCompatActivity() {
     /** File index being streamed from a multi-file torrent; null when it has only one. */
     private var torrentFileIndex: Int? = null
 
+    /**
+     * Every feature in the live torrent, in episode order, as the service resolved it.
+     *
+     * Empty for a single film — which is also the answer to "is there a next episode".
+     */
+    private var torrentPackIndices: IntArray = IntArray(0)
+    private var torrentPackNames: Array<String> = emptyArray()
+
+    /** The browse shell was on screen when playback took over, so it is owed a restore. */
+    private var browseShellHiddenForPlayer = false
+
+    /** Stream URL the live player was already built for, so READY does not rebuild it. */
+    private var torrentOpenedStreamUrl: String? = null
+
+    /** True once the next-episode button is up and its countdown is running. */
+    private var nextEpisodeArmed = false
+
+    /**
+     * The user pressed Back on the offer for this episode, so it stays gone.
+     *
+     * Without it the one-second watcher simply puts the offer back up on the next tick,
+     * which turns "no thanks" into a button that cannot be dismissed. Cleared on a new
+     * file, and on seeking back into the film — deciding not to skip the credits once
+     * should not mean never being offered the next episode again.
+     */
+    private var nextEpisodeDeclined = false
+
     /** Resume identity for what is playing now: the torrent, narrowed to the chosen file. */
     private val torrentResumeKey: String?
         get() = torrentOriginKey?.let {
@@ -146,7 +173,13 @@ class KeenActivity : AppCompatActivity() {
     private val torrentScrubTick = object : Runnable {
         override fun run() {
             if (!torrentSeekActive) return
-            torrentSeekTargetMs.takeIf { it >= 0 }?.let { torrentTimeBar?.setPosition(it) }
+            val duration = torrentPlayer?.duration ?: 0L
+            if (duration > 0 && torrentSeekTargetMs >= 0) {
+                // One writer, every frame: the fill is the target and nothing else ever
+                // sets it, so the skim is smooth however long the hold runs.
+                binding.torrentScrubFill.scaleX =
+                    (torrentSeekTargetMs.toFloat() / duration).coerceIn(0f, 1f)
+            }
             binding.root.postDelayed(this, TORRENT_SCRUB_FRAME_MS)
         }
     }
@@ -157,6 +190,20 @@ class KeenActivity : AppCompatActivity() {
      * initial buffer had already shown 100%.
      */
     private var torrentPlaybackStarted = false
+
+    /**
+     * True once the current player has put a frame on screen and the circular reveal
+     * has run. Separate from [torrentPlaybackStarted], which is already true before the
+     * player exists for a local library file. Nothing may take the loading surface down
+     * while this is false — the reveal is what removes it.
+     */
+    private var torrentFirstFrameShown = false
+
+    /** A frame has reached the screen. Necessary for the reveal, but nowhere near enough. */
+    private var torrentRenderedFirstFrame = false
+
+    /** A playhead-movement sample is in flight; stops every event queueing another. */
+    private var revealMotionCheckPending = false
 
     /** True from launch until a restored session has taken over the screen. */
     private var autoContinuePending = false
@@ -297,13 +344,31 @@ class KeenActivity : AppCompatActivity() {
                         swarmPeers = intent.getIntExtra(TorrentStreamingService.EXTRA_SWARM_PEERS, -1),
                     )
                 }
+                // The bridge can serve bytes. Build the player NOW so it opens the
+                // container against the same pieces the buffer loop is fetching, instead
+                // of queueing that work behind a buffer that already reported 100%.
+                TorrentStreamingService.ACTION_STREAM_OPEN -> {
+                    val streamUrl = intent.getStringExtra(TorrentStreamingService.EXTRA_STREAM_URL) ?: return
+                    applyTorrentStreamIdentity(intent)
+                    recordEvent(
+                        NavigationEvent(
+                            System.currentTimeMillis(),
+                            "torrent_stream_open",
+                            url = streamUrl,
+                            detail = "title=${torrentTitle.orEmpty()}",
+                        ),
+                    )
+                    // The loading surface stays exactly as it is: buffering is still
+                    // running and its numbers are still the honest thing to show.
+                    // Set after building: showNativeTorrentPlayer tears the previous
+                    // player down first, and that teardown clears this.
+                    showNativeTorrentPlayer(streamUrl, torrentTitle.orEmpty())
+                    torrentOpenedStreamUrl = streamUrl
+                }
                 TorrentStreamingService.ACTION_READY -> {
                     val streamUrl = intent.getStringExtra(TorrentStreamingService.EXTRA_STREAM_URL) ?: return
                     val title = intent.getStringExtra(TorrentStreamingService.EXTRA_TITLE)
-                    torrentTitle = title?.takeIf { it.isNotBlank() }
-                    torrentMediaPath = intent
-                        .getStringExtra(TorrentStreamingService.EXTRA_MEDIA_PATH)
-                        ?.takeIf { it.isNotBlank() }
+                    applyTorrentStreamIdentity(intent)
                     recordEvent(
                         NavigationEvent(
                             System.currentTimeMillis(),
@@ -316,7 +381,18 @@ class KeenActivity : AppCompatActivity() {
                     // reading the container index is still ahead of us, and black screen
                     // with no indicator reads as a failure.
                     showTorrentStartingStage()
-                    showNativeTorrentPlayer(streamUrl, title.orEmpty())
+                    // Normally the player has been running since STREAM_OPEN and is well
+                    // into the container by now; rebuilding it here would throw that away
+                    // and reintroduce the very wait this is meant to remove.
+                    if (torrentOpenedStreamUrl != streamUrl || torrentPlayer == null) {
+                        showNativeTorrentPlayer(streamUrl, title.orEmpty())
+                        torrentOpenedStreamUrl = streamUrl
+                    }
+                    // Armed from here, not from STREAM_OPEN: until the buffer is full a
+                    // frameless screen is simply the wait working as designed, and the
+                    // loader must not be pulled out from under it.
+                    binding.root.removeCallbacks(firstFrameWatchdog)
+                    binding.root.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
                 }
                 com.keenzero.app.library.LibraryDownloadService.ACTION_LIBRARY_CHANGED -> {
                     // The download service owns the records; we only reflect them.
@@ -356,6 +432,7 @@ class KeenActivity : AppCompatActivity() {
             torrentReceiver,
             IntentFilter().apply {
                 addAction(TorrentStreamingService.ACTION_READY)
+                addAction(TorrentStreamingService.ACTION_STREAM_OPEN)
                 addAction(TorrentStreamingService.ACTION_ERROR)
                 addAction(TorrentStreamingService.ACTION_PROGRESS)
                 addAction(TorrentStreamingService.ACTION_CHOOSE_FILE)
@@ -2387,6 +2464,9 @@ class KeenActivity : AppCompatActivity() {
             .setLoadControl(loadControl)
             .build()
         torrentPlayer = player
+        torrentFirstFrameShown = false
+        torrentRenderedFirstFrame = false
+        revealMotionCheckPending = false
         // Turn on English subtitles by default whenever the media carries them —
         // preferring an "en"-tagged text track, and falling back to an untagged
         // one (common in torrent MKVs where the English subs have no language tag).
@@ -2413,7 +2493,8 @@ class KeenActivity : AppCompatActivity() {
              * frame is actually on screen.
              */
             override fun onRenderedFirstFrame() {
-                revealPlayerWithCircle()
+                torrentRenderedFirstFrame = true
+                considerRevealingPicture()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -2467,8 +2548,21 @@ class KeenActivity : AppCompatActivity() {
                     ),
                 )
                 // Playback resumed (or finished) — drop the seek-buffering loader.
+                //
+                // Only ever a MID-playback loader. READY arrives before the first frame
+                // is decoded, so without the latch this fade beat onRenderedFirstFrame to
+                // the surface: the reveal then found nothing to wipe and the film simply
+                // appeared behind a 160 ms fade. Before the first frame the loading
+                // surface belongs to the circle, and to nothing else.
+                // The file ran out. If the offer is up, its fill was timed to the reported
+                // duration — which containers routinely overstate by a second or two — so
+                // honour the end of the media over the end of the animation.
+                if (playbackState == Player.STATE_ENDED && nextEpisodeArmed) {
+                    playNextEpisode()
+                    return
+                }
                 if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
-                    if (torrentOverlayVisible && nativeTorrentPlayerActive) {
+                    if (torrentFirstFrameShown && torrentOverlayVisible && nativeTorrentPlayerActive) {
                         hideTorrentOverlay()
                     }
                 }
@@ -2480,6 +2574,7 @@ class KeenActivity : AppCompatActivity() {
                     torrentPlaybackStarted = true
                     // Playing again: the retry budget is for consecutive failures.
                     torrentPlayerRetries = 0
+                    considerRevealingPicture()
                 }
                 // Pause = a deliberate moment; snapshot it for the Continue card.
                 if (!isPlaying && torrentPlayer?.playbackState == Player.STATE_READY) {
@@ -2522,12 +2617,29 @@ class KeenActivity : AppCompatActivity() {
         )?.apply { setKeyTimeIncrement(TORRENT_TIMEBAR_KEY_INCREMENT_MS) }
         installPlayerStarButton()
         refreshPlayerStarIcon()
+        // Take the page out of view for the duration.
+        //
+        // A film started from a search result leaves the torrent site — usually a white
+        // page — sitting in the hierarchy behind the loading surface. During the reveal
+        // the surface is no longer the backdrop everywhere (the player is lifted over it
+        // and its own background is clipped to the circle), and that white page showed
+        // through around the growing edge. Resuming from the dark home screen never
+        // showed it, which is exactly why it looked like it only happened on new titles.
+        // INVISIBLE, not GONE: the WebView keeps its size and state for the return trip.
+        browseShellHiddenForPlayer = binding.browseShell.visibility == View.VISIBLE
+        if (browseShellHiddenForPlayer) binding.browseShell.visibility = View.INVISIBLE
         binding.torrentPlayerContainer.visibility = View.VISIBLE
         binding.torrentPlayerView.requestFocus()
         // Card artwork: grab a real frame ~75s in (retries until the stream
         // has actually produced one), then keep it fresh with a rolling
         // 5-minute refresh plus grabs on pause/exit/TV-off.
         torrentFrameAttempts = 0
+        // A new file is playing: any offer from the previous episode is stale, and a
+        // "no thanks" belonged to that episode, not this one.
+        nextEpisodeDeclined = false
+        dismissNextEpisode()
+        binding.root.removeCallbacks(nextEpisodeWatchRunnable)
+        binding.root.postDelayed(nextEpisodeWatchRunnable, NEXT_EPISODE_POLL_MS)
         binding.root.removeCallbacks(torrentCheckpointRunnable)
         binding.root.postDelayed(torrentCheckpointRunnable, TORRENT_CHECKPOINT_INTERVAL_MS)
         binding.root.removeCallbacks(torrentFrameCaptureRunnable)
@@ -2876,15 +2988,191 @@ class KeenActivity : AppCompatActivity() {
         binding.root.removeCallbacks(torrentCheckpointRunnable)
         binding.root.removeCallbacks(torrentFrameCaptureRunnable)
         binding.root.removeCallbacks(torrentScrubTick)
+        binding.root.removeCallbacks(nextEpisodeWatchRunnable)
+        binding.root.removeCallbacks(firstFrameWatchdog)
+        nextEpisodeArmed = false
+        binding.torrentNextEpisode.cancelCountdown()
+        binding.torrentNextEpisode.visibility = View.GONE
         torrentTimeBar = null
         saveTorrentResumePoint()
         torrentSeekActive = false
         torrentSeekTargetMs = -1L
         binding.torrentSeekPreview.visibility = View.GONE
+        binding.torrentScrubTrack.visibility = View.GONE
         binding.torrentPlayerView.player = null
+        torrentOpenedStreamUrl = null
         binding.torrentPlayerContainer.visibility = View.GONE
+        // Give the page back exactly as it was, and only if we were the ones who took it.
+        if (browseShellHiddenForPlayer) {
+            browseShellHiddenForPlayer = false
+            if (binding.browseShell.visibility == View.INVISIBLE) {
+                binding.browseShell.visibility = View.VISIBLE
+            }
+        }
         torrentPlayer?.release()
         torrentPlayer = null
+    }
+
+    /**
+     * Last resort for a first frame that never comes.
+     *
+     * The reveal is triggered by `onRenderedFirstFrame`, and the loading surface is torn
+     * down as part of it. That made the animation the *only* thing that could dismiss the
+     * surface — so a stream that reached READY and then starved (no data to the decoder,
+     * no frame, ever) parked the user on "Starting playback…" indefinitely, with the film
+     * neither playing nor recoverable. Whatever the stream does, the surface comes down.
+     *
+     * Deliberately generous: opening a big mkv reads its cues from the end of the file and
+     * can legitimately take ~20 s before the first frame, and cutting the loader off early
+     * is what the indicator exists to prevent.
+     */
+    private val firstFrameWatchdog = Runnable {
+        if (torrentFirstFrameShown || !torrentOverlayVisible) return@Runnable
+        android.util.Log.w("KeenBack", "first_frame_watchdog: no frame, dropping loader")
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "torrent_first_frame_timeout",
+                detail = "after ${FIRST_FRAME_TIMEOUT_MS}ms",
+            ),
+        )
+        // No reveal: there is no picture to reveal. Collapse is the honest exit — it
+        // leaves the player on screen so its controls and Back still work.
+        hideTorrentOverlayWithCollapse()
+    }
+
+    /**
+     * Watches for the end of an episode so the next one can be offered before it arrives.
+     *
+     * Polled once a second rather than driven off a listener: there is no "approaching the
+     * end" callback, and a second's granularity is invisible against a 60 s lead-in.
+     */
+    private val nextEpisodeWatchRunnable = object : Runnable {
+        override fun run() {
+            if (!nativeTorrentPlayerActive) return
+            val player = torrentPlayer
+            if (player != null) {
+                val duration = player.duration
+                val remaining = duration - player.currentPosition
+                if (duration > 0 && remaining >= 0) {
+                    if (!nextEpisodeArmed && !nextEpisodeDeclined &&
+                        remaining <= NEXT_EPISODE_LEAD_MS && nextEpisodeIndex() != null
+                    ) {
+                        armNextEpisode(remaining)
+                    } else if (remaining > NEXT_EPISODE_LEAD_MS + 5_000L) {
+                        // Seeked back into the film. Any live countdown was timed against
+                        // a promise that is no longer true, so withdraw it rather than
+                        // leave it running over the middle of an episode — and forget a
+                        // previous "no thanks", since the end is being approached afresh.
+                        nextEpisodeDeclined = false
+                        if (nextEpisodeArmed) dismissNextEpisode()
+                    }
+                }
+            }
+            binding.root.postDelayed(this, NEXT_EPISODE_POLL_MS)
+        }
+    }
+
+    /**
+     * The file after the one playing, or null when this is the last (or a single film).
+     *
+     * Strictly the next in order, watched or not. Skipping seen episodes sounds helpful
+     * until it silently jumps you over the one you were rewatching; the picker already
+     * shows ticks for anyone who wants to choose.
+     */
+    private fun nextEpisodeIndex(): Int? {
+        val current = torrentFileIndex ?: return null
+        val position = torrentPackIndices.indexOf(current)
+        if (position < 0 || position + 1 >= torrentPackIndices.size) return null
+        return torrentPackIndices[position + 1]
+    }
+
+    /** Put the offer on screen with its fill timed to land exactly as the file ends. */
+    private fun armNextEpisode(remainingMs: Long) {
+        val next = nextEpisodeIndex() ?: return
+        val position = torrentPackIndices.indexOf(next)
+        val name = torrentPackNames.getOrNull(position)
+        val pretty = name?.let { prettyMediaTitle(it) ?: it }
+        nextEpisodeArmed = true
+        binding.torrentNextEpisode.apply {
+            label = getString(R.string.torrent_next_episode)
+            visibility = View.VISIBLE
+            onCountdownComplete = { playNextEpisode() }
+            startCountdown(remainingMs.coerceAtLeast(1_000L))
+        }
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "next_episode_offered",
+                detail = "index=$next name=${pretty.orEmpty()}",
+            ),
+        )
+    }
+
+    /** Take the offer away; the film keeps the keys it always had. */
+    private fun dismissNextEpisode() {
+        nextEpisodeArmed = false
+        binding.torrentNextEpisode.cancelCountdown()
+        binding.torrentNextEpisode.visibility = View.GONE
+    }
+
+    /**
+     * Move the live torrent onto the next file.
+     *
+     * Not a new session: the service keeps the handle and re-points the bridge, so this is
+     * a short buffer rather than a fresh magnet resolve. The loading surface goes back up
+     * because the next episode deserves the same opening as the first — the new player
+     * will wipe it away with the circular reveal on its first frame.
+     */
+    private fun playNextEpisode() {
+        val next = nextEpisodeIndex() ?: return
+        val requestId = torrentRequestId ?: return
+        // Credit the episode just finished before the playhead is replaced.
+        saveTorrentResumePoint()
+        torrentOriginKey?.let { torrentResumeStore.markWatched(it, torrentFileIndex ?: return@let) }
+        dismissNextEpisode()
+        torrentFileIndex = next
+        showTorrentOverlay()
+        showTorrentStartingStage()
+        startService(
+            Intent(this, TorrentStreamingService::class.java)
+                .setAction(TorrentStreamingService.ACTION_PLAY_FILE)
+                .putExtra(TorrentStreamingService.EXTRA_REQUEST_ID, requestId)
+                .putExtra(TorrentStreamingService.EXTRA_FILE_INDEX, next),
+        )
+        recordEvent(
+            NavigationEvent(
+                System.currentTimeMillis(),
+                "next_episode_started",
+                detail = "index=$next",
+            ),
+        )
+    }
+
+    /**
+     * Adopt the identity of the stream a broadcast describes.
+     *
+     * STREAM_OPEN and READY carry the same payload — the former as early as the bridge can
+     * answer, the latter when the buffer window is full — so both land here rather than
+     * duplicating the parsing and drifting apart.
+     */
+    private fun applyTorrentStreamIdentity(intent: Intent) {
+        intent.getStringExtra(TorrentStreamingService.EXTRA_TITLE)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { torrentTitle = it }
+        intent.getStringExtra(TorrentStreamingService.EXTRA_MEDIA_PATH)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { torrentMediaPath = it }
+        // What else this torrent holds, for the next-episode offer. Sent even in the
+        // auto-resolved single-film case, where it arrives empty, so the player never has
+        // to remember picker state.
+        torrentPackIndices =
+            intent.getIntArrayExtra(TorrentStreamingService.EXTRA_PACK_INDICES) ?: IntArray(0)
+        torrentPackNames =
+            intent.getStringArrayExtra(TorrentStreamingService.EXTRA_PACK_NAMES) ?: emptyArray()
+        intent.getIntExtra(TorrentStreamingService.EXTRA_FILE_INDEX, -1)
+            .takeIf { it >= 0 }
+            ?.let { torrentFileIndex = it }
     }
 
     /** Persist the playhead for this magnet so re-activating it resumes there. */
@@ -3340,6 +3628,7 @@ class KeenActivity : AppCompatActivity() {
         // Whatever raised it, the keyboard has no business over a loading stream.
         dismissHomeKeyboard()
         autoContinuePending = false
+        binding.torrentLoadingOverlay.cutoutRadius = 0f
         lastGiantPercent = -1
         lastSwarmSeeds = -1
         lastSwarmPeers = -1
@@ -3397,48 +3686,83 @@ class KeenActivity : AppCompatActivity() {
     }
 
     /**
+     * Decide whether the film is really running, and only then open the circle.
+     *
+     * `onRenderedFirstFrame` means one frame reached the screen. It does not mean playback
+     * — a torrent stream routinely decodes its first frame and then starves, and revealing
+     * on that signal left the circle finishing over a still image for five or ten seconds
+     * while the buffer caught up. Three things must all hold before the surface goes:
+     * a frame exists, the player says it is playing, and the playhead has measurably moved
+     * between two samples. The last one is the only one that cannot be faked by a stalled
+     * decoder, which is why it is worth the extra quarter second.
+     *
+     * Called from every event that could make it true; it is cheap and idempotent.
+     */
+    private fun considerRevealingPicture() {
+        if (torrentFirstFrameShown || revealMotionCheckPending) return
+        if (!torrentRenderedFirstFrame || !torrentOverlayVisible) return
+        val player = torrentPlayer ?: return
+        if (!player.isPlaying) return
+        val startedAt = player.currentPosition
+        revealMotionCheckPending = true
+        binding.root.postDelayed({
+            revealMotionCheckPending = false
+            val live = torrentPlayer
+            if (torrentFirstFrameShown || live == null || !torrentOverlayVisible) {
+                return@postDelayed
+            }
+            // Advanced by a real margin, not by rounding: anything less and the picture is
+            // still frozen whatever the player claims.
+            if (live.isPlaying && live.currentPosition - startedAt >= REVEAL_MOTION_MIN_MS) {
+                torrentFirstFrameShown = true
+                binding.root.removeCallbacks(firstFrameWatchdog)
+                revealPlayerWithCircle()
+            } else {
+                // Not moving yet. onIsPlayingChanged will call back when it recovers, but
+                // a stall that never flips that flag would otherwise wait forever, so
+                // re-arm from here too.
+                binding.root.postDelayed({ considerRevealingPicture() }, REVEAL_MOTION_RETRY_MS)
+            }
+        }, REVEAL_MOTION_SAMPLE_MS)
+    }
+
+    /**
      * Open the film through a circle growing from the centre of the screen.
      *
-     * The loading surface is not faded out — it is wiped, by the picture itself expanding
-     * over it, so the numbers and spinner leave with the same gesture that brings the
-     * video in. The player normally sits under the overlay, so it is lifted for the
-     * duration and put back afterwards.
+     * The loading surface is not faded out — a hole opens in it, growing from the centre,
+     * so the numbers and spinner leave with the same gesture that brings the video in.
      *
-     * Easing is an emphasised decelerate: it commits quickly, then spends most of the
-     * duration easing into rest, which is what stops a circular wipe reading as mechanical.
+     * The hole is cut in the surface rather than revealed on the player; see
+     * [com.keenzero.app.home.CircleCutoutFrameLayout] for why a circular reveal on the
+     * player cannot work behind a SurfaceView, and what it looked like when it was tried.
      */
     private fun revealPlayerWithCircle() {
-        val container = binding.torrentPlayerContainer
-        if (!torrentOverlayVisible || container.width == 0 || container.height == 0) {
+        val overlay = binding.torrentLoadingOverlay
+        if (!torrentOverlayVisible || overlay.width == 0 || overlay.height == 0) {
             hideTorrentOverlayWithCollapse()
             return
         }
-        val cx = container.width / 2
-        val cy = container.height / 2
-        val animator = android.view.ViewAnimationUtils.createCircularReveal(
-            container,
-            cx,
-            cy,
-            0f,
-            kotlin.math.hypot(cx.toFloat(), cy.toFloat()),
-        )
+        // The readout reaches 100 here and nowhere else: the buffer being full was never
+        // the finish line, the picture moving is. It is on screen at 100 only for the
+        // opening of the circle that eats it, which is exactly the intent.
+        binding.torrentLoadingPercentGiant.snapToComplete()
+        binding.torrentLoadingSpinner.setProgress(1f)
+        val radius = kotlin.math.hypot(overlay.width / 2f, overlay.height / 2f)
+        val animator = android.animation.ValueAnimator.ofFloat(0f, radius)
         animator.duration = TORRENT_REVEAL_MS
-        // Emphasised decelerate, weighted further towards the settle: the circle opens
-        // decisively, then the last third of the travel is a slow glide into rest rather
-        // than an arrival. The low final control point is what buys that long tail.
-        animator.interpolator = android.view.animation.PathInterpolator(0.05f, 0.8f, 0.06f, 1f)
-        // The player sits at elevation 20dp, the loading surface at 24dp. Lift the player
-        // clear of it for the animation, or the reveal runs underneath an opaque black
-        // layer and all the user sees is the old fade. 1px was not a lift.
-        container.translationZ = REVEAL_LIFT_DP * resources.displayMetrics.density
+        // Decelerate, over the whole duration.
+        //
+        // An earlier curve — PathInterpolator(0.05, 0.8, 0.06, 1) — put its first control
+        // point at 80% output for 5% of the time, so the circle hit four fifths of its
+        // radius in about 60 ms and then crawled through the rest. Filmed off the box,
+        // that read as a flash followed by a full second of edges retreating around an
+        // already-visible picture. The radius runs to the corners, so the tail of the
+        // curve IS the corners, and starving it is what showed.
+        animator.interpolator = android.view.animation.PathInterpolator(0f, 0f, 0.2f, 1f)
+        animator.addUpdateListener { overlay.cutoutRadius = it.animatedValue as Float }
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                // Order matters. Dropping the lift first put the player back under the
-                // loading surface (20dp vs 24dp) while that surface was still visible, so
-                // the spinner and counters reappeared for a frame after the reveal had
-                // already covered them. Take the surface away first, then drop the lift.
                 dismissTorrentOverlayNow()
-                container.translationZ = 0f
             }
         })
         animator.start()
@@ -3453,6 +3777,8 @@ class KeenActivity : AppCompatActivity() {
     private fun dismissTorrentOverlayNow() {
         stopTitlePulse()
         binding.torrentLoadingOverlay.animate().cancel()
+        // Whole again, so the next stream's surface is not born with a hole in it.
+        binding.torrentLoadingOverlay.cutoutRadius = 0f
         binding.torrentLoadingOverlay.visibility = View.GONE
         binding.torrentLoadingOverlay.alpha = 1f
         binding.torrentLoadingSpinner.stop()
@@ -3582,9 +3908,17 @@ class KeenActivity : AppCompatActivity() {
         if ((stage == TorrentStreamingService.STAGE_BUFFERING ||
                 stage == TorrentStreamingService.STAGE_SEEK_BUFFERING) && percent >= 0
         ) {
-            // Monotonic: hold the highest value seen this session so the readout
-            // only ever climbs.
-            val clamped = percent.coerceIn(0, 100).coerceAtLeast(lastGiantPercent)
+            // 100 means "the picture is up", not "the buffer is full".
+            //
+            // Filling the buffer is not the last thing that has to happen: the player
+            // still has to finish opening the container, and on an mkv with its cues at
+            // the end of the file that can take a few more seconds. Reporting 100 at the
+            // end of buffering parked the counter on a finished number while the screen
+            // stayed black — measured at ~5 s on one title. Hold the buffer's own
+            // progress just short of the end and let the first rendered frame, which is
+            // what the user actually calls "started", spend the last point.
+            val ceiling = if (torrentFirstFrameShown) 100 else 99
+            val clamped = percent.coerceIn(0, ceiling).coerceAtLeast(lastGiantPercent)
             lastGiantPercent = clamped
             binding.torrentLoadingSpinner.setProgress(clamped / 100f)
             binding.torrentLoadingPercentGiant.setPercent(clamped)
@@ -4870,6 +5204,31 @@ class KeenActivity : AppCompatActivity() {
             if (binding.torrentPlayerView.findFocus() == null) {
                 binding.torrentPlayerView.requestFocus()
             }
+            // The next-episode offer owns OK while it is up. It is the only thing on
+            // screen asking to be pressed at that moment, and claiming the key here is
+            // what makes it reachable at all — every key below is routed to the
+            // PlayerView regardless of focus, so a focusable button could never win it.
+            if (nextEpisodeArmed) {
+                if (event.action == KeyEvent.ACTION_UP &&
+                    (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                        event.keyCode == KeyEvent.KEYCODE_ENTER ||
+                        event.keyCode == KeyEvent.KEYCODE_BUTTON_A)
+                ) {
+                    playNextEpisode()
+                    return true
+                }
+                // Back is "no thanks": withdraw the offer and let the credits run. It must
+                // not also leave the player, so it is consumed here.
+                if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                    if (event.action == KeyEvent.ACTION_UP) {
+                        nextEpisodeDeclined = true
+                        dismissNextEpisode()
+                    }
+                    return true
+                }
+                // Any DPAD press is the user reaching for the film, not the offer — but
+                // swallow only the OK/Back above, so seeking still works underneath.
+            }
             if (event.keyCode == KeyEvent.KEYCODE_BACK) {
                 return super.dispatchKeyEvent(event)
             }
@@ -4950,12 +5309,14 @@ class KeenActivity : AppCompatActivity() {
             if (binding.torrentPlayerView.isControllerFullyVisible && onControlButton) return false
             torrentSeekActive = true
             if (torrentSeekTargetMs < 0) torrentSeekTargetMs = player.currentPosition
+            // Media3's controller has to go: while it is up it rewrites its own scrubber
+            // from the live playback position, which is the wrong story during a hold
+            // (the playhead has not moved yet) and produced the jitter this bar replaces.
+            binding.torrentPlayerView.hideController()
+            binding.torrentScrubTrack.visibility = View.VISIBLE
             binding.root.removeCallbacks(torrentScrubTick)
             binding.root.post(torrentScrubTick)
         }
-        // Seeking should show the real timeline (scrubber + elapsed/total), not just our
-        // target-time preview — and this keeps resetting Media3's auto-hide timer.
-        binding.torrentPlayerView.showController()
         val now = event.eventTime
         val stepMs = if (event.repeatCount == 0) {
             TORRENT_SEEK_TAP_MS
@@ -4997,6 +5358,7 @@ class KeenActivity : AppCompatActivity() {
         // Stop driving the scrubber; from here Media3's own progress loop owns it again.
         binding.root.removeCallbacks(torrentScrubTick)
         binding.torrentSeekPreview.visibility = View.GONE
+        binding.torrentScrubTrack.visibility = View.GONE
         val target = torrentSeekTargetMs
         torrentSeekTargetMs = -1L
         val player = torrentPlayer ?: return
@@ -5638,8 +6000,35 @@ class KeenActivity : AppCompatActivity() {
         /** Circular reveal from loading surface to picture. Long enough to read, short
          *  enough that it never sits between the user and the film. */
         private const val TORRENT_REVEAL_MS = 1250L
-        /** Enough to clear the loading surface's 24dp from the player's 20dp. */
-        private const val REVEAL_LIFT_DP = 8f
+
+        /**
+         * How long before the end of an episode the next one is offered.
+         *
+         * Long enough to cover a title sequence and to be noticed without pausing, short
+         * enough that it is not sitting over the last scene. The fill spans exactly this
+         * window, so it is also the countdown.
+         */
+        /**
+         * How long the loading surface may wait for a first frame before giving up on the
+         * reveal and coming down anyway. Longer than a legitimate slow mkv open, short
+         * enough that a starved stream does not read as a dead app.
+         */
+        private const val FIRST_FRAME_TIMEOUT_MS = 30_000L
+
+        /**
+         * Proof that the picture is moving before the loading surface is given up.
+         *
+         * Sample the playhead, wait, and require it to have advanced. 250 ms is long
+         * enough that a running stream clears it comfortably and short enough to be
+         * invisible next to the wait it follows; 100 ms of progress is well above any
+         * rounding in the reported position.
+         */
+        private const val REVEAL_MOTION_SAMPLE_MS = 250L
+        private const val REVEAL_MOTION_MIN_MS = 100L
+        private const val REVEAL_MOTION_RETRY_MS = 400L
+
+        private const val NEXT_EPISODE_LEAD_MS = 60_000L
+        private const val NEXT_EPISODE_POLL_MS = 1_000L
 
         private const val TORRENT_FRAME_MIN_POS_MS = 45_000L
 
