@@ -3622,3 +3622,11 @@
 # params. Escaped looksRandomAdDomain() (13 letters, 23% vowels, consonant run only 4) —
 # the ABUSED_TLDS rule now catches this family generically; this entry is belt-and-braces.
 .cbarackvuvdfv.online
+
+# Captured on-device 2026-08-07 on thepiratebay.org description pages. The banner
+# creatives themselves come from the site's own static host under /images/epv/ (blocked
+# by path, since that host also serves the stylesheet); these are the popunder loader and
+# the affiliate redirector the creatives click through to. Both rotate names periodically,
+# so the window.open quarantine remains the primary defence — these are belt-and-braces.
+.unhappyweakness.com
+.ikeanangelsaidthe.com

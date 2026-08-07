@@ -480,6 +480,52 @@ object HostileOverlayGuard {
         }catch(e){}
       }
     }catch(e){}
+    // Bare banner creatives: an <a> to another domain whose entire content is one image.
+    // thepiratebay.org's "Get Pirate Bay's #1 recommended VPN" panel is exactly this and
+    // nothing else — no ad-* class, no slot wrapper, dropped straight into the details
+    // <dl> beside the info hash, so both the slot rules above and the overlay rules walk
+    // past it. Keyed on the LINK's domain, not the image's: a thumbnail that points back
+    // into the site it sits on is content, an image-only link off-site is an advert.
+    // Anchors with real text (an IMDB link, a credit line) are never touched.
+    try{
+      var links=document.getElementsByTagName('a');
+      for(var L=0;L<links.length&&L<400;L++){
+        var lk=links[L];
+        if(lk.getAttribute('data-keen-ad-hidden')) continue;
+        var href=lk.getAttribute('href')||lk.href||'';
+        if(!href || !isForeignUrl(href)) continue;
+        if((lk.textContent||'').trim().length) continue;
+        var im=null;
+        try{ im=lk.querySelector('img'); }catch(e){}
+        if(!im) continue;
+        // Ignore small badges ("powered by" chips); a banner is never 40px wide.
+        var w=im.offsetWidth||im.naturalWidth||im.width||0;
+        var h=im.offsetHeight||im.naturalHeight||im.height||0;
+        if(w<80 && h<40) continue;
+        try{
+          lk.setAttribute('data-keen-ad-hidden','1');
+          lk.style.setProperty('display','none','important');
+          removed++;
+        }catch(e){}
+      }
+    }catch(e){}
+    // Creatives the network layer already killed leave a broken-image glyph exactly where
+    // the ad was. Hide those stubs so a blocked ad reads as absent, not as damage.
+    try{
+      var imgs=document.getElementsByTagName('img');
+      for(var g=0;g<imgs.length&&g<400;g++){
+        var ig=imgs[g];
+        if(ig.getAttribute('data-keen-ad-hidden')) continue;
+        if(!ig.complete || ig.naturalWidth>0) continue;
+        var isrc2=ig.getAttribute('src')||ig.src||'';
+        if(!isrc2 || !isForeignUrl(isrc2)) continue;
+        try{
+          ig.setAttribute('data-keen-ad-hidden','1');
+          ig.style.setProperty('display','none','important');
+          removed++;
+        }catch(e){}
+      }
+    }catch(e){}
     var sel='div,section,aside,dialog,article,span,iframe,figure';
     var nodes;
     try{ nodes=document.querySelectorAll(sel); }catch(e){ return 0; }

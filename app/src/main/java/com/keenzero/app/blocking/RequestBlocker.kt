@@ -262,6 +262,12 @@ class RequestBlocker private constructor(
             "/tag.min.js",
             "babymaker",
             "ky6sbqy.png",
+            // thepiratebay.org serves its banner creatives from its own static host
+            // (torrindex.net) under /images/epv/ — same host as the site's stylesheet and
+            // tinysort, so it can never be host-blocked. The path is the only separator.
+            "/images/epv/",
+            // Click-through of those banners, and of the same affiliate farm elsewhere.
+            "/redirect?tid=",
         )
 
         fun fromLines(
