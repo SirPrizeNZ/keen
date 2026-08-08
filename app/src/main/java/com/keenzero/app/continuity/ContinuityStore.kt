@@ -3,6 +3,7 @@ package com.keenzero.app.continuity
 import android.content.Context
 import android.util.Log
 import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -105,6 +106,47 @@ class ContinuityStore(context: Context) {
         val arr = JSONArray()
         items.take(MAX_RECENTS).forEach { arr.put(it.toJson()) }
         prefs.edit().putString(KEY_RECENTS, arr.toString()).commit()
+    }
+
+    /**
+     * Put the real watch state aside so a demo can take the row over, and hand it back.
+     *
+     * [saveRecents] replaces the row wholesale, which is what a clean capture needs and
+     * also what destroys the user's history: removing the seeded cards afterwards leaves
+     * an empty row, not the five titles that were there before. So the seed stashes first
+     * and the clear path restores. The stash is written once — re-seeding over a live demo
+     * must not overwrite the real state with demo state.
+     */
+    fun stashRealState() {
+        if (prefs.contains(KEY_STASH)) return
+        val stash = JSONObject()
+        // putOpt, not put: a slot that is currently empty must stay absent from the stash,
+        // so restoring it removes the key rather than writing the string "null" into it.
+        listOf(KEY_RECENTS, KEY_MEDIA_CHECKPOINT, KEY_CHECKPOINT).forEach { key ->
+            stash.putOpt(key, prefs.getString(key, null))
+        }
+        prefs.edit().putString(KEY_STASH, stash.toString()).commit()
+    }
+
+    /** True while real watch state is parked — i.e. demo content owns the home surface. */
+    fun hasStash(): Boolean = prefs.contains(KEY_STASH)
+
+    /** @return true when a stash existed and the real state is now back in place. */
+    fun restoreRealState(): Boolean {
+        val raw = prefs.getString(KEY_STASH, null) ?: return false
+        val editor = prefs.edit()
+        try {
+            val stash = JSONObject(raw)
+            listOf(KEY_RECENTS, KEY_MEDIA_CHECKPOINT, KEY_CHECKPOINT).forEach { key ->
+                val value = if (stash.isNull(key)) null else stash.optString(key, "").ifBlank { null }
+                if (value == null) editor.remove(key) else editor.putString(key, value)
+            }
+        } catch (_: Exception) {
+            // An unreadable stash is not worth failing the restore over; the demo content
+            // is still removed by the caller, which is the part the user asked for.
+        }
+        editor.remove(KEY_STASH).commit()
+        return true
     }
 
     /**
@@ -217,6 +259,9 @@ class ContinuityStore(context: Context) {
         private const val KEY_CHECKPOINT = "latest"
         private const val KEY_MEDIA_CHECKPOINT = "latest_media"
         private const val KEY_RECENTS = "recents"
+
+        /** Real watch state parked while demo content occupies the home surface. */
+        private const val KEY_STASH = "real_state_stash"
         private const val MAX_RECENTS = 5
         private const val KEY_AT_HOME = "at_home"
         private const val MIN_INTERVAL_MS = 1_200L

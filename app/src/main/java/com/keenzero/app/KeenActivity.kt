@@ -282,6 +282,14 @@ class KeenActivity : AppCompatActivity() {
     /** Keys and states the Downloaded row was last built from; a change means rebuild. */
     private var downloadedRowSignature: String? = null
 
+    /**
+     * What the row is made of, as opposed to what the figures on it say. Progress and speed
+     * are deliberately absent: they change every tick and are painted in place.
+     */
+    private fun rowSignature(
+        entries: List<com.keenzero.app.library.StarredLibraryStore.Entry>,
+    ): String = entries.joinToString("|") { "${it.key}:${it.state}" }
+
     /** Interrupted downloads are restarted once per activity start, not per repaint. */
     private var resumedDownloadsThisSession = false
 
@@ -717,6 +725,7 @@ class KeenActivity : AppCompatActivity() {
         // they were running every second for as long as any record claimed to be
         // downloading. They now run from onCreate, once.
         val entries = libraryStore.list()
+        downloadedRowSignature = rowSignature(entries)
         downloadedCardViews.clear()
         binding.downloadedRow.removeAllViews()
         binding.downloadedScroll.scrollTo(0, 0)
@@ -725,16 +734,10 @@ class KeenActivity : AppCompatActivity() {
         entries.forEach { entry ->
             val complete = entry.state == com.keenzero.app.library.StarredLibraryStore.State.COMPLETE
             val name = prettyMediaTitle(entry.title) ?: entry.title
-            val pct = (entry.progress * 100).toInt()
             val label = if (complete) name else "$name · Downloading"
             // Finished titles carry no chip at all: the card and its name are the whole
             // story, exactly as asked. Anything unfinished says so, in figures.
-            val chip = when (entry.state) {
-                com.keenzero.app.library.StarredLibraryStore.State.COMPLETE -> null
-                com.keenzero.app.library.StarredLibraryStore.State.FAILED -> getString(R.string.library_failed_chip)
-                com.keenzero.app.library.StarredLibraryStore.State.QUEUED -> getString(R.string.library_queued_chip)
-                else -> downloadChipText(entry)
-            }
+            val chip = chipTextFor(entry)
             val card = buildMediaCard(
                 titleText = label,
                 posterUrl = "frame:${entry.key}",
@@ -795,6 +798,25 @@ class KeenActivity : AppCompatActivity() {
      * Speed is dropped when the swarm is idle, so a stalled download reads as a plain
      * percentage rather than claiming "0 KB/s". A finished title gets no chip at all.
      */
+    /**
+     * The chip a card should be showing, or null for a finished title, which carries none.
+     *
+     * Shared by the build and the once-a-second in-place update. Those two had their own
+     * copies of the decision, and only the build path knew about states: the tick then
+     * relabelled every card with a percentage, so a queued download's "Queued" chip turned
+     * into "0%" one second after it appeared, and a failed one lost its warning entirely.
+     */
+    private fun chipTextFor(
+        entry: com.keenzero.app.library.StarredLibraryStore.Entry,
+    ): String? = when (entry.state) {
+        com.keenzero.app.library.StarredLibraryStore.State.COMPLETE -> null
+        com.keenzero.app.library.StarredLibraryStore.State.FAILED ->
+            getString(R.string.library_failed_chip)
+        com.keenzero.app.library.StarredLibraryStore.State.QUEUED ->
+            getString(R.string.library_queued_chip)
+        else -> downloadChipText(entry)
+    }
+
     private fun downloadChipText(
         entry: com.keenzero.app.library.StarredLibraryStore.Entry,
     ): String {
@@ -827,18 +849,22 @@ class KeenActivity : AppCompatActivity() {
         // standing condition rather than an event: with one finished download in the
         // library every tick tore the row down and rebuilt it, re-running the entrance
         // animations and re-decoding every poster once a second.
-        val signature = entries.joinToString("|") { "${it.key}:${it.state}" }
-        val needsRebuild = signature != downloadedRowSignature ||
-            entries.any { it.key !in downloadedCardViews } ||
-            downloadedCardViews.keys.any { key -> entries.none { it.key == key } }
-        if (needsRebuild) {
-            downloadedRowSignature = signature
+        // The signature is set by hydrateDownloadedRow itself, so it always describes what
+        // is actually on screen and is the only test needed here.
+        //
+        // This used to also rebuild whenever an entry was missing from
+        // downloadedCardViews. That map only holds cards that *have* a chip, and a finished
+        // title deliberately has none — so a library containing one completed download
+        // failed the test on every tick and tore the row down once a second for ever. Each
+        // rebuild re-decoded the posters and restarted their fade-in, which is the pulsing
+        // between black and full colour, and it threw away D-pad focus with it.
+        if (rowSignature(entries) != downloadedRowSignature) {
             hydrateDownloadedRow()
             return
         }
         entries.forEach { entry ->
             val (chip, fill) = downloadedCardViews[entry.key] ?: return@forEach
-            chip.text = downloadChipText(entry)
+            chipTextFor(entry)?.let { chip.text = it }
             (fill.layoutParams as? android.widget.LinearLayout.LayoutParams)?.also {
                 it.weight = entry.progress
                 fill.layoutParams = it
@@ -1542,7 +1568,17 @@ class KeenActivity : AppCompatActivity() {
             UI_PREVIEW_SITES.forEach { url ->
                 if (favouritesStore.isFavourite(url)) favouritesStore.toggle(url)
             }
-            continuityStore.removeByContentId(setOf(UI_PREVIEW_CONTENT_ID))
+            // Restore FIRST, then purge. The stash is a snapshot of whatever was in the row
+            // when the demo began, which on a re-seed is itself demo content — restoring it
+            // after the purge put those cards straight back. Purging afterwards cleans the
+            // restored list too, so the row ends up with the user's titles and nothing else.
+            continuityStore.restoreRealState()
+            continuityStore.removeByContentId(UI_PREVIEW_CONTENT_IDS)
+            // remove() drops the record and deletes the title's directory, so the seeded
+            // downloads leave nothing behind — not a stub dir, not a cached poster.
+            // Lift the filter before removing, so remove() is working against the real set.
+            libraryStore.setDemoFilter(null)
+            uiPreviewLibrary().forEach { libraryStore.remove(it.key) }
             // Anything else a demo left in Continue watching, matched on title. The
             // recents list is capped, so a demo that plays real media costs the user
             // real history slots; this is how those are handed back.
@@ -1569,19 +1605,28 @@ class KeenActivity : AppCompatActivity() {
             recordEvent(NavigationEvent(System.currentTimeMillis(), "debug_ui_preview"))
             UI_PREVIEW_SITES
                 .forEach { url -> if (!favouritesStore.isFavourite(url)) favouritesStore.toggle(url) }
-            continuityStore.save(
-                ContinuityCheckpoint(
-                    url = "https://example.com/watch/preview",
-                    contentId = UI_PREVIEW_CONTENT_ID,
-                    title = "Nocturne S02E06 1080p WEB-DL x264",
-                    playerType = "web",
-                    playbackPositionSec = 1584.0,
-                    durationSec = 2880.0,
-                    posterUrl = "https://picsum.photos/seed/keenpreview/608/342",
-                    playbackMode = true,
-                ),
-                force = true,
-            )
+            // The seed takes the Continue row over completely, so the real one is parked
+            // first and handed back by the clear path.
+            continuityStore.stashRealState()
+            val previewRecents = uiPreviewRecents()
+            // save() upserts the checkpoint into recents itself, so it runs first and
+            // saveRecents() then states the whole row — otherwise the newest title would
+            // appear twice, once from each writer.
+            continuityStore.save(previewRecents.first(), force = true)
+            continuityStore.saveRecents(previewRecents)
+            // Hides the user's own downloads for the duration of the demo without moving a
+            // byte of them; the clear path lifts it.
+            libraryStore.setDemoFilter(UI_PREVIEW_LIBRARY_PREFIX)
+            uiPreviewLibrary().forEach { entry ->
+                // reconcile() drops a COMPLETE record whose directory has gone, on the
+                // grounds that finished media lives on disk. The seed has no media, so the
+                // directory has to exist or the finished card vanishes on the next launch.
+                if (entry.state == com.keenzero.app.library.StarredLibraryStore.State.COMPLETE) {
+                    libraryStore.dirFor(entry.key).mkdirs()
+                }
+                libraryStore.put(entry)
+            }
+            installPreviewArtwork()
             // This is a home-surface preview, not a real session — do not let the
             // cold-start auto-resume check (below, in onCreate) navigate into it.
             continuityStore.markAtHome(true)
@@ -3222,6 +3267,38 @@ class KeenActivity : AppCompatActivity() {
         return frameKey.takeIf { java.io.File(filesDir, "continue/" + frameFileName(it)).exists() }
     }
 
+    /**
+     * Fill the preview rows' artwork from images side-loaded onto the box.
+     *
+     * The stills are freely licensed open-movie frames, but they are demo dressing and do
+     * not belong in everyone's APK, so they are not assets. They are read from this app's
+     * own external files directory — `adb push`-able without root and readable without a
+     * storage permission — and copied into the same on-disk frame cache a real capture
+     * writes to, so the seeded cards paint offline and on the very first frame.
+     *
+     * Absent files are simply skipped: a card with no art shows the branded placeholder.
+     */
+    private fun installPreviewArtwork() {
+        val source = java.io.File(getExternalFilesDir(null), "preview")
+        if (!source.isDirectory) return
+        val library = uiPreviewLibrary()
+        val mapping = mapOf(
+            "sintel.jpg" to "keen-preview-sintel",
+            "cosmos.jpg" to "keen-preview-cosmos",
+            "tears.jpg" to "keen-preview-tears",
+            "bunny.jpg" to library[0].key,
+            "elephants.jpg" to library[1].key,
+            "caminandes.jpg" to library[2].key,
+        )
+        val dest = java.io.File(filesDir, "continue").apply { mkdirs() }
+        mapping.forEach { (name, frameKey) ->
+            runCatching {
+                val src = java.io.File(source, name)
+                if (src.exists()) src.copyTo(java.io.File(dest, frameFileName(frameKey)), overwrite = true)
+            }
+        }
+    }
+
     /** Cache file for a "frame:<key>" poster. Hashed so any key yields a safe filename. */
     private fun frameFileName(posterKey: String): String =
         "frame_" + posterKey.removePrefix("frame:").hashCode().toUInt().toString(16) + ".img"
@@ -3234,12 +3311,22 @@ class KeenActivity : AppCompatActivity() {
      * legacy shared slot and any orphans, rather than trying to hook every eviction path.
      */
     private fun pruneOrphanPosters() {
+        // While a demo owns the row, the user's real titles are parked in the stash and so
+        // look like orphans — pruning then deleted the artwork of history that was about to
+        // be restored, and those cards came back as blank placeholders. Nothing accumulates
+        // in the meantime that the next prune will not catch.
+        if (continuityStore.hasStash()) return
         Thread({
             try {
+                // The Downloaded row's artwork lives in the same directory under
+                // "frame:<library key>", and it is not referenced by any checkpoint. Left
+                // out of the live set, every starred title's poster was deleted the moment
+                // the Continue row changed, and had to be decoded out of the media again.
                 val live = (
                     continuityStore.loadRecents() +
                         listOfNotNull(continuityStore.load(), continuityStore.loadMedia())
-                    ).mapNotNull { it.posterUrl }.toSet()
+                    ).mapNotNull { it.posterUrl }.toSet() +
+                    libraryStore.list().map { "frame:${it.key}" }
                 val keepFrames = live.filter { it.startsWith("frame:") }
                     .map { frameFileName(it) }.toHashSet()
                 java.io.File(filesDir, "continue").listFiles()?.forEach { f ->
@@ -5857,10 +5944,103 @@ class KeenActivity : AppCompatActivity() {
         const val EXTRA_LAB_CLEAR_TITLE = "com.keenzero.app.extra.LAB_CLEAR_TITLE"
         private const val UI_PREVIEW_CONTENT_ID = "keen-ui-preview"
         private val UI_PREVIEW_SITES = listOf(
-            "https://github.com/",
+            "https://archive.org/",
             "https://en.wikipedia.org/",
-            "https://news.ycombinator.com/",
+            "https://www.blender.org/",
+            "https://webtorrent.io/",
             "https://www.nasa.gov/",
+        )
+
+        /**
+         * Mock Continue-watching row. Freely licensed open movies throughout, so a capture
+         * of this screen can be published: nothing here names or shows anyone's copyright.
+         *
+         * Artwork comes from "frame:" keys rather than http URLs — the frame cache is on
+         * disk, so the row paints identically offline and on the first frame, instead of
+         * a capture catching three empty placeholders waiting on a network fetch.
+         */
+        private fun uiPreviewRecents(now: Long = System.currentTimeMillis()) = listOf(
+            ContinuityCheckpoint(
+                url = "https://archive.org/details/Sintel",
+                contentId = "keen-ui-preview-sintel",
+                title = "Sintel 2010 1080p BluRay x264",
+                playerType = "web",
+                playbackPositionSec = 604.0,
+                durationSec = 888.0,
+                posterUrl = "frame:keen-preview-sintel",
+                playbackMode = true,
+                timestampMs = now - 4 * 60_000L,
+            ),
+            ContinuityCheckpoint(
+                url = "https://archive.org/details/CosmosLaundromat",
+                contentId = "keen-ui-preview-cosmos",
+                title = "Cosmos Laundromat 2015 2160p WEB-DL x265",
+                playerType = "web",
+                playbackPositionSec = 226.0,
+                durationSec = 728.0,
+                posterUrl = "frame:keen-preview-cosmos",
+                playbackMode = true,
+                timestampMs = now - 3 * 60 * 60_000L,
+            ),
+            ContinuityCheckpoint(
+                url = "https://archive.org/details/TearsOfSteel",
+                contentId = "keen-ui-preview-tears",
+                title = "Tears of Steel 2012 1080p WEBRip x264",
+                playerType = "web",
+                playbackPositionSec = 88.0,
+                durationSec = 734.0,
+                posterUrl = "frame:keen-preview-tears",
+                playbackMode = true,
+                timestampMs = now - 2 * 24 * 60 * 60_000L,
+            ),
+        )
+
+        /** Every contentId the preview seed writes, so the clear path can undo all of it. */
+        private val UI_PREVIEW_CONTENT_IDS =
+            (uiPreviewRecents().mapNotNull { it.contentId } + UI_PREVIEW_CONTENT_ID).toSet()
+
+        /**
+         * Mock Downloaded row: one finished title, one in flight, one queued.
+         *
+         * `origin` is deliberately blank. resumeInterruptedDownloads() skips records with
+         * no origin, so seeding an unfinished download cannot start a real service or put
+         * a byte on the wire — the row is a picture of a download, not a download.
+         */
+        /** Shared by every seeded key, so the demo row can be selected by prefix alone. */
+        private const val UI_PREVIEW_LIBRARY_PREFIX = "keenpreview"
+
+        private fun uiPreviewLibrary(now: Long = System.currentTimeMillis()) = listOf(
+            com.keenzero.app.library.StarredLibraryStore.Entry(
+                key = "keenpreview8b3d2f6a1c9e4d7b5a0f2e8c1d4b7a9f",
+                origin = "",
+                title = "Big Buck Bunny 2008 1080p BluRay x264",
+                state = com.keenzero.app.library.StarredLibraryStore.State.COMPLETE,
+                downloadedBytes = 691_000_000L,
+                totalBytes = 691_000_000L,
+                mediaPath = null,
+                starredAtMs = now - 6 * 60_000L,
+            ),
+            com.keenzero.app.library.StarredLibraryStore.Entry(
+                key = "keenpreview3e6c2d5b8a1f4d7e9c0b3a6f2e5d8c1b",
+                origin = "",
+                title = "Elephants Dream 2006 1080p WEB-DL x264",
+                state = com.keenzero.app.library.StarredLibraryStore.State.DOWNLOADING,
+                downloadedBytes = 313_000_000L,
+                totalBytes = 824_000_000L,
+                mediaPath = null,
+                starredAtMs = now - 9 * 60_000L,
+                speedBps = 1_400_000L,
+            ),
+            com.keenzero.app.library.StarredLibraryStore.Entry(
+                key = "keenpreview5a0f2e8c1d4b7a9f3e6c2d5b8b3d2f6a",
+                origin = "",
+                title = "Caminandes Llamigos 2016 1080p WEBRip x264",
+                state = com.keenzero.app.library.StarredLibraryStore.State.QUEUED,
+                downloadedBytes = 0L,
+                totalBytes = 486_000_000L,
+                mediaPath = null,
+                starredAtMs = now - 11 * 60_000L,
+            ),
         )
         /** Debug/lab: also pop the torrent-loading spinner overlay for a few seconds. */
         const val EXTRA_LAB_UI_PREVIEW_SPINNER = "com.keenzero.app.extra.LAB_UI_PREVIEW_SPINNER"

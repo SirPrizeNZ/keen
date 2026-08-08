@@ -3,7 +3,7 @@
     <string name="app_name">Keen</string>
     <string name="home_title">Keen</string>
     <string name="open_url">Open URL</string>
-    <string name="url_hint">Enter address or magnet link</string>
+    <string name="url_hint">Enter url</string>
     <string name="load">Load</string>
     <string name="diagnostics">Diagnostics</string>
     <string name="export_diagnostics">Export evidence</string>

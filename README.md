@@ -29,10 +29,7 @@ and lets you stream or save magnet links and torrents with one press.
 [Contributing](#contributing) ·
 [Licence](#licence)
 
-<picture>
-  <source type="image/webp" srcset="assets/keen-hero.webp">
-  <img src="assets/keen-hero-poster.png" alt="Keen running on Android TV: home screen, a magnet link buffering, then fullscreen playback" width="900">
-</picture>
+<img src="assets/keen-hero.gif" alt="Keen running on Android TV: the home screen, a magnet link buffering, then fullscreen playback with the player controls" width="900">
 
 </div>
 

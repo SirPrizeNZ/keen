@@ -75,7 +75,32 @@ class StarredLibraryStore(context: Context) {
     /** This title's own directory; deleting it removes the title and nothing else. */
     fun dirFor(key: String): File = File(libraryRoot(), key)
 
-    fun list(): List<Entry> {
+    /**
+     * Show only titles whose key starts with [prefix], or everything when null.
+     *
+     * A capture of the Downloaded row cannot include the user's own titles, and their
+     * downloads are gigabytes on disk — deleting or moving them to get them off screen is
+     * out of the question. This hides them instead: nothing is read, written or removed
+     * under [libraryRoot] except this one flag file, and clearing it brings the row back
+     * exactly as it was. Kept in a file rather than SharedPreferences for the same reason
+     * the index is: the download service reads this class from another process.
+     */
+    fun setDemoFilter(prefix: String?) {
+        val f = File(libraryRoot(), DEMO_FILTER_FILE)
+        if (prefix.isNullOrBlank()) f.delete() else runCatching { f.writeText(prefix) }
+    }
+
+    private fun demoFilter(): String? = runCatching {
+        File(libraryRoot(), DEMO_FILTER_FILE).takeIf { it.exists() }?.readText()?.trim()
+            ?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    fun list(): List<Entry> = listAll().let { all ->
+        val prefix = demoFilter()
+        if (prefix == null) all else all.filter { it.key.startsWith(prefix) }
+    }
+
+    private fun listAll(): List<Entry> {
         val out = mutableListOf<Entry>()
         val arr = entries()
         for (i in 0 until arr.length()) {
@@ -105,14 +130,14 @@ class StarredLibraryStore(context: Context) {
         )
     }
 
-    fun isStarred(key: String?): Boolean = key != null && list().any { it.key == key }
+    fun isStarred(key: String?): Boolean = key != null && listAll().any { it.key == key }
 
-    fun find(key: String?): Entry? = key?.let { k -> list().firstOrNull { it.key == k } }
+    fun find(key: String?): Entry? = key?.let { k -> listAll().firstOrNull { it.key == k } }
 
     /** Add or replace an entry. */
     fun put(entry: Entry) {
         val next = JSONArray()
-        list().filterNot { it.key == entry.key }.forEach { next.put(it.toJson()) }
+        listAll().filterNot { it.key == entry.key }.forEach { next.put(it.toJson()) }
         next.put(entry.toJson())
         writeEntries(next)
         writeMeta(entry)
@@ -219,7 +244,7 @@ class StarredLibraryStore(context: Context) {
         val freed = dirSize(dir)
         dir.deleteRecursively()
         val next = JSONArray()
-        list().filterNot { it.key == key }.forEach { next.put(it.toJson()) }
+        listAll().filterNot { it.key == key }.forEach { next.put(it.toJson()) }
         writeEntries(next)
         return freed
     }
@@ -235,7 +260,7 @@ class StarredLibraryStore(context: Context) {
      * The only thing dropped is a record whose directory is genuinely gone.
      */
     fun reconcile() {
-        val known = list()
+        val known = listAll()
         // Only a COMPLETE record is expected to have files on disk. A queued or
         // in-flight download may legitimately have nothing yet (the service creates the
         // directory in another process), and dropping it here deleted the card seconds
@@ -282,6 +307,9 @@ class StarredLibraryStore(context: Context) {
 
     companion object {
         private const val INDEX_FILE = "index.json"
+
+        /** Presence narrows [list] to demo titles; deleting it restores the real row. */
+        private const val DEMO_FILTER_FILE = "demo-filter"
 
         /** Per-title copy of the record, kept beside its media. */
         private const val META_FILE = "keen-title.json"

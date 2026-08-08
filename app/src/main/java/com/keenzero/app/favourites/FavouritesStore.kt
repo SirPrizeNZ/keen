@@ -60,7 +60,12 @@ class FavouritesStore(context: Context) {
             val target = pageUrl?.takeIf { it.isNotBlank() } ?: "$scheme://$host/"
             next.put(Fav(host, target, labelFor(host)).toJson())
         }
-        prefs.edit().putString(PREF_ENTRIES, next.toString()).apply()
+        // commit(), not apply(): apply() only queues the write, and the star is routinely
+        // the last thing that happens before the process goes away — a lab intent that
+        // edits favourites and exits, or the system reclaiming the app. Those writes were
+        // silently lost. The payload is well under a kilobyte, so committing it here costs
+        // nothing worth measuring.
+        prefs.edit().putString(PREF_ENTRIES, next.toString()).commit()
         return !exists
     }
 
@@ -72,7 +77,7 @@ class FavouritesStore(context: Context) {
         if (kept.size == current.size) return 0
         val next = JSONArray()
         kept.forEach { next.put(it.toJson()) }
-        prefs.edit().putString(PREF_ENTRIES, next.toString()).apply()
+        prefs.edit().putString(PREF_ENTRIES, next.toString()).commit()
         return current.size - kept.size
     }
 
