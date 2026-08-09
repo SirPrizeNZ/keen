@@ -88,9 +88,22 @@ class ContinuityStore(context: Context) {
             // key and keep the first (most-recent) occurrence.
             val out = ArrayList<ContinuityCheckpoint>(arr.length())
             val seen = HashSet<String>()
+            val seenTitles = HashSet<String>()
             for (i in 0 until arr.length()) {
                 val cp = arr.optJSONObject(i)?.let { ContinuityCheckpoint.fromJson(it.toString()) } ?: continue
-                if (seen.add(recentsKeyOf(cp))) out.add(cp)
+                // Two identities, both required. The key is the precise one, but it is
+                // only as good as what the entry was written with: cards persisted before
+                // torrent checkpoints carried an info-hash are keyed on the URL they were
+                // opened from, and one film fetched twice from a site that varies its
+                // download URL lands under several of them. The title is what those
+                // records actually share, so it catches the ones the key cannot — and
+                // collapses history already on disk without rewriting it.
+                if (!seen.add(recentsKeyOf(cp))) continue
+                // Blank titles must not collapse into each other, so an entry without one
+                // is always kept.
+                val titleKey = titleKeyOf(cp)
+                if (titleKey != null && !seenTitles.add(titleKey)) continue
+                out.add(cp)
             }
             // Only the write paths used to cap, so a list persisted by an older build kept
             // rendering in full. Cap on read too, and order by recency explicitly rather
@@ -213,6 +226,19 @@ class ContinuityStore(context: Context) {
      * different magnet links (differing tracker/&dn= params) collapses to one card;
      * otherwise falls back to the raw url.
      */
+    /**
+     * The title as a comparison key, or null when there is nothing to compare.
+     *
+     * Only torrent cards are collapsed this way. A web page's title is decoration — two
+     * unrelated pages can share one, and merging those would lose a card the user wanted.
+     * A torrent card's title is the media file's own name, which is as good an identity as
+     * the info-hash for this purpose.
+     */
+    private fun titleKeyOf(cp: ContinuityCheckpoint): String? {
+        if (cp.playerType != "torrent") return null
+        return cp.title?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+    }
+
     private fun recentsKeyOf(cp: ContinuityCheckpoint): String {
         cp.contentId?.let { return it }
         val url = cp.url ?: return ""

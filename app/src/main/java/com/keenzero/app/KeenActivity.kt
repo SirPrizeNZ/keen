@@ -657,7 +657,15 @@ class KeenActivity : AppCompatActivity() {
         // media checkpoint when no recents list has accrued yet). The length is the
         // store's to decide — a second `.take(5)` here silently overrode it, so raising
         // the cap in ContinuityStore alone would have changed nothing on screen.
-        val recents = continuityStore.loadRecents().ifEmpty { listOfNotNull(cp) }
+        // Saved titles belong to the Downloaded row and nowhere else.
+        //
+        // Continue watching is the row for things being streamed. The moment a title is
+        // starred it has its own card downstairs, with its own progress and its own way
+        // to play, so leaving it upstairs as well shows the same film twice on one screen
+        // and asks the user to know which copy they are about to open.
+        val recents = continuityStore.loadRecents()
+            .ifEmpty { listOfNotNull(cp) }
+            .filterNot { isSavedTitle(it) }
         val hasContinue = recents.isNotEmpty()
 
         binding.continueRow.removeAllViews()
@@ -1064,22 +1072,39 @@ class KeenActivity : AppCompatActivity() {
         card.addView(poster); card.addView(fallback); card.addView(track)
         var badgeView: android.widget.TextView? = null
         if (badge != null) {
-            // Readable at a glance from the sofa: a solid chip on the artwork, not a
-            // suffix buried at the end of the title.
+            // A pill on the artwork, not a slab across it. Solid black so the figures
+            // read from the sofa whatever frame sits underneath.
             badgeView = android.widget.TextView(this).apply {
-                    layoutParams = android.widget.FrameLayout.LayoutParams(
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ).apply {
-                        gravity = android.view.Gravity.TOP or android.view.Gravity.START
-                        topMargin = dp(8); marginStart = dp(8)
-                    }
-                    text = badge
-                    setTextColor(android.graphics.Color.WHITE)
-                    textSize = 13f
-                    typeface = googleSansBold
-                setPadding(dp(8), dp(3), dp(8), dp(3))
-                setBackgroundColor(0xCC000000.toInt())
+                layoutParams = android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                    topMargin = dp(8); marginStart = dp(8)
+                }
+                text = badge
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 13f
+                typeface = googleSansBold
+                // Without this the font's own ascent/descent padding is added on top of
+                // the values below, and it is not symmetric — which is what sat the text
+                // high in the pill and left the gap underneath.
+                includeFontPadding = false
+                gravity = android.view.Gravity.CENTER
+                // Horizontal padding clears the corner radius, which is half the height;
+                // at less than this the curve cut into the first digit.
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    setColor(BADGE_PILL_COLOUR)
+                }
+                // Radius follows the measured height, so it stays a pill if the text ever
+                // wraps or the system font scale changes.
+                addOnLayoutChangeListener { view, _, top, _, bottom, _, _, _, _ ->
+                    val radius = (bottom - top) / 2f
+                    val shape = view.background as? android.graphics.drawable.GradientDrawable
+                    if (shape != null && shape.cornerRadius != radius) shape.cornerRadius = radius
+                }
             }
             card.addView(badgeView)
         }
@@ -2443,6 +2468,9 @@ class KeenActivity : AppCompatActivity() {
     private fun startTorrentSession(originLabel: String, configure: (Intent) -> Intent) {
         setNavLoading(true)
         stopTorrentStreaming()
+        // After stopTorrentStreaming, which announces the opposite — a stream is starting,
+        // so any background download should stand aside for it.
+        com.keenzero.app.library.LibraryDownloadService.setStreaming(this, true)
         continuityStore.markAtHome(false)
         val id = UUID.randomUUID().toString()
         torrentRequestId = id
@@ -2519,6 +2547,9 @@ class KeenActivity : AppCompatActivity() {
 
     private fun stopTorrentStreaming() {
         stopService(Intent(this, TorrentStreamingService::class.java))
+        // Nothing is competing for the radio any more: a download in the background may
+        // go back to full speed.
+        com.keenzero.app.library.LibraryDownloadService.setStreaming(this, false)
         torrentRequestId = null
         // The service deletes the cache on stop; a stale path would let a later grab
         // decode another title's file (or a half-deleted one) into this card.
@@ -3334,6 +3365,28 @@ class KeenActivity : AppCompatActivity() {
         )
         latestCheckpoint = checkpoint
         continuityStore.save(checkpoint, force = true)
+    }
+
+    /**
+     * Is this Continue-watching entry a title the user has saved?
+     *
+     * Two ways to match, because the two stores were keyed independently and a film opened
+     * as a magnet and as a .torrent carries a different key in each. The key comparison
+     * catches the ordinary case; the title comparison catches the cross-route one, where
+     * the media file's own name is the only thing the two records share.
+     */
+    private fun isSavedTitle(cp: ContinuityCheckpoint): Boolean {
+        val saved = libraryStore.list()
+        if (saved.isEmpty()) return false
+        val key = cp.url?.let { com.keenzero.app.torrent.TorrentResumeStore.keyOf(it) }
+        // Same normalisation the Downloaded row collapses on, so the two rows cannot
+        // disagree about whether a title is saved — one keeps its file extension and the
+        // other does not, depending on which wrote the record.
+        val title = cp.title?.let { libraryStore.contentIdOf(it) }?.takeIf { it.isNotBlank() }
+        return saved.any { entry ->
+            (key != null && entry.key == key) ||
+                (title != null && libraryStore.contentIdOf(entry.title) == title)
+        }
     }
 
     /** "frame:<info-hash>" when this title's own captured frame exists on disk. */
@@ -6276,6 +6329,15 @@ class KeenActivity : AppCompatActivity() {
 
         /** Consecutive playback errors to recover from before giving up on a stream. */
         private const val TORRENT_PLAYER_MAX_RETRIES = 5
+
+        /**
+         * The progress pill on a downloading card: solid black.
+         *
+         * Opaque on purpose. A translucent fill has to survive whatever frame is behind
+         * it, and a bright poster left white figures fighting the artwork; solid black
+         * reads the same on every card.
+         */
+        private const val BADGE_PILL_COLOUR = 0xFF000000.toInt()
         /** Circular reveal from loading surface to picture. Long enough to read, short
          *  enough that it never sits between the user and the film. */
         private const val TORRENT_REVEAL_MS = 1250L

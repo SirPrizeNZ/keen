@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
@@ -58,6 +59,55 @@ class LibraryDownloadService : Service() {
     @Volatile private var activeKey: String? = null
     @Volatile private var targetDir: File? = null
 
+    /**
+     * True while a torrent is streaming in the other process.
+     *
+     * A download and a stream share one radio, one disk and one Wi-Fi chip, so the
+     * download's budget depends entirely on whether anything is competing with it.
+     */
+    @Volatile private var streaming = false
+
+    /**
+     * Told by the activity when playback starts and stops.
+     *
+     * A broadcast rather than a service intent on purpose: a start intent would launch
+     * this service just to inform it about a stream, and a download service with nothing
+     * to download should not exist. Only a running download hears this, which is exactly
+     * when it matters.
+     */
+    private val streamModeReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val active = intent?.getBooleanExtra(EXTRA_STREAMING, false) ?: return
+            if (active == streaming) return
+            streaming = active
+            applyBandwidthMode()
+        }
+    }
+
+    /**
+     * Give the download everything that is going spare, and get out of the way when it is not.
+     *
+     * The session was pinned at the streaming-safe budget for its whole life, which is the
+     * right number while a film is playing and far too cautious the rest of the time: a
+     * download running on its own was held to a third of the peers the box can manage, for
+     * the sake of a stream that was not happening. The limits now follow what is actually
+     * running.
+     *
+     * The ceiling is not raised beyond what this hardware survived. The box's Wi-Fi
+     * firmware reset under a 60-peer load, so the idle budget stops below that rather than
+     * at whatever libtorrent would accept.
+     */
+    private fun applyBandwidthMode() {
+        val session = session ?: return
+        val connections = if (streaming) CONNECTION_LIMIT_STREAMING else CONNECTION_LIMIT_IDLE
+        try {
+            session.applySettings(SettingsPack().connectionsLimit(connections))
+            Log.i(TAG, "bandwidth mode: streaming=$streaming connections=$connections")
+        } catch (error: Throwable) {
+            Log.w(TAG, "Could not apply bandwidth mode", error)
+        }
+    }
+
     private val store by lazy { StarredLibraryStore(this) }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -66,6 +116,12 @@ class LibraryDownloadService : Service() {
         super.onCreate()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Downloads", NotificationManager.IMPORTANCE_LOW),
+        )
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            streamModeReceiver,
+            android.content.IntentFilter(ACTION_STREAM_MODE),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
         )
     }
 
@@ -146,7 +202,11 @@ class LibraryDownloadService : Service() {
         manager.applySettings(
             SettingsPack()
                 .activeDownloads(1)
-                .connectionsLimit(CONNECTION_LIMIT)
+                // Whatever is true right now: the activity may have told us a stream was
+                // already playing before this download existed.
+                .connectionsLimit(
+                    if (streaming) CONNECTION_LIMIT_STREAMING else CONNECTION_LIMIT_IDLE,
+                )
                 .maxQueuedDiskBytes(DISK_QUEUE_BYTES),
                 // No listenInterfaces override: pinning one measurably made things worse
                 // (peers 1 -> 0), most likely because the IPv6 bind fails on this box and
@@ -300,6 +360,7 @@ class LibraryDownloadService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(streamModeReceiver) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         teardown()
         ticker.shutdownNow()
@@ -317,7 +378,16 @@ class LibraryDownloadService : Service() {
          * Wi-Fi firmware reset under a 60-peer load — so a download alongside a stream
          * still totals comfortably less than what was seen to fall over.
          */
-        private const val CONNECTION_LIMIT = 30
+        private const val CONNECTION_LIMIT_STREAMING = 30
+
+        /**
+         * What the download may use when nothing is streaming.
+         *
+         * Nothing else is holding connections then, so the whole budget is the download's.
+         * Still short of the 60 that reset this box's Wi-Fi firmware — the point is to
+         * stop throttling for a stream that is not running, not to find the ceiling.
+         */
+        private const val CONNECTION_LIMIT_IDLE = 50
 
         /**
          * Distinct from the streaming session's default port. Two libtorrent sessions in
@@ -330,6 +400,26 @@ class LibraryDownloadService : Service() {
         private const val FETCH_TIMEOUT_MS = 20_000
 
         const val ACTION_START = "com.keenzero.app.library.START"
+        /** Broadcast: a stream started or stopped, so the download budget should change. */
+        const val ACTION_STREAM_MODE = "com.keenzero.app.library.STREAM_MODE"
+        const val EXTRA_STREAMING = "streaming"
+
+        /**
+         * Tell any running download whether something is streaming.
+         *
+         * Safe to call at any time: it is a broadcast, so it cannot start the service, and
+         * with no download running there is nothing to slow down and the call does nothing.
+         */
+        fun setStreaming(context: Context, streaming: Boolean) {
+            runCatching {
+                context.sendBroadcast(
+                    Intent(ACTION_STREAM_MODE)
+                        .setPackage(context.packageName)
+                        .putExtra(EXTRA_STREAMING, streaming),
+                )
+            }
+        }
+
         const val ACTION_CANCEL = "com.keenzero.app.library.CANCEL"
         const val ACTION_LIBRARY_CHANGED = "com.keenzero.app.library.CHANGED"
         const val EXTRA_ORIGIN = "origin"

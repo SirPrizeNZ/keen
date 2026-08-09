@@ -112,7 +112,57 @@ class StarredLibraryStore(context: Context) {
         // what makes a title survive an index that was lost or written by an older build.
         val known = out.map { it.key }.toSet()
         out.addAll(recoverFromDisk().filterNot { it.key in known })
-        return out.sortedByDescending { it.starredAtMs }
+        return collapseDuplicates(out.sortedByDescending { it.starredAtMs })
+    }
+
+    /**
+     * One card per film, even when it was starred twice under two different keys.
+     *
+     * [key] comes from `TorrentResumeStore.keyOf(origin)`, which yields the info-hash for
+     * a magnet and the URL for a `.torrent`. Star the same film from both and the index
+     * holds two records of it — two identical cards in the Downloaded row, each with its
+     * own progress bar, for one download the user made once.
+     *
+     * Collapsed on [title], which for these entries is the media file's own name and is
+     * therefore identical across both routes. The survivor is the one furthest along:
+     * COMPLETE beats an in-flight download, and among equals the one with more bytes. That
+     * way merging can only ever reveal the more useful of the two — never hide a finished
+     * download behind a stalled duplicate.
+     */
+    private fun collapseDuplicates(entries: List<Entry>): List<Entry> {
+        if (entries.size < 2) return entries
+        val best = LinkedHashMap<String, Entry>(entries.size)
+        for (entry in entries) {
+            val id = contentIdOf(entry.title).ifBlank { entry.key }
+            val current = best[id]
+            if (current == null || entry.outranks(current)) best[id] = entry
+        }
+        return best.values.toList()
+    }
+
+    /**
+     * A title reduced to something two records of the same film will agree on.
+     *
+     * They do not agree as stored. A starred entry keeps the media file's name as it was
+     * given, extension and all, while an entry recovered from disk derives it with
+     * `nameWithoutExtension` — so one record reads `…DKS.mkv` and the other `…DKS`, and a
+     * plain string comparison calls the same film two films. That is the pair of identical
+     * cards in the Downloaded row. Drop a trailing media extension and compare the rest.
+     */
+    fun contentIdOf(title: String): String {
+        val clean = title.trim().lowercase()
+        val dot = clean.lastIndexOf('.')
+        if (dot <= 0) return clean
+        val extension = clean.substring(dot + 1)
+        return if (extension in MEDIA_EXTENSIONS) clean.substring(0, dot) else clean
+    }
+
+    /** Further along than [other], and so the copy worth keeping when the two are one film. */
+    private fun Entry.outranks(other: Entry): Boolean {
+        val mine = if (state == State.COMPLETE) 1 else 0
+        val theirs = if (other.state == State.COMPLETE) 1 else 0
+        if (mine != theirs) return mine > theirs
+        return downloadedBytes > other.downloadedBytes
     }
 
     private fun entryOf(o: JSONObject): Entry? {
@@ -307,6 +357,9 @@ class StarredLibraryStore(context: Context) {
 
     companion object {
         private const val INDEX_FILE = "index.json"
+
+        /** Extensions stripped before two titles are compared. Video containers only. */
+        private val MEDIA_EXTENSIONS = setOf("mkv", "mp4", "avi", "mov", "m4v", "ts", "webm", "wmv", "flv", "mpg", "mpeg")
 
         /** Presence narrows [list] to demo titles; deleting it restores the real row. */
         private const val DEMO_FILTER_FILE = "demo-filter"
