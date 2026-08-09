@@ -328,6 +328,48 @@ class CompatibilitySession(
                 handler.post { onMagnet(url) }
                 return true
             }
+            // A link straight to a .torrent, handled here rather than as a navigation.
+            //
+            // Trackers commonly host the file on a separate domain (ext.to serves its
+            // through tfiles.org), so the origin check below would claim it first and end
+            // compatibility mode to "navigate" to a file that is not a page. That did
+            // eventually reach the torrent pipeline via the normal WebView, but only by
+            // tearing down a session whose Cloudflare clearance had already been won.
+            // Taking it here keeps the page, and the clearance, exactly where they are.
+            //
+            // KILL SWITCH: `adb shell touch /data/local/tmp/keen_no_compat_torrent`
+            // (then reopen the page) restores the old behaviour — the branch below wins
+            // and the navigation leaves compatibility mode as it did before.
+            if (request.isForMainFrame &&
+                TorrentDownloadIntercept.isTorrentDownload(url, null, null) &&
+                !java.io.File("/data/local/tmp/keen_no_compat_torrent").exists()
+            ) {
+                CompatibilityDiag.event("torrent_link_intercepted", instanceId, "to" to hostOnly(url))
+                val cookies = TorrentDownloadIntercept.cookiesFor(url)
+                val wv = view
+                if (wv == null) {
+                    handler.post { onTorrentFile?.invoke(url, cookies, null, null) }
+                } else {
+                    // Cross-origin, so the in-page read usually cannot see the response and
+                    // returns null; the service then fetches it natively, which is fine for
+                    // a plain file mirror. Same-origin links still get the page's own
+                    // network stack, which is the only thing that works behind a challenge.
+                    // Posted rather than run inline: evaluateJavascript re-entering the
+                    // WebView from inside its own navigation callback is asking for
+                    // trouble, and the answer is not needed until the next loop anyway.
+                    handler.post {
+                        TorrentDownloadIntercept.fetchInPage(wv, url) { base64 ->
+                            CompatibilityDiag.event(
+                                "torrent_link_fetch",
+                                instanceId,
+                                "result" to if (base64 == null) "native_fallback" else "in_page",
+                            )
+                            handler.post { onTorrentFile?.invoke(url, cookies, wv.settings.userAgentString, base64) }
+                        }
+                    }
+                }
+                return true
+            }
             // Leaving the approved origin ends compatibility mode. The normal WebView
             // takes the navigation, with all protections back in force.
             if (request.isForMainFrame && CompatibilityOrigins.leavesOrigin(boundHost?.let { "https://$it" }, url)) {

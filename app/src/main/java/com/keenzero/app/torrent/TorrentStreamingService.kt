@@ -15,6 +15,7 @@ import org.libtorrent4j.Priority
 import org.libtorrent4j.SessionManager
 import org.libtorrent4j.SettingsPack
 import org.libtorrent4j.TorrentFlags
+import org.libtorrent4j.TorrentHandle
 import org.libtorrent4j.TorrentInfo
 import org.libtorrent4j.alerts.AddTorrentAlert
 import org.libtorrent4j.alerts.Alert
@@ -249,6 +250,23 @@ class TorrentStreamingService : Service() {
         }
         val root = createSessionRoot(id)
         val session = createSession(id, root)
+        // A magnet carries its trackers in the URI; a .torrent has only what the site baked
+        // into the file, and a session that sits at conn=0 with complete=-1 cannot say
+        // which of several very different reasons it is stuck on. `private` is the one
+        // that would explain it completely: a private torrent disables DHT and PEX, so
+        // the tracker in the file is the only way to the swarm, and a tracker expecting a
+        // passkey we do not have will simply never answer — however many seeds the site
+        // advertises. v2-only is the other shape worth ruling out.
+        Log.i(
+            TAG,
+            "torrent file decoded: name=${runCatching { info.name() }.getOrNull()} " +
+                "files=${runCatching { info.numFiles() }.getOrNull()} " +
+                "size=${runCatching { info.totalSize() }.getOrNull()} " +
+                "private=${runCatching { info.isPrivate }.getOrNull()} " +
+                "v1=${runCatching { info.hasV1() }.getOrNull()} v2=${runCatching { info.hasV2() }.getOrNull()} " +
+                "pieces=${runCatching { info.numPieces() }.getOrNull()} " +
+                "hash=${runCatching { info.infoHash() }.getOrNull()}",
+        )
         // add_torrent is async — the ADD_TORRENT alert path configures media once
         // the session owns a handle (metadata is already inside the TorrentInfo).
         session.download(info, root)
@@ -344,6 +362,54 @@ class TorrentStreamingService : Service() {
                 .maxQueuedDiskBytes(DISK_QUEUE_BYTES),
         )
         return session
+    }
+
+    /**
+     * Give a torrent a way to reach its swarm, whatever it arrived with.
+     *
+     * A magnet from an index site carries a long `&tr=` list, which is why magnets connect
+     * within a second. The `.torrent` the same site serves for the same film can carry an
+     * empty announce list — the trackers live in the magnet, not in the file — and libtorrent
+     * then has nowhere to ask. That is the "0 peers, 0 connections, complete=-1 for ever" on
+     * a torrent the site advertises as having thousands of seeds: nothing is wrong with the
+     * file, we simply never announced it anywhere.
+     *
+     * Adding the well-known public trackers is exactly what the magnet would have supplied,
+     * and a DHT announce covers the rest. Both are no-ops for a torrent that already has
+     * trackers, so a working stream is unaffected — the tracker list is a set, and a
+     * duplicate URL is ignored.
+     */
+    private fun ensureAnnounceable(handle: TorrentHandle) {
+        val existing = try {
+            handle.trackers()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        Log.i(
+            TAG,
+            "announce sources: trackers=${existing.size} " +
+                "dhtRunning=${runCatching { manager?.isDhtRunning }.getOrNull()} " +
+                "dhtNodes=${runCatching { manager?.dhtNodes() }.getOrNull()}",
+        )
+        if (existing.isEmpty()) {
+            for (url in FALLBACK_TRACKERS) {
+                try {
+                    handle.addTracker(org.libtorrent4j.AnnounceEntry(url))
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Could not add fallback tracker $url", error)
+                }
+            }
+            Log.i(TAG, "torrent had no trackers; added ${FALLBACK_TRACKERS.size} public ones")
+        }
+        // The announce that matters is the one after the trackers exist.
+        try {
+            handle.forceReannounce()
+        } catch (_: Throwable) {
+        }
+        try {
+            handle.forceDHTAnnounce()
+        } catch (_: Throwable) {
+        }
     }
 
     /** A .torrent starts with a bencoded dict (`d`); anything opening in markup is a page. */
@@ -504,6 +570,7 @@ class TorrentStreamingService : Service() {
         handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
         // No-op unless the picker paused it above.
         handle.resume()
+        ensureAnnounceable(handle)
 
         val mediaFile = File(chosen.absPath)
         val title = mediaFile.name.ifBlank { "Torrent video" }
@@ -1051,6 +1118,20 @@ class TorrentStreamingService : Service() {
          * screen for two minutes.
          */
         private const val NO_PEERS_NOTICE_MS = 30_000L
+
+        /**
+         * The trackers an index site's magnet would have carried, for the case where its
+         * .torrent carries none. Public, open, and the same handful every client ships
+         * with — they are not a substitute for the torrent's own trackers, only a floor
+         * so that "the file has no announce list" stops meaning "this film cannot play".
+         */
+        private val FALLBACK_TRACKERS = listOf(
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://tracker.torrent.eu.org:451/announce",
+            "udp://exodus.desync.com:6969/announce",
+            "udp://open.demonii.com:1337/announce",
+        )
         private const val FETCH_TIMEOUT_MS = 20_000
         private const val MAX_REDIRECTS = 5
         private const val MAX_TORRENT_FILE_BYTES = 20 * 1024 * 1024

@@ -2442,6 +2442,15 @@ class KeenActivity : AppCompatActivity() {
         torrentTitle = null
         // Stale from the previous stream; only a picker choice sets it.
         torrentFileIndex = null
+        // The retry budget belongs to a stream, not to the app.
+        //
+        // It was only ever cleared by onIsPlayingChanged(true), so a film that never
+        // reached its first frame left the count where it stopped — and once it had
+        // reached TORRENT_PLAYER_MAX_RETRIES, every later stream in the same app session
+        // died on its first hiccup with no retry at all. That is how a torrent with no
+        // peers yet produced an instant "Playback failed": one source error, no budget
+        // left, straight out. A new session starts with a full budget.
+        torrentPlayerRetries = 0
         // Entry from home / URL bar has no page under the overlay — bring up the
         // browse shell on a blank page. Entry from a site keeps the page visible
         // beneath the loading overlay so cancel returns exactly where the user was.

@@ -50,6 +50,13 @@ class TorrentHttpBridge(
 
     private fun serveStream(session: IHTTPSession): Response {
         if (mediaSize <= 0) {
+            // Reaches the player as a bare "Response code: 500" with nothing to say which
+            // of the bridge's two failure modes it was. Name it in the log: this one means
+            // the stream was opened against a file whose size we never learned.
+            android.util.Log.w(
+                "KeenTorrent",
+                "bridge 500: mediaSize=$mediaSize file=${mediaFile.name} — stream opened before media was known",
+            )
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Invalid media")
         }
         val rangeHeader = session.headers["range"]
@@ -90,8 +97,8 @@ class TorrentHttpBridge(
     }
 
     private class PieceAwareInputStream(
-        file: File,
-        start: Long,
+        private val file: File,
+        private val start: Long,
         private var remaining: Long,
         private val torrentOffset: Long,
         private val pieceLength: Int,
@@ -100,12 +107,22 @@ class TorrentHttpBridge(
         private val closed: AtomicBoolean,
         private val onStall: ((piece: Int) -> Unit)?,
     ) : InputStream() {
-        private val source = RandomAccessFile(file, "r")
+        /**
+         * Opened on the first read, not in the constructor.
+         *
+         * libtorrent creates the file only when it has a piece to write into it, so on a
+         * torrent that has not received a single byte — a dead swarm, or simply the first
+         * seconds of a slow one — the path does not exist yet. Opening eagerly threw
+         * FileNotFoundException out of `serve`, which the HTTP layer turned into a bare
+         * 500 and ExoPlayer treated as a fatal source error: "Playback failed" on a
+         * stream that had merely not started yet.
+         *
+         * [awaitCurrentPiece] already blocks until the piece under the cursor is on disk,
+         * and a piece on disk means a file on disk. Opening after it removes the race
+         * entirely rather than papering over it with a retry.
+         */
+        private var source: RandomAccessFile? = null
         private var position = start
-
-        init {
-            source.seek(start)
-        }
 
         override fun read(): Int {
             val one = ByteArray(1)
@@ -115,6 +132,10 @@ class TorrentHttpBridge(
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
             if (remaining <= 0) return -1
             awaitCurrentPiece()
+            val source = source ?: RandomAccessFile(file, "r").also {
+                it.seek(start)
+                source = it
+            }
             val globalOffset = torrentOffset + position
             val inPiece = (globalOffset % pieceLength).toInt()
             val untilPieceEnd = pieceLength - inPiece
@@ -178,7 +199,12 @@ class TorrentHttpBridge(
             }
             // Only a closed bridge is a real end of stream. A vanished handle just means
             // the download finished and we left the swarm — keep serving from disk.
-            if (closed.get()) throw java.io.IOException("Torrent stream closed")
+            if (closed.get()) {
+                // The other way a 500 reaches the player, and the one that looks identical
+                // from the outside: the session was torn down under a live read.
+                android.util.Log.w("KeenTorrent", "bridge 500: stream closed while waiting for piece $firstPiece")
+                throw java.io.IOException("Torrent stream closed")
+            }
         }
 
         /** True while libtorrent still owns this torrent; false once it has been removed. */
@@ -196,7 +222,9 @@ class TorrentHttpBridge(
         }
 
         override fun close() {
-            source.close()
+            // Null when the stream was closed before a single piece landed, which is
+            // exactly the case this lazy open exists for.
+            source?.close()
             super.close()
         }
     }
