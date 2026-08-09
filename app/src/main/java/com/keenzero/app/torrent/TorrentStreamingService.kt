@@ -43,6 +43,15 @@ class TorrentStreamingService : Service() {
     private var progressTask: ScheduledFuture<*>? = null
     @Volatile private var requestId: String? = null
     @Volatile private var mediaHandle: org.libtorrent4j.TorrentHandle? = null
+
+    /**
+     * Info-hash of the torrent now streaming, sent out with every media broadcast.
+     *
+     * The one identity both entry routes share: a magnet spells it out in the URI, a
+     * .torrent only implies it, and without it the same film opened two ways looks like
+     * two different titles to everything downstream.
+     */
+    @Volatile private var streamInfoHash: String? = null
     @Volatile private var startedAtMs: Long = 0L
     /** Where playback will begin, 0..1 of the media file; 0 for a fresh start. */
     @Volatile private var resumeFraction: Float = 0f
@@ -570,6 +579,11 @@ class TorrentStreamingService : Service() {
         handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
         // No-op unless the picker paused it above.
         handle.resume()
+        streamInfoHash = try {
+            handle.infoHash()?.toString()?.lowercase()
+        } catch (_: Throwable) {
+            null
+        }
         ensureAnnounceable(handle)
 
         val mediaFile = File(chosen.absPath)
@@ -651,6 +665,10 @@ class TorrentStreamingService : Service() {
     ): Intent = Intent(action)
         .setPackage(packageName)
         .putExtra(EXTRA_REQUEST_ID, id)
+        // The torrent's own identity, which the magnet URI reveals but a .torrent URL
+        // hides. Sent so the UI can file both routes to the same film under one card and
+        // one resume position instead of two.
+        .putExtra(EXTRA_INFO_HASH, streamInfoHash)
         .putExtra(EXTRA_PLAYER_URL, server.playerUrl)
         .putExtra(EXTRA_STREAM_URL, server.streamUrl)
         .putExtra(EXTRA_TITLE, title)
@@ -929,6 +947,7 @@ class TorrentStreamingService : Service() {
     private fun cleanup() = synchronized(LIFECYCLE_LOCK) {
         stopProgressLoop()
         mediaHandle = null
+        streamInfoHash = null
         bridge?.stop()
         bridge = null
         manager?.stop()

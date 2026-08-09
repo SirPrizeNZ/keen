@@ -107,6 +107,15 @@ class KeenActivity : AppCompatActivity() {
     /** Identity of the active magnet/.torrent for resume-point persistence. */
     private var torrentOriginKey: String? = null
 
+    /**
+     * The streaming torrent's info-hash, once the service has decoded it.
+     *
+     * Preferred over [torrentOriginKey] for anything the user perceives as "this film",
+     * because it is the same value however the torrent was opened. Null until the first
+     * media broadcast arrives, so every use falls back to the origin key.
+     */
+    private var torrentInfoHash: String? = null
+
     /** File index being streamed from a multi-file torrent; null when it has only one. */
     private var torrentFileIndex: Int? = null
 
@@ -2438,6 +2447,9 @@ class KeenActivity : AppCompatActivity() {
         val id = UUID.randomUUID().toString()
         torrentRequestId = id
         torrentOriginKey = com.keenzero.app.torrent.TorrentResumeStore.keyOf(originLabel)
+        // Belongs to the previous stream; the service sends this one's with its first
+        // media broadcast. Stale would mean filing this film under the last one's card.
+        torrentInfoHash = null
         torrentOriginLabel = originLabel
         torrentTitle = null
         // Stale from the previous stream; only a picker choice sets it.
@@ -3267,6 +3279,18 @@ class KeenActivity : AppCompatActivity() {
         intent.getIntExtra(TorrentStreamingService.EXTRA_FILE_INDEX, -1)
             .takeIf { it >= 0 }
             ?.let { torrentFileIndex = it }
+        // Real identity, now that the torrent has been decoded and its info-hash is known.
+        //
+        // Until this point the key came from the text the user activated, and those differ
+        // per route for one and the same film: a magnet yields its info-hash, a .torrent
+        // URL yields the URL. That produced two Continue cards for one film, each with its
+        // own resume position, once opening a .torrent started working. Adopting the
+        // info-hash collapses them. For a magnet the value is identical to what keyOf
+        // already returned, so nothing about the magnet path changes.
+        intent.getStringExtra(TorrentStreamingService.EXTRA_INFO_HASH)
+            ?.takeIf { it.isNotBlank() }
+            ?.lowercase()
+            ?.let { torrentInfoHash = it }
     }
 
     /** Persist the playhead for this magnet so re-activating it resumes there. */
@@ -3297,6 +3321,10 @@ class KeenActivity : AppCompatActivity() {
         val checkpoint = ContinuityCheckpoint(
             url = origin,
             title = torrentTitle,
+            // The row de-dupes on contentId first, so this is what stops one film opened
+            // as both a magnet and a .torrent from occupying two cards. Prefixed to keep
+            // it obviously a torrent identity rather than a bare hex string.
+            contentId = torrentInfoHash?.let { "bt:$it" },
             playerType = "torrent",
             playbackPositionSec = player.currentPosition.coerceAtLeast(0L) / 1000.0,
             durationSec = if (durationMs > 0) durationMs / 1000.0 else 0.0,
