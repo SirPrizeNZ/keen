@@ -460,6 +460,10 @@ class KeenActivity : AppCompatActivity() {
         Thread({
             val stale = java.io.File(cacheDir, "torrent")
             if (stale.exists()) stale.deleteRecursively()
+            // Spooled .torrent files are consumed and deleted within seconds of being
+            // written; one still here at startup was stranded by a kill mid-handover.
+            val spools = java.io.File(cacheDir, "torrent-files")
+            if (spools.exists()) spools.deleteRecursively()
         }, "keen-torrent-sweep").apply { isDaemon = true }.start()
 
         recordEvent(NavigationEvent(System.currentTimeMillis(), "activity_onCreate"))
@@ -640,9 +644,11 @@ class KeenActivity : AppCompatActivity() {
                 .start()
         }
 
-        // Up to 5 recently played titles as a scrollable row (falls back to the
-        // single latest media checkpoint when no recents list has accrued yet).
-        val recents = continuityStore.loadRecents().ifEmpty { listOfNotNull(cp) }.take(5)
+        // Recently played titles as a scrollable row (falls back to the single latest
+        // media checkpoint when no recents list has accrued yet). The length is the
+        // store's to decide — a second `.take(5)` here silently overrode it, so raising
+        // the cap in ContinuityStore alone would have changed nothing on screen.
+        val recents = continuityStore.loadRecents().ifEmpty { listOfNotNull(cp) }
         val hasContinue = recents.isNotEmpty()
 
         binding.continueRow.removeAllViews()
@@ -2383,12 +2389,46 @@ class KeenActivity : AppCompatActivity() {
         }
     }
 
-    private fun startTorrentFromFile(url: String, cookies: String?, userAgent: String?) {
+    private fun startTorrentFromFile(
+        url: String,
+        cookies: String?,
+        userAgent: String?,
+        base64: String?,
+    ) {
+        // The page already read the file for us (the only way past a Cloudflare
+        // challenge — see WebViewHost.fetchTorrentInPage). Spool it to a scratch file
+        // rather than an intent extra: a season pack's .torrent runs to hundreds of KB
+        // and Binder's transaction buffer is 1 MB for the whole process. The service
+        // deletes it the moment it has been decoded.
+        val spooled = base64?.let { spoolTorrentFile(it) }
+        // Same URL either way: it is the resume identity and the Continue card's label,
+        // and it must not change depending on how the bytes happened to arrive.
         startTorrentSession(originLabel = url) { intent ->
             intent.putExtra(TorrentStreamingService.EXTRA_TORRENT_URL, url)
+                .putExtra(TorrentStreamingService.EXTRA_TORRENT_FILE, spooled?.absolutePath)
                 .putExtra(TorrentStreamingService.EXTRA_COOKIES, cookies)
                 .putExtra(TorrentStreamingService.EXTRA_USER_AGENT, userAgent)
         }
+    }
+
+    /**
+     * Park page-fetched .torrent bytes in a scratch file for the :torrent process.
+     *
+     * Written outside the torrent cache root, which the service wipes wholesale on
+     * teardown — this file has to survive the `cleanup()` that starting a new session
+     * runs before it reads anything.
+     */
+    private fun spoolTorrentFile(base64: String): java.io.File? = try {
+        val dir = java.io.File(cacheDir, "torrent-files").apply { mkdirs() }
+        // Nothing else clears this directory, and a fetch that never reaches the service
+        // (start refused, process killed) would otherwise leave its file for good.
+        dir.listFiles()?.forEach { it.delete() }
+        java.io.File(dir, "${UUID.randomUUID()}.torrent").apply {
+            writeBytes(android.util.Base64.decode(base64, android.util.Base64.DEFAULT))
+        }
+    } catch (error: Throwable) {
+        android.util.Log.w("KeenTorrent", "Could not spool .torrent; falling back to a native fetch", error)
+        null
     }
 
     private fun startTorrentSession(originLabel: String, configure: (Intent) -> Intent) {
@@ -3967,6 +4007,14 @@ class KeenActivity : AppCompatActivity() {
             TorrentStreamingService.STAGE_CONNECTING,
             TorrentStreamingService.STAGE_METADATA,
             -> getString(R.string.torrent_stage_metadata)
+            // Thirty seconds in with nothing to show. Which of the two things went wrong
+            // is worth distinguishing: "nobody is there" and "they are there but have
+            // nothing" send the user to different next moves.
+            TorrentStreamingService.STAGE_NO_PEERS -> if (peers > 0) {
+                getString(R.string.torrent_stage_no_data)
+            } else {
+                getString(R.string.torrent_stage_no_seeders)
+            }
             TorrentStreamingService.STAGE_BUFFERING,
             TorrentStreamingService.STAGE_SEEK_BUFFERING,
             // Buffering with nobody connected yet is still peer discovery, and saying
@@ -4014,6 +4062,10 @@ class KeenActivity : AppCompatActivity() {
             binding.torrentLoadingSpinner.startIndeterminate()
         }
         binding.torrentLoadingTitle.text = stageText
+        val noPeers = stage == TorrentStreamingService.STAGE_NO_PEERS
+        // Says the session is still up and Back is a way out. Only while the drought
+        // lasts — a late peer clears the stage and takes this with it.
+        binding.torrentLoadingHint.visibility = if (noPeers) View.VISIBLE else View.GONE
 
         // Peer stat lock-up: only shown once we have a real seeder/leecher breakdown,
         // then it fades in and stays. Speed is always in MB/s to match the fixed label.
@@ -4030,9 +4082,16 @@ class KeenActivity : AppCompatActivity() {
             // still being found. Printing "0" told the user the torrent was dead while
             // it was in fact about to start, which is the one thing this readout must
             // never do — people turn it off and never learn it was working.
-            if (showSeeds <= 0 && showPeers <= 0) {
+            if (showSeeds <= 0 && showPeers <= 0 && !noPeers) {
                 binding.statSeeders.text = STAT_PENDING
                 binding.statLeechers.text = STAT_PENDING
+            } else if (noPeers) {
+                // The dash means "not known yet", and once the headline says nobody is
+                // sharing, it is known. Print the zeros: a readout that hides the number
+                // exactly when it turns bad is the reason this was mistaken for a bug in
+                // our own counting for two days.
+                binding.statSeeders.text = showSeeds.coerceAtLeast(0).toString()
+                binding.statLeechers.text = showPeers.coerceAtLeast(0).toString()
             } else {
                 binding.statSeeders.text = showSeeds.coerceAtLeast(0).toString()
                 binding.statLeechers.text = showPeers.coerceAtLeast(0).toString()
@@ -4221,6 +4280,9 @@ class KeenActivity : AppCompatActivity() {
                 true
             },
             onMagnet = { magnet -> runOnUiThread { startTorrentStreaming(magnet) } },
+            onTorrentFile = { url, cookies, userAgent, base64 ->
+                runOnUiThread { startTorrentFromFile(url, cookies, userAgent, base64) }
+            },
             homeButtonRect = { keenLogoRectPx() },
             onHomeActivate = { runOnUiThread { returnHomeFromChrome() } },
             starButtonRect = { favouriteStarRectPx() },
@@ -4930,8 +4992,8 @@ class KeenActivity : AppCompatActivity() {
             onMagnetIntent = { magnet ->
                 runOnUiThread { startTorrentStreaming(magnet) }
             },
-            onTorrentFileIntent = { url, cookies, userAgent ->
-                runOnUiThread { startTorrentFromFile(url, cookies, userAgent) }
+            onTorrentFileIntent = { url, cookies, userAgent, base64 ->
+                runOnUiThread { startTorrentFromFile(url, cookies, userAgent, base64) }
             },
             onCheckpoint = { rawCp ->
                 // Attach the playing page's artwork for the Continue card.

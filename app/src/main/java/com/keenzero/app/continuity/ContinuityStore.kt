@@ -262,7 +262,11 @@ class ContinuityStore(context: Context) {
 
         /** Real watch state parked while demo content occupies the home surface. */
         private const val KEY_STASH = "real_state_stash"
-        private const val MAX_RECENTS = 5
+        /**
+         * How many Continue cards the row keeps. Every read and write path caps against
+         * this one constant, so it is the only place the length is decided.
+         */
+        private const val MAX_RECENTS = 20
         private const val KEY_AT_HOME = "at_home"
         private const val MIN_INTERVAL_MS = 1_200L
         private const val MIN_POS_DELTA_SEC = 0.75

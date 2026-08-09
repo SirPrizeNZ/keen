@@ -272,6 +272,20 @@
                 android:textSize="18sp"
                 android:textStyle="bold" />
 
+            <!-- Only shown when the wait has gone quiet: says what to do about it, so the
+                 headline above can stay a plain statement of fact. Gone otherwise, so it
+                 never pushes the stat lock-up off centre during a normal start. -->
+            <TextView
+                android:id="@+id/torrentLoadingHint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:gravity="center_horizontal"
+                android:text="@string/torrent_stage_no_peers_hint"
+                android:textColor="@color/keen_muted"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
             <!-- Peer stat lock-up: three EQUAL-WIDTH columns (weighted), each a bold
                  number centred over a small tracked label. Equal widths keep the middle
                  column dead-centre under the title regardless of differing label widths.

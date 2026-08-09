@@ -24,10 +24,24 @@ instance (`CompatibilitySession`), never the normal WebView with protections tur
 - D-pad driven natively (`CompatibilityRemoteController`): a cursor `View` above the
   page, real `ACTION_DOWN`/`ACTION_UP` at the cursor, `WebView.scrollBy`. Chrome-bar
   controls are resolved before any touch event is built, so the page never sees them
-- magnet links route to native torrent streaming, as in normal mode
+- magnet links **and `.torrent` downloads** route to native torrent streaming, as in
+  normal mode
 
 Entering destroys the normal host; leaving destroys the session and rebuilds it. No
 shared flags, no shared `WebSettings`.
+
+### The one scripting exception
+
+A `.torrent` download runs a single `evaluateJavascript` to read the file through the
+page, then hands the bytes to the streaming service. Nothing is installed — no
+document-start script, no bridge — and it fires on an explicit user action long after the
+challenge has cleared, so the environment a challenge inspects at load time is unchanged.
+
+It is not optional. Clearance is bound to the TLS fingerprint, header order and the client
+hints in `critical-ch`, none of which `HttpURLConnection` in the `:torrent` process
+reproduces — so refetching the URL natively with the copied cookie returns the challenge
+page, not the torrent. **Anything that needs bytes from a challenged origin must come
+through the page.** See `TorrentDownloadIntercept`.
 
 > Compatibility mode has **no ad blocking, popup broker or overlay guard**. That is the
 > cost of presenting an unmodified environment, and why it is never the default.
@@ -64,8 +78,12 @@ Files in `/data/local/tmp`, read into a cached snapshot at WebView creation. All
 ```bash
 adb shell touch /data/local/tmp/<flag>     # on
 adb shell rm -f  /data/local/tmp/<flag>    # off
-adb logcat -s KZ_EXPERIMENT KZ_CHALLENGE KZ_COMPAT
+adb logcat -s KZ_EXPERIMENT KZ_CHALLENGE KZ_COMPAT KeenTorrent
 ```
+
+Known promotions seen on the Mi Box: `ext.to` reaches `repeat_x2` on `http_403` within
+two loads and lands in compatibility mode, where it clears (`cfClearance=true`). Torrent
+indexes are the common case for this, which is why `.torrent` handling has to work here.
 
 `KZ_EXPERIMENT` prints the active profile on every WebView creation.
 

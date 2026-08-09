@@ -31,6 +31,11 @@
     <string name="torrent_stage_fetching">Downloading torrent info…</string>
     <string name="torrent_stage_metadata">Connecting to peers…</string>
     <string name="torrent_stage_buffering">Buffering</string>
+    <!-- Nobody answered at all. -->
+    <string name="torrent_stage_no_seeders">No seeders found — nobody is sharing this</string>
+    <!-- Peers are connected, but none of them hold the file. -->
+    <string name="torrent_stage_no_data">Found others waiting, but no one has the file yet</string>
+    <string name="torrent_stage_no_peers_hint">Still trying. Try another source, or press Back to leave.</string>
     <string name="torrent_percent_giant">%1$02d</string>
     <string name="torrent_peers">%1$d peers</string>
     <string name="torrent_seeds_leechers">%1$d seeders  ·  %2$d leechers</string>

@@ -21,6 +21,7 @@ import android.widget.FrameLayout
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.keenzero.app.input.CursorOverlay
+import com.keenzero.app.torrent.TorrentDownloadIntercept
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -34,12 +35,19 @@ import java.util.concurrent.atomic.AtomicInteger
  * What "stock" means here, concretely:
  *  - the WebView's own user-agent string, including the `wv` token — no Chrome cosplay;
  *  - no user-agent metadata / Sec-CH-UA override;
- *  - no `addDocumentStartJavaScript`, no `evaluateJavascript`, no JS bridge;
+ *  - no `addDocumentStartJavaScript`, no JS bridge;
  *  - no request interception, so no blocking and no header rewriting;
  *  - hardware accelerated, real Mali rendering.
  *
  * The remote is served by [CompatibilityRemoteController], which works entirely through
  * native input events, so usability costs the page nothing observable.
+ *
+ * **The one scripting exception**, and why it does not weaken the above: a `.torrent`
+ * download runs a single `evaluateJavascript` to read the file through the page (see
+ * [com.keenzero.app.torrent.TorrentDownloadIntercept.fetchInPage]). It fires on an
+ * explicit user action, long after the challenge has been cleared, and installs nothing —
+ * no document-start script, no bridge, no persistent object. The environment a challenge
+ * inspects at load time is untouched, which is the property this class exists to protect.
  */
 class CompatibilitySession(
     private val context: Context,
@@ -49,6 +57,13 @@ class CompatibilitySession(
     private val onBack: () -> Boolean,
     /** magnet: link → native torrent streaming, same as the normal WebView path. */
     private val onMagnet: (String) -> Unit = {},
+    /**
+     * Site offered a .torrent download → fetch + stream natively, as in normal mode.
+     * [base64] is the file's bytes when the page could read them for us, else null.
+     */
+    private val onTorrentFile: (
+        (url: String, cookies: String?, userAgent: String?, base64: String?) -> Unit
+    )? = null,
     /** Bounds of the K logo in the cursor's coordinate space, or null when hidden. */
     private val homeButtonRect: () -> android.graphics.RectF? = { null },
     /** Pointer OK on the K logo: return to the home surface. */
@@ -133,6 +148,33 @@ class CompatibilitySession(
 
         wv.webViewClient = client
         wv.webChromeClient = chrome
+
+        // A .torrent download is the other half of what a torrent index is for, and this
+        // listener was missing entirely: compatibility mode handled `magnet:` and let
+        // every `.torrent` fall on the floor. Cloudflare-challenged trackers are promoted
+        // *into* this mode, so the sites most likely to offer a .torrent were the ones
+        // that could never open one. Downloads that are not torrents stay refused —
+        // nothing here starts writing files the user did not ask for.
+        wv.setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
+            if (TorrentDownloadIntercept.isTorrentDownload(url, contentDisposition, mimetype)) {
+                CompatibilityDiag.event(
+                    "torrent_download_intercepted",
+                    instanceId,
+                    "mime" to (mimetype ?: ""),
+                )
+                val cookies = TorrentDownloadIntercept.cookiesFor(url)
+                TorrentDownloadIntercept.fetchInPage(wv, url) { base64 ->
+                    CompatibilityDiag.event(
+                        "torrent_in_page_fetch",
+                        instanceId,
+                        "result" to if (base64 == null) "miss" else "bytes=${base64.length / 4 * 3}",
+                    )
+                    handler.post { onTorrentFile?.invoke(url, cookies, userAgent, base64) }
+                }
+            } else {
+                CompatibilityDiag.event("download_refused", instanceId)
+            }
+        }
 
         container.addView(wv)
         webView = wv

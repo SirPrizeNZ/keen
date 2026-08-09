@@ -20,6 +20,7 @@ import com.keenzero.app.navigation.NavigationFirewall
 import com.keenzero.app.blocking.BlockingRuntime
 import com.keenzero.app.blocking.RequestBlocker
 import com.keenzero.app.playback.PlayIntent
+import com.keenzero.app.torrent.TorrentDownloadIntercept
 import com.keenzero.app.playback.PlaybackOrchestrator
 import com.keenzero.app.playback.PlaybackJourneyState
 import com.keenzero.app.playback.PopupQuarantine
@@ -66,8 +67,16 @@ class WebViewHost(
     private val onConfirmNavigation: ((url: String, host: String, reason: String) -> Unit)? = null,
     /** magnet: link activated in-page → start native torrent streaming. */
     private val onMagnetIntent: ((magnet: String) -> Unit)? = null,
-    /** Site offered a .torrent download → fetch + stream natively (cookies for auth'd trackers). */
-    private val onTorrentFileIntent: ((url: String, cookies: String?, userAgent: String?) -> Unit)? = null,
+    /**
+     * Site offered a .torrent download → fetch + stream natively.
+     *
+     * [base64] is the file's own bytes when the page could read them for us, and null
+     * when the caller has to go and fetch the URL itself (cookies and user agent are
+     * for that case). See [fetchTorrentInPage] for why the in-page read is tried first.
+     */
+    private val onTorrentFileIntent: (
+        (url: String, cookies: String?, userAgent: String?, base64: String?) -> Unit
+    )? = null,
 ) {
     var webView: WebView? = null
         private set
@@ -592,12 +601,10 @@ class WebViewHost(
                         detail = "mime=$mimetype disposition=${contentDisposition?.take(120)}",
                     ),
                 )
-                val cookies = try {
-                    CookieManager.getInstance().getCookie(url)
-                } catch (_: Throwable) {
-                    null
+                val cookies = TorrentDownloadIntercept.cookiesFor(url)
+                TorrentDownloadIntercept.fetchInPage(wv, url) { base64 ->
+                    onTorrentFileIntent?.invoke(url, cookies, userAgent, base64)
                 }
-                onTorrentFileIntent?.invoke(url, cookies, userAgent)
             } else {
                 onEvent(NavigationEvent(System.currentTimeMillis(), "BLOCK_DOWNLOAD", url = url))
             }
@@ -641,16 +648,8 @@ class WebViewHost(
         return wv
     }
 
-    private fun isTorrentDownload(url: String?, contentDisposition: String?, mimetype: String?): Boolean {
-        if (mimetype?.lowercase() == "application/x-bittorrent") return true
-        val path = try {
-            android.net.Uri.parse(url ?: return false).path?.lowercase()
-        } catch (_: Throwable) {
-            null
-        }
-        if (path?.endsWith(".torrent") == true) return true
-        return contentDisposition?.lowercase()?.contains(".torrent") == true
-    }
+    private fun isTorrentDownload(url: String?, contentDisposition: String?, mimetype: String?): Boolean =
+        TorrentDownloadIntercept.isTorrentDownload(url, contentDisposition, mimetype)
 
     private fun originOf(url: String): String? = try {
         val u = java.net.URI(url)

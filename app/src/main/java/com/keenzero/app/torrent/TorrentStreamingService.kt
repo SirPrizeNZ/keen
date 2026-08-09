@@ -193,13 +193,14 @@ class TorrentStreamingService : Service() {
         resumeFraction = intent.getFloatExtra(EXTRA_RESUME_FRACTION, 0f)
         val cookies = intent.getStringExtra(EXTRA_COOKIES)
         val userAgent = intent.getStringExtra(EXTRA_USER_AGENT)
+        val torrentFile = intent.getStringExtra(EXTRA_TORRENT_FILE)
         worker.execute {
             cleanup()
             requestId = id
             startedAtMs = System.currentTimeMillis()
             try {
                 if (!torrentUrl.isNullOrBlank()) {
-                    startFromTorrentUrl(torrentUrl, cookies, userAgent, id)
+                    startFromTorrentUrl(torrentUrl, torrentFile, cookies, userAgent, id)
                 } else {
                     startTorrent(magnet!!, id)
                 }
@@ -213,15 +214,38 @@ class TorrentStreamingService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Download the .torrent file the site offered, then stream it like a magnet with known metadata. */
-    private fun startFromTorrentUrl(url: String, cookies: String?, userAgent: String?, id: String) {
+    /** Take the .torrent the site offered, then stream it like a magnet with known metadata. */
+    private fun startFromTorrentUrl(
+        url: String,
+        /** Bytes the page already read for us, spooled to disk. Null → fetch [url] here. */
+        spooledPath: String?,
+        cookies: String?,
+        userAgent: String?,
+        id: String,
+    ) {
         sendProgress(id, STAGE_FETCHING_TORRENT, percent = -1)
-        val bytes = fetchTorrentFile(url, cookies, userAgent)
+        val spooled = spooledPath?.let(::File)?.takeIf { it.isFile }
+        val bytes = try {
+            spooled?.readBytes() ?: fetchTorrentFile(url, cookies, userAgent)
+        } finally {
+            // The .torrent itself is a courier, not content. It has served its whole
+            // purpose the instant its bytes are in memory, so it goes now — not on
+            // teardown, where a crash or a process kill would strand it on disk.
+            spooled?.delete()
+        }
         if (id != requestId) return
         val info = try {
             TorrentInfo.bdecode(bytes)
         } catch (error: Throwable) {
-            throw IOException("Not a valid .torrent file")
+            // The overwhelmingly common cause is a bot-check or error page served with a
+            // 200 in place of the file. Say so, rather than blaming the torrent.
+            throw IOException(
+                if (looksLikeHtml(bytes)) {
+                    "The site returned a web page instead of the torrent — it may be asking for a check"
+                } else {
+                    "Not a valid .torrent file"
+                },
+            )
         }
         val root = createSessionRoot(id)
         val session = createSession(id, root)
@@ -322,6 +346,12 @@ class TorrentStreamingService : Service() {
         return session
     }
 
+    /** A .torrent starts with a bencoded dict (`d`); anything opening in markup is a page. */
+    private fun looksLikeHtml(bytes: ByteArray): Boolean =
+        String(bytes.copyOf(minOf(bytes.size, 512)), Charsets.ISO_8859_1)
+            .trimStart()
+            .startsWith("<", ignoreCase = true)
+
     private fun fetchTorrentFile(url: String, cookies: String?, userAgent: String?): ByteArray {
         var current = url
         var redirects = 0
@@ -332,6 +362,12 @@ class TorrentStreamingService : Service() {
             connection.instanceFollowRedirects = true
             if (!userAgent.isNullOrBlank()) connection.setRequestProperty("User-Agent", userAgent)
             if (!cookies.isNullOrBlank()) connection.setRequestProperty("Cookie", cookies)
+            // Trackers routinely gate the download link on the referring page, and a
+            // request advertising no acceptable type at all reads as a scraper.
+            connection.setRequestProperty("Accept", "application/x-bittorrent,*/*")
+            runCatching { URL(current) }.getOrNull()?.let { u ->
+                connection.setRequestProperty("Referer", "${u.protocol}://${u.host}/")
+            }
             try {
                 val code = connection.responseCode
                 if (code in 301..308) {
@@ -340,6 +376,12 @@ class TorrentStreamingService : Service() {
                     check(++redirects <= MAX_REDIRECTS) { "Too many redirects fetching .torrent" }
                     current = URL(URL(current), next).toString()
                     continue
+                }
+                // 403 here is almost always a bot check the page itself had already
+                // cleared; the in-page read is what gets past it, and reaching this line
+                // means that read was unavailable (cross-origin, or it timed out).
+                if (code == 403 || code == 503) {
+                    throw IOException("The site blocked the torrent download (HTTP $code) — try the magnet link")
                 }
                 if (code != 200) throw IOException("Torrent download failed (HTTP $code)")
                 connection.inputStream.use { input ->
@@ -605,6 +647,12 @@ class TorrentStreamingService : Service() {
         // dip between ticks (a partial piece re-requested, peers churning), and a number
         // that jumps backwards reads as broken. Latch the high-water mark.
         var reportedPercent = 0
+        // A .torrent arrives with its metadata already known, so a stream started from one
+        // lands straight in this loop and never passes the pre-metadata watchdog above.
+        // This loop had no deadline of its own, which is why a torrent nobody is seeding
+        // sat on "Connecting to peers…" at 00% and "—/—" for ever, with no way to tell
+        // that from a slow start. Time it from here.
+        val loopStartedAt = System.currentTimeMillis()
         progressTask = ticker.scheduleWithFixedDelay({
             try {
                 val handle = mediaHandle
@@ -645,9 +693,21 @@ class TorrentStreamingService : Service() {
                             "payload=${status.downloadPayloadRate()} done=${status.totalDone()} " +
                             "state=${status.state()}",
                     )
+                    // Nothing has arrived, and it has been long enough that "still
+                    // starting" is no longer an honest description. Report the drought as
+                    // its own stage — the session is left running, so a late peer simply
+                    // puts the stage back to buffering on the next tick.
+                    //
+                    // Deliberately gated on bytes, not on the seed count: a swarm figure
+                    // of 0 from a scrape-less tracker means nothing (that reading is what
+                    // sent us chasing a phantom bug), whereas "no piece has landed in
+                    // thirty seconds" is a fact about this box.
+                    val drought = haveBytes == 0L &&
+                        status.totalDone() == 0L &&
+                        System.currentTimeMillis() - loopStartedAt > NO_PEERS_NOTICE_MS
                     sendProgress(
                         id,
-                        STAGE_BUFFERING,
+                        if (drought) STAGE_NO_PEERS else STAGE_BUFFERING,
                         percent = percent,
                         peers = status.numPeers(),
                         seeds = status.numSeeds(),
@@ -721,20 +781,6 @@ class TorrentStreamingService : Service() {
         )
     }
 
-    /**
-     * Swarm size, as every desktop client reports it, rather than our own socket count.
-     *
-     * `numSeeds`/`numPeers` are *connections this box currently holds* — capped at
-     * [CONNECTION_LIMIT], built up over the first seconds and churning by one or two as
-     * peers come and go. That is why the box read "2 seeds, 1 leech" and then "1 / 0" on
-     * a torrent a laptop was showing as 9 / 5: both numbers were right, they were
-     * answering different questions, and ours is the one that looks like a dying torrent.
-     *
-     * `numComplete`/`numIncomplete` are the tracker's scrape figures — the whole swarm,
-     * the number the user recognises. They are -1 until an announce comes back, so fall
-     * back to the peers we know of from tracker/DHT/PEX (`listSeeds`/`listPeers`), and
-     * only then to live connections.
-     */
     /** Bare file name of [index], for messages the user reads. */
     private fun mediaFileName(files: org.libtorrent4j.FileStorage, index: Int): String =
         files.filePath(index).substringAfterLast('/').ifBlank { "This file" }
@@ -763,17 +809,39 @@ class TorrentStreamingService : Service() {
         )
     }
 
-    private fun swarmSeedsOf(status: org.libtorrent4j.TorrentStatus): Int = when {
-        status.numComplete() >= 0 -> status.numComplete()
-        status.listSeeds() > 0 -> status.listSeeds()
-        else -> status.numSeeds()
-    }
+    /**
+     * Swarm size, as every desktop client reports it, rather than our own socket count.
+     *
+     * `numSeeds`/`numPeers` are *connections this box currently holds* — capped at
+     * [CONNECTION_LIMIT], built up over the first seconds and churning by one or two as
+     * peers come and go. That is why the box read "2 seeds, 1 leech" and then "1 / 0" on
+     * a torrent a laptop was showing as 9 / 5: both numbers were right, they were
+     * answering different questions, and ours is the one that looks like a dying torrent.
+     *
+     * `numComplete`/`numIncomplete` are the tracker's scrape figures — the whole swarm,
+     * the number the user recognises. They are -1 until an announce comes back, so fall
+     * back to the peers we know of from tracker/DHT/PEX (`listSeeds`/`listPeers`), and
+     * only then to live connections.
+     *
+     * The three sources are combined with `max`, deliberately, not as a first-match chain.
+     * A chain that stops at the first non-negative reading believes a *zero*: a tracker
+     * that answers the announce without scrape fields, or a DHT-only torrent, reports
+     * `numComplete = 0` — a real 0, not the -1 that means "unknown" — so the chain locked
+     * onto it and never looked at the peers we were visibly downloading from. That is the
+     * "0 seeders while the file is arriving at 3 MB/s" readout. None of these counts can
+     * legitimately exceed the swarm, so the largest is always the closest answer.
+     */
+    private fun swarmSeedsOf(status: org.libtorrent4j.TorrentStatus): Int = maxOf(
+        status.numComplete(),
+        status.listSeeds(),
+        status.numSeeds(),
+    ).coerceAtLeast(0)
 
-    private fun swarmPeersOf(status: org.libtorrent4j.TorrentStatus): Int = when {
-        status.numIncomplete() >= 0 -> status.numIncomplete()
-        status.listPeers() > 0 -> (status.listPeers() - status.listSeeds()).coerceAtLeast(0)
-        else -> (status.numPeers() - status.numSeeds()).coerceAtLeast(0)
-    }
+    private fun swarmPeersOf(status: org.libtorrent4j.TorrentStatus): Int = maxOf(
+        status.numIncomplete(),
+        status.listPeers() - status.listSeeds(),
+        status.numPeers() - status.numSeeds(),
+    ).coerceAtLeast(0)
 
     private fun sendFailure(id: String, message: String) {
         sendBroadcast(
@@ -882,6 +950,8 @@ class TorrentStreamingService : Service() {
 
         const val EXTRA_MAGNET = "magnet"
         const val EXTRA_TORRENT_URL = "torrent_url"
+        /** Path to a .torrent the browser process already fetched and spooled for us. */
+        const val EXTRA_TORRENT_FILE = "torrent_file"
         const val EXTRA_COOKIES = "cookies"
         const val EXTRA_USER_AGENT = "user_agent"
         const val EXTRA_REQUEST_ID = "request_id"
@@ -915,6 +985,16 @@ class TorrentStreamingService : Service() {
         const val STAGE_FETCHING_TORRENT = "fetching_torrent"
         const val STAGE_CONNECTING = "connecting"
         const val STAGE_METADATA = "metadata"
+        /**
+         * Tried, and got nothing: the buffer window has been open for
+         * [NO_PEERS_NOTICE_MS] with not one byte to show for it.
+         *
+         * Not a failure — the session stays up and the stage clears itself the moment a
+         * piece lands. It exists so the wait stops lying. `EXTRA_PEERS` separates the two
+         * cases the user needs to tell apart: 0 means nobody answered at all, above 0
+         * means we are connected to leechers who have nothing to give.
+         */
+        const val STAGE_NO_PEERS = "no_peers"
         const val STAGE_BUFFERING = "buffering"
 
         /** Mid-playback seek outran the downloaded window — not start-up buffering. */
@@ -961,6 +1041,16 @@ class TorrentStreamingService : Service() {
         private const val DISK_QUEUE_BYTES = 24 * 1024 * 1024
         private const val PROGRESS_INTERVAL_MS = 750L
         private const val METADATA_TIMEOUT_MS = 120_000L
+
+        /**
+         * How long a buffer window may produce nothing before we say so on screen.
+         *
+         * Long enough that an ordinary slow start never trips it — tracker announce, DHT
+         * bootstrap and the first handshakes routinely take fifteen-odd seconds on this
+         * box — and short enough that a genuinely dead torrent does not hold a silent
+         * screen for two minutes.
+         */
+        private const val NO_PEERS_NOTICE_MS = 30_000L
         private const val FETCH_TIMEOUT_MS = 20_000
         private const val MAX_REDIRECTS = 5
         private const val MAX_TORRENT_FILE_BYTES = 20 * 1024 * 1024
