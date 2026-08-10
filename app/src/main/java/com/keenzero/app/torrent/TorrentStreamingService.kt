@@ -585,6 +585,11 @@ class TorrentStreamingService : Service() {
             null
         }
         ensureAnnounceable(handle)
+        // Which swarm this stream is actually on. A torrent opened from a .torrent file
+        // leaves no magnet anywhere, so re-running the same content through the magnet
+        // path — a different code path, and the one most streams arrive by — meant
+        // hunting the torrent down again by hand.
+        Log.i(TAG, "stream infohash=$streamInfoHash")
 
         val mediaFile = File(chosen.absPath)
         val title = mediaFile.name.ifBlank { "Torrent video" }
@@ -606,6 +611,11 @@ class TorrentStreamingService : Service() {
         )
         bridge = server
         server.startBridge()
+        // The port is ephemeral, so nothing outside this process can find the bridge
+        // once it is running — which is exactly when a stuck stream needs looking at.
+        // With the port in the log, `adb forward` reaches the same bytes the player is
+        // reading, and the container can be inspected instead of guessed at.
+        Log.i(TAG, "bridge listening url=${server.streamUrl}")
         mediaHandle = handle
 
         // Hand the URL over the moment the bridge can answer, not when buffering finishes.
@@ -634,7 +644,15 @@ class TorrentStreamingService : Service() {
         val startPiece = (firstPiece + (spanPieces * resumeFraction).toInt())
             .coerceIn(firstPiece, maxOf(firstPiece, lastPiece - headCount + 1))
         val headPieces = (startPiece until minOf(lastPiece + 1, startPiece + headCount)).toList()
-        Log.i(TAG, "buffer window start=$startPiece count=$headCount fraction=$resumeFraction")
+        // The file we picked out of the torrent, and where it sits inside it. A wrong
+        // offset feeds the player bytes from the middle of something else, which looks
+        // exactly like this: an extractor reading on and on, finding nothing to decode.
+        Log.i(
+            TAG,
+            "buffer window start=$startPiece count=$headCount fraction=$resumeFraction " +
+                "file=${mediaFile.name} size=$mediaSize offset=${chosen.offset} " +
+                "pieceLen=${layout.pieceLength} firstPiece=$firstPiece lastPiece=$lastPiece",
+        )
         val tailPieces =
             (maxOf(firstPiece + headCount, lastPiece - TAIL_BUFFER_PIECES + 1)..lastPiece).toList()
         val bufferPieces = headPieces + tailPieces
@@ -787,6 +805,26 @@ class TorrentStreamingService : Service() {
                     // of 0 from a scrape-less tracker means nothing (that reading is what
                     // sent us chasing a phantom bug), whereas "no piece has landed in
                     // thirty seconds" is a fact about this box.
+                    // Re-arm any buffer piece still missing, every tick.
+                    //
+                    // The deadlines set once at startup do not survive: the bridge calls
+                    // clearPieceDeadlines() whenever the read cursor lands on a piece it
+                    // does not have, which is the right move for the playhead — stale
+                    // deadlines elsewhere hold the swarm back — but it wipes the tail
+                    // pieces too, and the bridge only re-arms the window in front of the
+                    // playhead. The tail then has no urgency left anywhere, and under
+                    // SEQUENTIAL_DOWNLOAD nothing reaches the end of the file until
+                    // everything before it has been downloaded.
+                    //
+                    // The result was a buffer parked one piece short with the swarm at
+                    // full speed: whole=4/5 at 2.9 MB/s, "83%" on screen for as long as
+                    // the user cared to wait. Re-arming here costs one call per missing
+                    // piece per tick and cannot be undone by a later clear.
+                    for (piece in bufferPieces) {
+                        if (!handle.havePiece(piece)) {
+                            runCatching { handle.setPieceDeadline(piece, TAIL_DEADLINE_MS) }
+                        }
+                    }
                     val drought = haveBytes == 0L &&
                         status.totalDone() == 0L &&
                         System.currentTimeMillis() - loopStartedAt > NO_PEERS_NOTICE_MS
@@ -1137,6 +1175,15 @@ class TorrentStreamingService : Service() {
          * screen for two minutes.
          */
         private const val NO_PEERS_NOTICE_MS = 30_000L
+
+        /**
+         * Urgency given to a buffer piece that has not arrived yet.
+         *
+         * Small, and the same for all of them: every piece in the buffer window gates
+         * readiness equally, so there is nothing to be gained by ordering them against
+         * each other — only by putting all of them ahead of the sequential read-ahead.
+         */
+        private const val TAIL_DEADLINE_MS = 250
 
         /**
          * The trackers an index site's magnet would have carried, for the case where its

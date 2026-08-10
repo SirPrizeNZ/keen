@@ -130,17 +130,17 @@ It does not package another copy of Chromium inside the APK. This keeps Keen sma
 
 ## Download
 
-**[Download Keen v0.2.18](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.18/keen-0.2.18-32bit-armeabi-v7a.apk)** ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.18) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.18/SHA256SUMS)
+**[Download Keen v0.2.19](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.19/keen-0.2.19-32bit-armeabi-v7a.apk)** ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.19) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.19/SHA256SUMS)
 
-18.4 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
+18.5 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
 This is the current release and the one to install on virtually every television and
 streaming box. It updates an existing install in place, keeping favourites, history,
 watch positions and saved downloads.
 
-**[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.18/keen-0.2.18-64bit-arm64-v8a.apk)** · 20.5 MiB · 64-bit ARM (`arm64-v8a`)
+**[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.19/keen-0.2.19-64bit-arm64-v8a.apk)** · 20.5 MiB · 64-bit ARM (`arm64-v8a`)
 
 Only for devices running a 64-bit Android build — in practice the Nvidia Shield TV and
 the 2nd-generation Fire TV Cube. Nearly all TV hardware runs a 32-bit system on 64-bit
@@ -175,7 +175,7 @@ adb install -r <keen-apk-filename>
 For example:
 
 ```bash
-adb install -r keen-0.2.18-32bit-armeabi-v7a.apk
+adb install -r keen-0.2.19-32bit-armeabi-v7a.apk
 ```
 
 Use the exact IP address and port displayed by the television. Wireless debugging may use a port other than `5555`.

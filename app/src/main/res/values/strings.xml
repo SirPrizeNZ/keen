@@ -35,6 +35,8 @@
     <string name="torrent_stage_no_seeders">No seeders found — nobody is sharing this</string>
     <!-- Peers are connected, but none of them hold the file. -->
     <string name="torrent_stage_no_data">Found others waiting, but no one has the file yet</string>
+    <!-- Connected to peers that DO hold the file; the first pieces are just slow to land. -->
+    <string name="torrent_stage_slow_start">Connected — waiting for the first pieces</string>
     <string name="torrent_stage_no_peers_hint">Still trying. Try another source, or press Back to leave.</string>
     <string name="torrent_percent_giant">%1$02d</string>
     <string name="torrent_peers">%1$d peers</string>

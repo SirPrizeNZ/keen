@@ -786,10 +786,11 @@ class KeenActivity : AppCompatActivity() {
             // Backfill art for titles that finished in an earlier session, or whose grab
             // failed at completion time. The capture is keyed and cached on disk, so this
             // decodes once per title and is a no-op on every later render.
-            if (complete && entry.mediaPath != null &&
+            val mediaPath = entry.mediaPath
+            if (complete && mediaPath != null &&
                 !java.io.File(filesDir, "continue/" + frameFileName("frame:${entry.key}")).exists()
             ) {
-                captureLibraryPoster(entry.mediaPath, entry.key)
+                captureLibraryPoster(mediaPath, entry.key)
             }
         }
         // Live figures without waiting on a cross-process broadcast to arrive.
@@ -2634,6 +2635,24 @@ class KeenActivity : AppCompatActivity() {
                 considerRevealingPicture()
             }
 
+            /**
+             * What the extractor actually found, and whether the device will play it.
+             *
+             * A track the renderers cannot handle is reported here and nowhere else — it
+             * is not an error, so no failure is raised and no decoder is built. From
+             * outside that is indistinguishable from a stream that never parsed.
+             */
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                val summary = tracks.groups.joinToString("; ") { group ->
+                    (0 until group.length).joinToString(",") { i ->
+                        val format = group.getTrackFormat(i)
+                        "${format.sampleMimeType}(${format.width}x${format.height})" +
+                            " supported=${group.isTrackSupported(i)} selected=${group.isTrackSelected(i)}"
+                    }
+                }
+                android.util.Log.i("KeenBack", "player_tracks groups=${tracks.groups.size} $summary")
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 recordEvent(
                     NavigationEvent(
@@ -2683,6 +2702,22 @@ class KeenActivity : AppCompatActivity() {
                         url = streamUrl,
                         detail = name,
                     ),
+                )
+                // The player's own view of things, which nothing else exposes: the bridge
+                // can only report what was asked of it, and a stream that reads on for ever
+                // without decoding looks identical from there whether the tracks were never
+                // found or the renderer refused them.
+                // Duration and seekability belong here for the same reason: a seek that
+                // restarts the film from zero looks identical whether the extractor
+                // published no seek index at all or the duration came back unknown and the
+                // target was clamped. They are one line apart in the player and cannot be
+                // told apart from outside it.
+                android.util.Log.i(
+                    "KeenBack",
+                    "player_state=$name tracks=${torrentPlayer?.currentTracks?.groups?.size ?: -1} " +
+                        "durationMs=${torrentPlayer?.duration ?: -1} " +
+                        "seekable=${torrentPlayer?.isCurrentMediaItemSeekable ?: false} " +
+                        "positionMs=${torrentPlayer?.currentPosition ?: -1}",
                 )
                 // Playback resumed (or finished) — drop the seek-buffering loader.
                 //
@@ -4097,13 +4132,20 @@ class KeenActivity : AppCompatActivity() {
             TorrentStreamingService.STAGE_CONNECTING,
             TorrentStreamingService.STAGE_METADATA,
             -> getString(R.string.torrent_stage_metadata)
-            // Thirty seconds in with nothing to show. Which of the two things went wrong
-            // is worth distinguishing: "nobody is there" and "they are there but have
-            // nothing" send the user to different next moves.
-            TorrentStreamingService.STAGE_NO_PEERS -> if (peers > 0) {
-                getString(R.string.torrent_stage_no_data)
-            } else {
-                getString(R.string.torrent_stage_no_seeders)
+            // Thirty seconds in with nothing to show. Which of the three things is true
+            // sends the user to different next moves — and only one of them is a reason
+            // to give up on this torrent.
+            //
+            // `seeds` counts connected peers holding a COMPLETE copy. While that is above
+            // zero, "no one has the file" is not a slow-start hedge, it is false: someone
+            // demonstrably has it and we are simply waiting on the first pieces. Measured
+            // on this box, a cold start on a well-seeded torrent took ninety seconds to
+            // land its first piece — the message accused a healthy swarm of being dead
+            // while fourteen seeders were connected and the film went on to play fine.
+            TorrentStreamingService.STAGE_NO_PEERS -> when {
+                seeds > 0 -> getString(R.string.torrent_stage_slow_start)
+                peers > 0 -> getString(R.string.torrent_stage_no_data)
+                else -> getString(R.string.torrent_stage_no_seeders)
             }
             TorrentStreamingService.STAGE_BUFFERING,
             TorrentStreamingService.STAGE_SEEK_BUFFERING,

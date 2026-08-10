@@ -16,7 +16,7 @@ val localProps = Properties().apply {
 
 android {
     namespace = "com.keenzero.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.keenzero.app"
@@ -25,8 +25,8 @@ android {
         // until a physical device model is confirmed and a deliberate floor change is approved.
         minSdk = 29
         targetSdk = 35
-        versionCode = 252
-        versionName = "0.2.18"
+        versionCode = 253
+        versionName = "0.2.19"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

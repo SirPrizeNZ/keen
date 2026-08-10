@@ -1,6 +1,6 @@
 [versions]
 agp = "8.7.3"
-kotlin = "2.0.21"
+kotlin = "2.2.10"
 coreKtx = "1.15.0"
 appcompat = "1.7.0"
 webkit = "1.12.1"
@@ -10,7 +10,7 @@ androidxJunit = "1.2.1"
 espresso = "3.6.1"
 libtorrent4j = "2.1.0-39"
 # 1.7+ requires compileSdk 36 (AGP 8.7.3 caps at 35); 1.6.x is the newest 35-compatible line.
-media3 = "1.6.1"
+media3 = "1.11.0"
 nanohttpd = "2.3.1"
 
 [libraries]

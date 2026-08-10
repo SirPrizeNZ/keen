@@ -26,6 +26,43 @@ class TorrentHttpBridge(
 
     private val closed = AtomicBoolean(false)
 
+    /**
+     * Kill switch, in the style of the other diagnostic flags: `adb shell touch
+     * /data/local/tmp/keen_no_mkv_patch` and restart. Read once per stream rather than per
+     * read — this sits on the read path, and the flag is a thing you set before playing,
+     * not during.
+     *
+     * With it on, the container is served exactly as it arrives from the swarm, which is
+     * both the old behaviour and the way to tell a patch problem from a stream problem.
+     */
+    private val patchTracks: Boolean =
+        mimeType == MIME_MATROSKA && !File(FLAG_DIR, FLAG_NO_MKV_PATCH).exists()
+
+    /**
+     * Where the `Tracks` element starts, or [TRACKS_NONE] once we have looked and found no
+     * reason to patch. Resolved from the head of the file, which is the part every stream
+     * reads first anyway.
+     */
+    @Volatile
+    private var tracksOffset: Long = TRACKS_UNRESOLVED
+
+    /** Where the header ends and where its padding is; needed to relocate `Tracks`. */
+    @Volatile
+    private var tracksLocation: MatroskaTracksPatch.Location? = null
+
+    /** The rewritten regions, once a read has actually reached the element. */
+    @Volatile
+    private var tracksPatches: List<MatroskaTracksPatch.Patch> = emptyList()
+
+    /** Lowest offset any patch touches; reads below it can return immediately. */
+    @Volatile
+    private var patchFloor: Long = Long.MAX_VALUE
+
+    @Volatile
+    private var patchAttempted = false
+
+    private val patchLock = Any()
+
     val playerUrl: String get() = "http://$LOOPBACK:$listeningPort/player"
     val streamUrl: String get() = "http://$LOOPBACK:$listeningPort/stream"
 
@@ -66,6 +103,14 @@ class TorrentHttpBridge(
                 .apply { addHeader("Content-Range", "bytes */$mediaSize") }
         }
         val range = requestedRange ?: HttpByteRange(0, mediaSize - 1)
+        // Whether the player seeks or reads straight through decides everything about how
+        // much of a 6 GB file has to arrive before a frame appears. One open-ended request
+        // from byte 0 means it is scanning, not playing.
+        android.util.Log.i(
+            "KeenTorrent",
+            "stream request: method=${session.method} range=${rangeHeader ?: "none"} " +
+                "serving=${range.start}-${range.endInclusive} of $mediaSize mime=$mimeType",
+        )
         val status = if (requestedRange == null) Response.Status.OK else Response.Status.PARTIAL_CONTENT
         val response = if (session.method == Method.HEAD) {
             newFixedLengthResponse(status, mimeType, "")
@@ -83,17 +128,217 @@ class TorrentHttpBridge(
                     handle = handle,
                     closed = closed,
                     onStall = onStall,
+                    patcher = if (patchTracks) ::patchServedBytes else null,
                 ),
                 range.length,
             )
         }
         response.addHeader("Accept-Ranges", "bytes")
-        response.addHeader("Content-Length", range.length.toString())
+        // No Content-Length here: newFixedLengthResponse already sends one, and adding a
+        // second emits the header twice. Duplicate Content-Length is a protocol violation,
+        // and OkHttp — which is what the player uses — answers it by treating the length as
+        // unknown rather than believing either copy.
+        //
+        // A source of unknown length is a source that cannot be seeked. MatroskaExtractor
+        // then cannot jump to the Cues, never publishes a SeekMap, and preparation never
+        // finishes: no tracks, no decoder, no picture, while the loader reads the file
+        // start to end for ever. It only showed up on encodes that keep their Cues at the
+        // end of the file — one whose index sits near the front prepares without ever
+        // needing to seek, which is why this went unnoticed.
         if (requestedRange != null) {
             response.addHeader("Content-Range", "bytes ${range.start}-${range.endInclusive}/$mediaSize")
         }
         response.addHeader("Cache-Control", "no-store")
         return response
+    }
+
+    /**
+     * Read a span of the media file with the same piece-awaiting the player gets.
+     *
+     * Reuses [PieceAwareInputStream] rather than reaching for the file directly: the
+     * bytes this needs are as likely to be missing as any others, and the waiting,
+     * deadline-setting and handle-invalidation rules are already right in there. The
+     * patcher is deliberately not passed on — this is the read the patch is built from,
+     * and feeding it back through itself would recurse.
+     */
+    private fun readRegion(start: Long, length: Int): ByteArray? {
+        if (length <= 0 || start < 0 || start >= mediaSize) return null
+        val want = minOf(length.toLong(), mediaSize - start).toInt()
+        return try {
+            PieceAwareInputStream(
+                file = mediaFile,
+                start = start,
+                remaining = want.toLong(),
+                torrentOffset = torrentOffset,
+                pieceLength = pieceLength,
+                pieceCount = pieceCount,
+                handle = handle,
+                closed = closed,
+                onStall = onStall,
+                patcher = null,
+            ).use { stream ->
+                val out = ByteArray(want)
+                var read = 0
+                while (read < want) {
+                    val n = stream.read(out, read, want - read)
+                    if (n < 0) break
+                    read += n
+                }
+                if (read <= 0) null else out.copyOf(read)
+            }
+        } catch (t: Throwable) {
+            // Never fatal: failing to patch means serving the file as-is, which is exactly
+            // what happened before this existed.
+            android.util.Log.w("KeenTorrent", "tracks patch: read $start+$length failed: $t")
+            null
+        }
+    }
+
+    /** Locate `Tracks` from the head of the file. Runs once; cheap and cached after that. */
+    private fun resolveTracksOffset() {
+        if (tracksOffset != TRACKS_UNRESOLVED) return
+        synchronized(patchLock) {
+            if (tracksOffset != TRACKS_UNRESOLVED) return
+            val head = readRegion(0, TRACKS_HEAD_BYTES)
+            val located = head?.let { MatroskaTracksPatch.locate(it) }
+            tracksLocation = located
+            tracksOffset = located?.tracksOffset ?: TRACKS_NONE
+            if (located != null) {
+                // The floor decides how much of the file the patcher can ignore outright.
+                // Relocating puts a patch near the front, so it cannot simply be "the
+                // Tracks element" any more.
+                patchFloor = if (located.voidOffset >= 0) {
+                    minOf(located.tracksOffset, located.voidOffset)
+                } else {
+                    located.tracksOffset
+                }
+                android.util.Log.i(
+                    "KeenTorrent",
+                    "tracks element at ${located.tracksOffset} of $mediaSize " +
+                        "firstCluster=${located.firstClusterOffset} trailing=${located.tracksAreTrailing} " +
+                        "void=${located.voidOffset}+${located.voidLength}",
+                )
+            } else {
+                android.util.Log.i("KeenTorrent", "tracks element not located in first $TRACKS_HEAD_BYTES bytes")
+            }
+        }
+    }
+
+    /**
+     * Build the rewritten `Tracks` element, once a read has reached it.
+     *
+     * Deferred to this point on purpose: on the layout that needs it most the element sits
+     * at the end of a 6 GB file, so building it eagerly would hold the first request open
+     * until the tail arrived. By the time a read lands here the player has asked for these
+     * bytes itself, so the wait is one the stream was going to do anyway.
+     */
+    private fun ensureTracksPatch() {
+        if (patchAttempted) return
+        synchronized(patchLock) {
+            if (patchAttempted) return
+            val offset = tracksOffset
+            if (offset < 0) { patchAttempted = true; return }
+            // The header alone says how long the element is; read it before pulling a span
+            // whose size would otherwise be a guess.
+            val header = readRegion(offset, TRACKS_HEADER_BYTES)
+            val length = header?.let { MatroskaTracksPatch.elementLength(it) } ?: -1
+            if (length <= 0 || length > TRACKS_MAX_BYTES) {
+                android.util.Log.w("KeenTorrent", "tracks patch: implausible element length=$length")
+                patchAttempted = true
+                return
+            }
+            val element = readRegion(offset, length.toInt())
+            // Removing the track orphans every cue point that names it, and on a disc rip
+            // the subtitle tracks hold most of the cue points — so keeping them looked
+            // like the safer choice for seeking. Measured on the box it makes no
+            // difference: with all 28 tracks preserved the file reports `seekable=false`
+            // exactly as it does with 21 of them removed, because what defeats seeking
+            // here is something else entirely. With that settled, removal is the better
+            // default — a track that survives only to hand the decoder bytes it cannot
+            // read is a subtitle option that appears in the menu and then fails.
+            val strategy = if (File(FLAG_DIR, FLAG_MKV_KEEP_TRACKS).exists()) {
+                MatroskaTracksPatch.Strategy.STRIP_ENCODINGS
+            } else {
+                MatroskaTracksPatch.Strategy.REMOVE_TRACK
+            }
+            val patch = element?.let { MatroskaTracksPatch.patch(it, offset, strategy) }
+            val patches = mutableListOf<MatroskaTracksPatch.Patch>()
+            if (patch != null) {
+                patches += patch
+                android.util.Log.i(
+                    "KeenTorrent",
+                    "tracks patch: removed ${patch.removedTrackNumbers.size} unsupported track(s) " +
+                        "${patch.removedTrackNumbers} at $offset (${patch.bytes.size} bytes rewritten)",
+                )
+            } else {
+                android.util.Log.i("KeenTorrent", "tracks patch: nothing to remove")
+            }
+            // Restate the tracks in front of the clusters when they are behind them. This
+            // is what makes the file seekable: see [MatroskaTracksPatch.inlineTracks] for
+            // the seek-versus-cues interaction it defuses.
+            val location = tracksLocation
+            if (element != null && location != null) {
+                val needed = MatroskaTracksPatch.inlineTracksSize(element)
+                if (needed > 0 && location.canInline(needed)) {
+                    val inline = MatroskaTracksPatch.inlineTracks(
+                        element,
+                        location.voidOffset,
+                        location.voidLength,
+                    )
+                    if (inline != null) {
+                        patches += inline
+                        android.util.Log.i(
+                            "KeenTorrent",
+                            "tracks inlined: $needed bytes into the ${location.voidLength}-byte " +
+                                "void at ${location.voidOffset}, ahead of cluster " +
+                                "${location.firstClusterOffset} — seeking should survive",
+                        )
+                    }
+                } else if (location.tracksAreTrailing) {
+                    // Worth saying plainly: playback will work and seeking will not.
+                    android.util.Log.w(
+                        "KeenTorrent",
+                        "tracks are trailing but cannot be inlined (need $needed bytes, " +
+                            "void=${location.voidLength} at ${location.voidOffset}) — file will not seek",
+                    )
+                }
+            }
+            tracksPatches = patches
+            patchAttempted = true
+        }
+    }
+
+    /**
+     * Overlay the rewritten element onto bytes on their way out, if this read touches it.
+     *
+     * Called after every read, so the common case — a read nowhere near the element — has
+     * to cost almost nothing, which is why the offset comparison comes first.
+     */
+    private fun patchServedBytes(filePosition: Long, buffer: ByteArray, offset: Int, count: Int) {
+        if (count <= 0) return
+        // Deliberately on the read path rather than in `serveStream`. Locating the element
+        // means reading the head of the file, and on a cold swarm that first piece can be
+        // ninety seconds away — measured, not supposed. Waiting for it before the response
+        // headers go out turns a slow start into an HTTP timeout and a failure the player
+        // reports as a broken stream. Here the wait happens inside a body the player is
+        // already reading, which is what it is prepared for.
+        if (tracksOffset == TRACKS_UNRESOLVED) resolveTracksOffset()
+        if (tracksOffset < 0) return
+        if (filePosition + count <= patchFloor) return
+        ensureTracksPatch()
+        for (patch in tracksPatches) {
+            val patchEnd = patch.offset + patch.bytes.size
+            val from = maxOf(patch.offset, filePosition)
+            val to = minOf(patchEnd, filePosition + count)
+            if (from >= to) continue
+            System.arraycopy(
+                patch.bytes,
+                (from - patch.offset).toInt(),
+                buffer,
+                offset + (from - filePosition).toInt(),
+                (to - from).toInt(),
+            )
+        }
     }
 
     private class PieceAwareInputStream(
@@ -106,6 +351,12 @@ class TorrentHttpBridge(
         private val handle: TorrentHandle,
         private val closed: AtomicBoolean,
         private val onStall: ((piece: Int) -> Unit)?,
+        /**
+         * Rewrites bytes on their way out, given their absolute position in the file.
+         * Null for reads the bridge makes on its own behalf, which must see the file as
+         * it really is.
+         */
+        private val patcher: ((filePosition: Long, buffer: ByteArray, offset: Int, count: Int) -> Unit)?,
     ) : InputStream() {
         /**
          * Opened on the first read, not in the constructor.
@@ -140,10 +391,12 @@ class TorrentHttpBridge(
             val inPiece = (globalOffset % pieceLength).toInt()
             val untilPieceEnd = pieceLength - inPiece
             val wanted = minOf(length.toLong(), remaining, untilPieceEnd.toLong()).toInt()
+            val readFrom = position
             val count = source.read(buffer, offset, wanted)
             if (count < 0) return -1
             position += count
             remaining -= count
+            patcher?.invoke(readFrom, buffer, offset, count)
             return count
         }
 
@@ -188,6 +441,16 @@ class TorrentHttpBridge(
                 waitedMs += PIECE_POLL_MS
                 if (waitedMs >= nextNotifyMs) {
                     onStall?.invoke(firstPiece)
+                    // Once the buffer completes the service stops its progress loop, so a
+                    // player blocked in here is invisible: no ticks, no broadcasts, and up
+                    // to five minutes of silence before the wait even gives up. Say which
+                    // piece is being waited on and for how long — the difference between
+                    // "the swarm is still feeding us" and "we are asking for something
+                    // nobody is sending" is otherwise unobservable from outside.
+                    android.util.Log.i(
+                        "KeenTorrent",
+                        "bridge waiting: piece=$firstPiece waitedMs=$waitedMs position=$position",
+                    )
                     nextNotifyMs = waitedMs + STALL_NOTIFY_EVERY_MS
                 }
                 // A reader the player abandoned after a far seek must not poll
@@ -231,6 +494,40 @@ class TorrentHttpBridge(
 
     companion object {
         private const val LOOPBACK = "127.0.0.1"
+
+        private const val MIME_MATROSKA = "video/x-matroska"
+
+        /** Diagnostic flags live here, alongside the WebView ones. */
+        private const val FLAG_DIR = "/data/local/tmp"
+
+        /** Serve the container untouched, as it arrives from the swarm. */
+        private const val FLAG_NO_MKV_PATCH = "keen_no_mkv_patch"
+
+        /** Keep the offending tracks, blanking only their encodings. */
+        private const val FLAG_MKV_KEEP_TRACKS = "keen_mkv_keep_tracks"
+
+        /** Not looked for yet. */
+        private const val TRACKS_UNRESOLVED = -2L
+
+        /** Looked for and not found, or not a container this applies to. */
+        private const val TRACKS_NONE = -1L
+
+        /**
+         * How much of the file to read when locating `Tracks`. The SeekHead that points at
+         * it sits at the very front of the segment; 64 KB is far more than any muxer needs
+         * and still only the first few pieces the stream fetches regardless.
+         */
+        private const val TRACKS_HEAD_BYTES = 64 * 1024
+
+        /** Enough to hold the longest possible element ID plus length descriptor. */
+        private const val TRACKS_HEADER_BYTES = 12
+
+        /**
+         * Refuse to buffer an implausible `Tracks` element. A real one is a few kilobytes
+         * even with dozens of tracks; anything vastly larger means the offset was wrong,
+         * and reading it would put a large allocation on a 256 MB heap for nothing.
+         */
+        private const val TRACKS_MAX_BYTES = 4L * 1024 * 1024
         /** Floor for the read-ahead window, and the value used when piece length is unknown. */
         const val DEADLINE_WINDOW_PIECES = 12
 
