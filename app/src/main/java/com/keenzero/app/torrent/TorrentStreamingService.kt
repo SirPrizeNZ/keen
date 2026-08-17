@@ -38,6 +38,14 @@ class TorrentStreamingService : Service() {
         Thread(task, "keen-torrent-ticker").apply { isDaemon = true }
     }
     private var manager: SessionManager? = null
+
+    /**
+     * Whether DHT has been switched on for the current session.
+     *
+     * Sessions start without it and earn it by finding nothing; see [TorrentNetworkTuning].
+     * Latched rather than toggled, so a swarm that comes and goes cannot flap the setting.
+     */
+    private var dhtEnabled = false
     private var bridge: TorrentHttpBridge? = null
     private var sessionDir: File? = null
     private var progressTask: ScheduledFuture<*>? = null
@@ -304,6 +312,8 @@ class TorrentStreamingService : Service() {
     private fun createSession(id: String, root: File): SessionManager {
         val session = SessionManager(false)
         manager = session
+        // New session, new settings: it starts without DHT like any other.
+        dhtEnabled = false
         session.addListener(object : AlertListener {
             override fun types(): IntArray = intArrayOf(
                 AlertType.METADATA_RECEIVED.swig(),
@@ -364,12 +374,15 @@ class TorrentStreamingService : Service() {
         })
         session.start()
         session.applySettings(
-            SettingsPack()
-                .activeDownloads(ACTIVE_DOWNLOADS)
-                .connectionsLimit(CONNECTION_LIMIT)
-                // libtorrent 2 uses the OS page cache; cap its queued disk buffer.
-                .maxQueuedDiskBytes(DISK_QUEUE_BYTES),
+            TorrentNetworkTuning.apply(
+                SettingsPack()
+                    .activeDownloads(ACTIVE_DOWNLOADS)
+                    .connectionsLimit(CONNECTION_LIMIT)
+                    // libtorrent 2 uses the OS page cache; cap its queued disk buffer.
+                    .maxQueuedDiskBytes(DISK_QUEUE_BYTES),
+            ),
         )
+        Log.i(TAG, "session limits: connections=$CONNECTION_LIMIT ${TorrentNetworkTuning.summary}")
         return session
     }
 
@@ -825,6 +838,20 @@ class TorrentStreamingService : Service() {
                             runCatching { handle.setPieceDeadline(piece, TAIL_DEADLINE_MS) }
                         }
                     }
+                    // Nothing from the trackers yet, so let this torrent have DHT. Latched
+                    // per session: once on, it stays on for the rest of this stream.
+                    if (!dhtEnabled) {
+                        val session = manager
+                        if (session != null && TorrentNetworkTuning.enableDhtIfStarved(
+                                session::applySettings,
+                                starved = status.numPeers() == 0,
+                                elapsedMs = System.currentTimeMillis() - loopStartedAt,
+                            )
+                        ) {
+                            dhtEnabled = true
+                            Log.i(TAG, "no peers from trackers; DHT enabled for this session")
+                        }
+                    }
                     val drought = haveBytes == 0L &&
                         status.totalDone() == 0L &&
                         System.currentTimeMillis() - loopStartedAt > NO_PEERS_NOTICE_MS
@@ -862,6 +889,25 @@ class TorrentStreamingService : Service() {
                     sendFailure(id, "No peers responded — the torrent may be dead")
                     worker.execute { cleanup() }
                     return@scheduleWithFixedDelay
+                }
+                // The case DHT exists for: a magnet that has not even found metadata yet,
+                // because no tracker it knows about answered. This is checked here rather
+                // than only in the buffer loop below, since a torrent stuck without
+                // metadata never reaches that loop — which is precisely when it most needs
+                // another way to find the swarm.
+                if (!dhtEnabled) {
+                    // No metadata yet is starvation by definition: metadata arrives within
+                    // a second of the first peer that has it, so still waiting at this
+                    // point means no peer worth having has been found.
+                    if (TorrentNetworkTuning.enableDhtIfStarved(
+                            session::applySettings,
+                            starved = true,
+                            elapsedMs = elapsed,
+                        )
+                    ) {
+                        dhtEnabled = true
+                        Log.i(TAG, "no peers while awaiting metadata; DHT enabled")
+                    }
                 }
                 sendProgress(
                     id,

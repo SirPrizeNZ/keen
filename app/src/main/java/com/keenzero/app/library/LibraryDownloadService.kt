@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
 import com.keenzero.app.R
+import com.keenzero.app.torrent.TorrentNetworkTuning
 import org.libtorrent4j.AlertListener
 import org.libtorrent4j.Priority
 import org.libtorrent4j.SessionManager
@@ -54,6 +55,15 @@ class LibraryDownloadService : Service() {
     }
 
     private var session: SessionManager? = null
+
+    /**
+     * Whether DHT has been switched on for the current download session.
+     *
+     * Sessions start without it and earn it by finding nothing; see [TorrentNetworkTuning].
+     * Held here rather than on the shared helper because the streaming session has its own,
+     * and a busy stream must not suppress DHT for a download that is starving.
+     */
+    private var dhtEnabled = false
     private var progressTask: ScheduledFuture<*>? = null
     @Volatile private var handle: org.libtorrent4j.TorrentHandle? = null
     @Volatile private var activeKey: String? = null
@@ -101,8 +111,17 @@ class LibraryDownloadService : Service() {
         val session = session ?: return
         val connections = if (streaming) CONNECTION_LIMIT_STREAMING else CONNECTION_LIMIT_IDLE
         try {
-            session.applySettings(SettingsPack().connectionsLimit(connections))
-            Log.i(TAG, "bandwidth mode: streaming=$streaming connections=$connections")
+            // Re-asserted rather than assumed: this pack is partial, and carrying the
+            // router throttles in it means a mode switch can never hand the session back
+            // to libtorrent's defaults.
+            session.applySettings(
+                TorrentNetworkTuning.apply(SettingsPack().connectionsLimit(connections)),
+            )
+            Log.i(
+                TAG,
+                "bandwidth mode: streaming=$streaming connections=$connections " +
+                    TorrentNetworkTuning.summary,
+            )
         } catch (error: Throwable) {
             Log.w(TAG, "Could not apply bandwidth mode", error)
         }
@@ -177,6 +196,8 @@ class LibraryDownloadService : Service() {
     private fun start(origin: String, key: String, dir: File) {
         val manager = SessionManager(false)
         session = manager
+        // New session, new settings: it starts without DHT like any other.
+        dhtEnabled = false
         manager.addListener(object : AlertListener {
             override fun types(): IntArray = intArrayOf(
                 AlertType.METADATA_RECEIVED.swig(),
@@ -200,18 +221,20 @@ class LibraryDownloadService : Service() {
         })
         manager.start()
         manager.applySettings(
-            SettingsPack()
-                .activeDownloads(1)
-                // Whatever is true right now: the activity may have told us a stream was
-                // already playing before this download existed.
-                .connectionsLimit(
-                    if (streaming) CONNECTION_LIMIT_STREAMING else CONNECTION_LIMIT_IDLE,
-                )
-                .maxQueuedDiskBytes(DISK_QUEUE_BYTES),
-                // No listenInterfaces override: pinning one measurably made things worse
-                // (peers 1 -> 0), most likely because the IPv6 bind fails on this box and
-                // leaves the session without a usable listen socket. Default binding is
-                // what the streaming session uses, and that one finds peers.
+            // No listenInterfaces override: pinning one measurably made things worse
+            // (peers 1 -> 0), most likely because the IPv6 bind fails on this box and
+            // leaves the session without a usable listen socket. Default binding is
+            // what the streaming session uses, and that one finds peers.
+            TorrentNetworkTuning.apply(
+                SettingsPack()
+                    .activeDownloads(1)
+                    // Whatever is true right now: the activity may have told us a stream was
+                    // already playing before this download existed.
+                    .connectionsLimit(
+                        if (streaming) CONNECTION_LIMIT_STREAMING else CONNECTION_LIMIT_IDLE,
+                    )
+                    .maxQueuedDiskBytes(DISK_QUEUE_BYTES),
+            ),
         )
         store.update(key, state = StarredLibraryStore.State.DOWNLOADING)
         notifyChanged(key)
@@ -283,6 +306,20 @@ class LibraryDownloadService : Service() {
                         "conn=${status.numConnections()} rate=${status.downloadRate()}B/s " +
                         "paused=${status.flags().and_(TorrentFlags.PAUSED).non_zero()}",
                 )
+                // Nothing from the trackers yet, so let this download have DHT. Latched
+                // per session: once on, it stays on until this download ends.
+                if (!dhtEnabled) {
+                    val s = session
+                    if (s != null && TorrentNetworkTuning.enableDhtIfStarved(
+                            s::applySettings,
+                            starved = status.numPeers() == 0,
+                            elapsedMs = System.currentTimeMillis() - startedAt,
+                        )
+                    ) {
+                        dhtEnabled = true
+                        Log.i(TAG, "no peers from trackers; DHT enabled for this download")
+                    }
+                }
                 getSystemService(NotificationManager::class.java)
                     .notify(NOTIFICATION_ID, notification(store.find(key)?.title.orEmpty(), pct))
                 notifyChanged(key)
