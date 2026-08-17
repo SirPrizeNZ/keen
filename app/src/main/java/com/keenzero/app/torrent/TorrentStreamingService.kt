@@ -40,12 +40,21 @@ class TorrentStreamingService : Service() {
     private var manager: SessionManager? = null
 
     /**
-     * Whether DHT has been switched on for the current session.
+     * Whether DHT is currently running for this session.
      *
-     * Sessions start without it and earn it by finding nothing; see [TorrentNetworkTuning].
-     * Latched rather than toggled, so a swarm that comes and goes cannot flap the setting.
+     * Starts on and is retired once the torrent holds enough peers to carry itself; see
+     * [TorrentNetworkTuning.followSwarm]. Held per session, never on the shared helper,
+     * since the library download session runs its own.
      */
-    private var dhtEnabled = false
+    private var dhtEnabled = true
+
+    /**
+     * When the peer count last fell to zero, or 0 while peers are present.
+     *
+     * DHT comes back only for a drought that lasts, not for the single tick between one
+     * peer disconnecting and the next connecting.
+     */
+    private var peersLostAtMs = 0L
     private var bridge: TorrentHttpBridge? = null
     private var sessionDir: File? = null
     private var progressTask: ScheduledFuture<*>? = null
@@ -312,8 +321,9 @@ class TorrentStreamingService : Service() {
     private fun createSession(id: String, root: File): SessionManager {
         val session = SessionManager(false)
         manager = session
-        // New session, new settings: it starts without DHT like any other.
-        dhtEnabled = false
+        // New session, new settings: DHT runs until this torrent no longer needs it.
+        dhtEnabled = true
+        peersLostAtMs = 0L
         session.addListener(object : AlertListener {
             override fun types(): IntArray = intArrayOf(
                 AlertType.METADATA_RECEIVED.swig(),
@@ -838,18 +848,30 @@ class TorrentStreamingService : Service() {
                             runCatching { handle.setPieceDeadline(piece, TAIL_DEADLINE_MS) }
                         }
                     }
-                    // Nothing from the trackers yet, so let this torrent have DHT. Latched
-                    // per session: once on, it stays on for the rest of this stream.
-                    if (!dhtEnabled) {
-                        val session = manager
-                        if (session != null && TorrentNetworkTuning.enableDhtIfStarved(
-                                session::applySettings,
-                                starved = status.numPeers() == 0,
-                                elapsedMs = System.currentTimeMillis() - loopStartedAt,
+                    // Retire DHT now the swarm is carrying this stream, and bring it back
+                    // if the peers go away. Tracked here so the decision follows the
+                    // torrent rather than the clock.
+                    val session = manager
+                    if (session != null) {
+                        if (status.numPeers() == 0) {
+                            if (peersLostAtMs == 0L) peersLostAtMs = System.currentTimeMillis()
+                        } else {
+                            peersLostAtMs = 0L
+                        }
+                        val before = dhtEnabled
+                        dhtEnabled = TorrentNetworkTuning.followSwarm(
+                            session::applySettings,
+                            peers = status.numPeers(),
+                            wanted = dhtEnabled,
+                            starvedForMs = if (peersLostAtMs == 0L) 0L
+                            else System.currentTimeMillis() - peersLostAtMs,
+                        )
+                        if (before != dhtEnabled) {
+                            Log.i(
+                                TAG,
+                                "DHT ${if (dhtEnabled) "restored" else "retired"} " +
+                                    "at peers=${status.numPeers()}",
                             )
-                        ) {
-                            dhtEnabled = true
-                            Log.i(TAG, "no peers from trackers; DHT enabled for this session")
                         }
                     }
                     val drought = haveBytes == 0L &&
@@ -895,20 +917,15 @@ class TorrentStreamingService : Service() {
                 // than only in the buffer loop below, since a torrent stuck without
                 // metadata never reaches that loop — which is precisely when it most needs
                 // another way to find the swarm.
-                if (!dhtEnabled) {
-                    // No metadata yet is starvation by definition: metadata arrives within
-                    // a second of the first peer that has it, so still waiting at this
-                    // point means no peer worth having has been found.
-                    if (TorrentNetworkTuning.enableDhtIfStarved(
-                            session::applySettings,
-                            starved = true,
-                            elapsedMs = elapsed,
-                        )
-                    ) {
-                        dhtEnabled = true
-                        Log.i(TAG, "no peers while awaiting metadata; DHT enabled")
-                    }
-                }
+                // No metadata yet counts as no peers, however many are connected: nothing
+                // useful has been found. DHT therefore stays on for the whole of this
+                // phase, which is exactly the phase it exists for.
+                dhtEnabled = TorrentNetworkTuning.followSwarm(
+                    session::applySettings,
+                    peers = 0,
+                    wanted = dhtEnabled,
+                    starvedForMs = elapsed,
+                )
                 sendProgress(
                     id,
                     STAGE_METADATA,

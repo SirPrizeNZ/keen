@@ -51,10 +51,16 @@ import org.libtorrent4j.swig.settings_pack
  * send, not lookups we start.
  *
  * DHT is still the only way to reach a torrent with no working tracker, so it is not
- * disabled — it is made conditional. A session starts without it and switches it on only
- * for a torrent that has found nothing (see [enableDhtIfStarved]). Almost every torrent
- * here arrives from an index site with a tracker list and now never runs DHT at all; the
- * one that needs it still gets it.
+ * disabled — it is made *temporary*. DHT runs from the start, does the discovery it is good
+ * at, and is switched off once the torrent has a working set of peers (see [followSwarm]).
+ * If those peers later dry up it comes back.
+ *
+ * The first attempt at this had it the other way around — off by default, switched on for a
+ * torrent that had found nothing — and that was wrong in a way worth recording. A DHT
+ * started from cold has to bootstrap before it can answer anything, which takes far longer
+ * than the lookup it was started for. Magnets from sites whose trackers are dead, which are
+ * exactly the ones that depend on DHT, went from resolving in seconds to timing out. The
+ * trigger fired correctly; DHT simply cannot do its job from a standing start.
  *
  * The same run also came out faster — 4.2 MB/s against 1.6 MB/s at the same point of the
  * same file — because the box had been spending its radio and CPU on DHT rather than on
@@ -142,46 +148,72 @@ internal object TorrentNetworkTuning {
         // There are none — the only BitTorrent client on this network is this box — so it
         // buys nothing and the router forwards it anyway.
         .setBoolean(settings_pack.bool_types.enable_lsd.swigValue(), false)
-        // Off to begin with, and turned on only for a torrent that proves it needs it.
-        // See DHT_STARVED_MS.
-        .setBoolean(settings_pack.bool_types.enable_dht.swigValue(), false)
+        // On to begin with. DHT is what finds a magnet's swarm when its trackers are dead,
+        // and it is only useful if it is already bootstrapped by the time it is asked —
+        // see RETIRE_DHT_AFTER_PEERS.
+        .setBoolean(settings_pack.bool_types.enable_dht.swigValue(), true)
 
     /**
-     * How long a torrent may find nothing before DHT is switched on for it.
+     * How many connected peers count as "this torrent no longer needs DHT".
      *
-     * A torrent from an index site carries a tracker list and reaches its swarm in about a
-     * second, so this deadline passes unnoticed and DHT never starts. A torrent with no
-     * usable tracker finds nothing, trips the deadline, and gets DHT — the same recovery
-     * `ensureAnnounceable` exists for, arriving a few seconds later than it used to.
+     * DHT earns its cost during discovery and stops earning it immediately afterwards. Once
+     * a torrent holds a working set of peers, every further DHT query is maintenance traffic
+     * for a lookup nobody is waiting on — and that maintenance is what fills the router.
      *
-     * Twelve seconds sits between the two cases with room to spare: tracker announces on
-     * this box land inside two, and the buffer watchdog does not report a drought until
-     * thirty, so DHT has always had its chance before anything appears on screen.
+     * Eight is comfortably more than a stream needs to keep going and low enough that a
+     * modest swarm still reaches it, so DHT is retired within seconds on a healthy torrent
+     * and stays on for one that is genuinely struggling.
+     */
+    private const val RETIRE_DHT_AFTER_PEERS = 8
+
+    /**
+     * How long a torrent may find nothing before DHT is brought back.
+     *
+     * Only reached by a torrent whose peers have dried up after DHT was retired. Twelve
+     * seconds is long enough that ordinary churn between pieces does not trip it and short
+     * enough to recover well inside the buffer watchdog's thirty.
      */
     private const val DHT_STARVED_MS = 12_000L
 
     /**
-     * Turn DHT on for a session that is not finding peers any other way.
+     * Follow the swarm: retire DHT once a torrent is healthy, restore it if it starves.
      *
-     * [starved] is the caller's judgement that this torrent is getting nowhere: no connected
-     * peers while downloading, or no metadata at all yet. Returns true once it has actually
-     * enabled DHT, so the caller can stop asking. Callers hold that flag per session — there
-     * are two independent sessions in the app, and a flag shared between them would let a
-     * busy stream suppress a starving download.
+     * This is the whole router fix, and it is deliberately not "DHT off by default". A
+     * session that starts without DHT has to bootstrap one from cold at the exact moment it
+     * has discovered it needs peers, which takes far longer than the lookup it was wanted
+     * for — magnets from sites with dead trackers went from resolving in seconds to timing
+     * out. DHT therefore starts running, does its job, and is switched off once it is no
+     * longer the thing finding peers.
+     *
+     * That still removes the load that mattered. The Wi-Fi failure took minutes to appear
+     * because it needed the table to fill; DHT now runs for the few seconds of discovery
+     * at the start of a stream rather than for its whole length, and the entries it leaves
+     * behind age out while the film plays.
+     *
+     * [peers] is the connected peer count, or 0 while a magnet is still without metadata —
+     * having no metadata means no peer has been useful yet, whatever is connected.
+     * [wanted] is whether DHT is currently on, as the caller last recorded it. Returns the
+     * state DHT should now be in, which the caller stores and passes back next tick.
      */
-    fun enableDhtIfStarved(
+    fun followSwarm(
         session: SessionHandle,
-        starved: Boolean,
-        elapsedMs: Long,
+        peers: Int,
+        wanted: Boolean,
+        starvedForMs: Long,
     ): Boolean {
-        if (!starved || elapsedMs < DHT_STARVED_MS) return false
+        val target = when {
+            wanted && peers >= RETIRE_DHT_AFTER_PEERS -> false
+            !wanted && peers == 0 && starvedForMs >= DHT_STARVED_MS -> true
+            else -> wanted
+        }
+        if (target == wanted) return wanted
         return runCatching {
             session.applySettings(
                 SettingsPack()
-                    .setBoolean(settings_pack.bool_types.enable_dht.swigValue(), true),
+                    .setBoolean(settings_pack.bool_types.enable_dht.swigValue(), target),
             )
-            true
-        }.getOrDefault(false)
+            target
+        }.getOrDefault(wanted)
     }
 
     /** The subset of a session this file needs, so both session types can be passed in. */
@@ -193,5 +225,5 @@ internal object TorrentNetworkTuning {
     val summary: String
         get() = "connectionSpeed=$CONNECTION_SPEED boost=$TORRENT_CONNECT_BOOST " +
             "connectTimeout=${PEER_CONNECT_TIMEOUT_SECONDS}s peerlist=$MAX_PEERLIST_SIZE " +
-            "dhtUp=$DHT_UPLOAD_RATE_LIMIT lsd=off dht=on-demand"
+            "dhtUp=$DHT_UPLOAD_RATE_LIMIT lsd=off dht=until-${RETIRE_DHT_AFTER_PEERS}-peers"
 }

@@ -57,13 +57,17 @@ class LibraryDownloadService : Service() {
     private var session: SessionManager? = null
 
     /**
-     * Whether DHT has been switched on for the current download session.
+     * Whether DHT is currently running for this download session.
      *
-     * Sessions start without it and earn it by finding nothing; see [TorrentNetworkTuning].
-     * Held here rather than on the shared helper because the streaming session has its own,
-     * and a busy stream must not suppress DHT for a download that is starving.
+     * Starts on and is retired once the download holds enough peers to carry itself; see
+     * [TorrentNetworkTuning.followSwarm]. Held here rather than on the shared helper
+     * because the streaming session runs its own, and a busy stream must not decide DHT
+     * for a download that is starving.
      */
-    private var dhtEnabled = false
+    private var dhtEnabled = true
+
+    /** When the peer count last fell to zero, or 0 while peers are present. */
+    private var peersLostAtMs = 0L
     private var progressTask: ScheduledFuture<*>? = null
     @Volatile private var handle: org.libtorrent4j.TorrentHandle? = null
     @Volatile private var activeKey: String? = null
@@ -196,8 +200,9 @@ class LibraryDownloadService : Service() {
     private fun start(origin: String, key: String, dir: File) {
         val manager = SessionManager(false)
         session = manager
-        // New session, new settings: it starts without DHT like any other.
-        dhtEnabled = false
+        // New session, new settings: DHT runs until this download no longer needs it.
+        dhtEnabled = true
+        peersLostAtMs = 0L
         manager.addListener(object : AlertListener {
             override fun types(): IntArray = intArrayOf(
                 AlertType.METADATA_RECEIVED.swig(),
@@ -306,18 +311,29 @@ class LibraryDownloadService : Service() {
                         "conn=${status.numConnections()} rate=${status.downloadRate()}B/s " +
                         "paused=${status.flags().and_(TorrentFlags.PAUSED).non_zero()}",
                 )
-                // Nothing from the trackers yet, so let this download have DHT. Latched
-                // per session: once on, it stays on until this download ends.
-                if (!dhtEnabled) {
-                    val s = session
-                    if (s != null && TorrentNetworkTuning.enableDhtIfStarved(
-                            s::applySettings,
-                            starved = status.numPeers() == 0,
-                            elapsedMs = System.currentTimeMillis() - startedAt,
+                // Retire DHT once the swarm carries this download, restore it if the
+                // peers go away.
+                val s = session
+                if (s != null) {
+                    if (status.numPeers() == 0) {
+                        if (peersLostAtMs == 0L) peersLostAtMs = System.currentTimeMillis()
+                    } else {
+                        peersLostAtMs = 0L
+                    }
+                    val before = dhtEnabled
+                    dhtEnabled = TorrentNetworkTuning.followSwarm(
+                        s::applySettings,
+                        peers = status.numPeers(),
+                        wanted = dhtEnabled,
+                        starvedForMs = if (peersLostAtMs == 0L) 0L
+                        else System.currentTimeMillis() - peersLostAtMs,
+                    )
+                    if (before != dhtEnabled) {
+                        Log.i(
+                            TAG,
+                            "DHT ${if (dhtEnabled) "restored" else "retired"} " +
+                                "at peers=${status.numPeers()}",
                         )
-                    ) {
-                        dhtEnabled = true
-                        Log.i(TAG, "no peers from trackers; DHT enabled for this download")
                     }
                 }
                 getSystemService(NotificationManager::class.java)
