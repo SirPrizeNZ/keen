@@ -130,9 +130,9 @@ It does not package another copy of Chromium inside the APK. This keeps Keen sma
 
 ## Download
 
-**[Download Keen v0.2.19](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.19/keen-0.2.19-32bit-armeabi-v7a.apk)** ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.19) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.19/SHA256SUMS)
+**[Download Keen v0.2.21](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.21/keen-0.2.21-32bit-armeabi-v7a.apk)** ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.21) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.21/SHA256SUMS)
 
 18.5 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
@@ -140,9 +140,9 @@ This is the current release and the one to install on virtually every television
 streaming box. It updates an existing install in place, keeping favourites, history,
 watch positions and saved downloads.
 
-**[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.19/keen-0.2.19-64bit-arm64-v8a.apk)** · 20.5 MiB · 64-bit ARM (`arm64-v8a`)
+**[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.21/keen-0.2.21-64bit-arm64-v8a.apk)** · 20.6 MiB · 64-bit ARM (`arm64-v8a`)
 
-Only for devices running a 64-bit Android build — in practice the Nvidia Shield TV and
+Only for devices running a 64-bit Android build, in practice the Nvidia Shield TV and
 the 2nd-generation Fire TV Cube. Nearly all TV hardware runs a 32-bit system on 64-bit
 silicon, including the Google TV Streamer and the onn 4K Pro, and those need the 32-bit
 APK above. If you are unsure, install the 32-bit one; the 64-bit APK simply refuses to
@@ -175,7 +175,7 @@ adb install -r <keen-apk-filename>
 For example:
 
 ```bash
-adb install -r keen-0.2.19-32bit-armeabi-v7a.apk
+adb install -r keen-0.2.21-32bit-armeabi-v7a.apk
 ```
 
 Use the exact IP address and port displayed by the television. Wireless debugging may use a port other than `5555`.
@@ -187,7 +187,7 @@ The `-r` flag updates an existing installation while preserving its local data.
 Keen is developed and tested on a Xiaomi MiTV-AFMU0 (twilight) running Android TV 14, which
 is a 32-bit (`armeabi-v7a`) system.
 
-The 64-bit build has not yet been run on 64-bit hardware — it is verified only as far as
+The 64-bit build has not yet been run on 64-bit hardware. It is verified only as far as
 packaging. Reports from Shield TV and Fire TV Cube owners are particularly welcome, as is
 testing on any other Android TV or Google TV device.
 
