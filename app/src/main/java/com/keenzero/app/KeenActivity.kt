@@ -281,6 +281,15 @@ class KeenActivity : AppCompatActivity() {
     private var playerStarButton: android.widget.ImageButton? = null
 
     /**
+     * Audio-track picker injected into the player controls, left of the star.
+     *
+     * Hidden unless the file actually carries more than one playable audio track, which
+     * most do not — a control that does nothing on nine films out of ten is just another
+     * thing to walk past on the remote.
+     */
+    private var playerAudioButton: android.widget.ImageButton? = null
+
+    /**
      * Per-title views of the Downloaded row, so a progress tick can update the figure in
      * place. Rebuilding the row every two seconds would restart its entry animations and
      * throw away D-pad focus mid-scroll.
@@ -2646,11 +2655,19 @@ class KeenActivity : AppCompatActivity() {
                 val summary = tracks.groups.joinToString("; ") { group ->
                     (0 until group.length).joinToString(",") { i ->
                         val format = group.getTrackFormat(i)
+                        // Language, container name and channel count are what the audio
+                        // picker labels itself from; without them in the log a track that
+                        // comes out as "Track 2" cannot be told from one the extractor
+                        // genuinely published untagged.
                         "${format.sampleMimeType}(${format.width}x${format.height})" +
+                            " lang=${format.language} label=${format.label} ch=${format.channelCount}" +
                             " supported=${group.isTrackSupported(i)} selected=${group.isTrackSelected(i)}"
                     }
                 }
                 android.util.Log.i("KeenBack", "player_tracks groups=${tracks.groups.size} $summary")
+                // Multi-language releases only reveal their audio tracks once the
+                // container is parsed, so the picker can only appear from here.
+                refreshPlayerAudioButton()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -2787,8 +2804,10 @@ class KeenActivity : AppCompatActivity() {
         torrentTimeBar = binding.torrentPlayerView.findViewById<androidx.media3.ui.DefaultTimeBar>(
             androidx.media3.ui.R.id.exo_progress,
         )?.apply { setKeyTimeIncrement(TORRENT_TIMEBAR_KEY_INCREMENT_MS) }
+        installPlayerAudioButton()
         installPlayerStarButton()
         refreshPlayerStarIcon()
+        refreshPlayerAudioButton()
         // Take the page out of view for the duration.
         //
         // A film started from a search result leaves the torrent site — usually a white
@@ -2844,6 +2863,117 @@ class KeenActivity : AppCompatActivity() {
             ),
         )
         view.setFractionalTextSize(SUBTITLE_TEXT_SIZE_FRACTION)
+    }
+
+    /**
+     * Put the audio-track picker into the control row, left of the star.
+     *
+     * Same runtime injection as the star, and for the same reason: the stock controller
+     * layout stays media3's to maintain. Inserted at the subtitle button's index before
+     * the star is, so the row reads audio, star, subtitles from the left.
+     */
+    private fun installPlayerAudioButton() {
+        if (playerAudioButton != null) return
+        val subtitleButton = binding.torrentPlayerView.findViewById<View>(
+            androidx.media3.ui.R.id.exo_subtitle,
+        ) ?: return
+        val row = subtitleButton.parent as? android.view.ViewGroup ?: return
+        val button = android.widget.ImageButton(this).apply {
+            setImageResource(R.drawable.ic_audio_track)
+            background = androidx.core.content.ContextCompat.getDrawable(
+                this@KeenActivity,
+                R.drawable.focusable_icon,
+            )
+            contentDescription = getString(R.string.audio_track_toggle)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            isFocusable = true
+            isClickable = true
+            layoutParams = android.view.ViewGroup.LayoutParams(
+                subtitleButton.width.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
+                subtitleButton.height.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
+            )
+            setPadding(STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX)
+            visibility = View.GONE
+            setOnClickListener { promptAudioTrackChoice() }
+        }
+        row.addView(button, row.indexOfChild(subtitleButton))
+        playerAudioButton = button
+    }
+
+    /** Show the picker only when there is a choice to make. */
+    private fun refreshPlayerAudioButton() {
+        playerAudioButton?.visibility =
+            if (playableAudioTracks().size > 1) View.VISIBLE else View.GONE
+    }
+
+    /**
+     * Every audio track the device can actually decode, paired with its group.
+     *
+     * Unsupported tracks are dropped rather than listed and refused: a release can carry
+     * a DTS-HD track this box has no decoder for, and offering it would silence the film.
+     */
+    private fun playableAudioTracks(): List<Pair<androidx.media3.common.Tracks.Group, Int>> {
+        val tracks = torrentPlayer?.currentTracks ?: return emptyList()
+        val out = mutableListOf<Pair<androidx.media3.common.Tracks.Group, Int>>()
+        tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }.forEach { group ->
+            for (i in 0 until group.length) {
+                if (group.isTrackSupported(i)) out.add(group to i)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Which language (or commentary, or dub) to listen to.
+     *
+     * A dual-audio release plays whatever the container listed first, which on a foreign
+     * release is routinely not English. Overriding by type replaces any previous choice,
+     * so repeated visits cannot stack conflicting overrides.
+     */
+    private fun promptAudioTrackChoice() {
+        val player = torrentPlayer ?: return
+        val options = playableAudioTracks()
+        if (options.size < 2) return
+        val labels = options.mapIndexed { i, (group, index) ->
+            val label = audioTrackLabel(group.getTrackFormat(index), i)
+            if (group.isTrackSelected(index)) "\u2713 $label" else label
+        }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.audio_track_title)
+            .setItems(labels) { _, which ->
+                val (group, index) = options[which]
+                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                    .setOverrideForType(
+                        androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, index),
+                    )
+                    .build()
+                recordEvent(
+                    NavigationEvent(
+                        System.currentTimeMillis(),
+                        "audio_track_pick",
+                        detail = "index=$which of ${options.size}",
+                    ),
+                )
+            }
+            .show()
+    }
+
+    /** "English · 5.1 · EAC3", language first, since that is what is being chosen. */
+    private fun audioTrackLabel(format: androidx.media3.common.Format, position: Int): String {
+        val parts = mutableListOf<String>()
+        val language = format.language
+            ?.takeIf { it.isNotBlank() && it != "und" }
+            ?.let { java.util.Locale.forLanguageTag(it).displayLanguage.takeIf { name -> name.isNotBlank() } }
+        parts.add(language ?: format.label ?: getString(R.string.audio_track_unnamed, position + 1))
+        if (language != null) format.label?.takeIf { it.isNotBlank() }?.let { parts.add(it) }
+        when (format.channelCount) {
+            1 -> parts.add("Mono")
+            2 -> parts.add("Stereo")
+            6 -> parts.add("5.1")
+            8 -> parts.add("7.1")
+        }
+        format.sampleMimeType?.substringAfter('/')?.uppercase()?.let { parts.add(it) }
+        return parts.joinToString(" \u00b7 ")
     }
 
     /**
