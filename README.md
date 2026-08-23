@@ -16,18 +16,20 @@
 
 <br>
 
-**Keen is an open-source Android TV browser built for hostile streaming sites.**
+**The premium, distraction-free browser and media player built for Android TV.**
 
-Install it and it is ready. No accounts, no configuration, no add-ons to choose.
-Open any site, and when you find something to watch, press once.
+<br>
 
-It blocks aggressive ads and popup chains, unlocks hardware-decoded video and surround sound,
-and lets you stream or save magnet links and torrents with one press.
+### [Download Keen v0.2.22](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.22/keen-0.2.22-32bit-armeabi-v7a.apk)
 
-[Download](#download) ·
-[Installation](#installation) ·
-[Contributing](#contributing) ·
-[Licence](#licence)
+18.6 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
+
+[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.22/keen-0.2.22-64bit-arm64-v8a.apk) ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.22) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.22/SHA256SUMS) ·
+[Installation](#installation)
+
+<br>
 
 <img src="assets/keen-hero.gif" alt="Keen running on Android TV: the home screen, a magnet link buffering, then fullscreen playback with the player controls" width="900">
 
@@ -35,129 +37,62 @@ and lets you stream or save magnet links and torrents with one press.
 
 ---
 
-Keen blocks the ads, popups, redirects and malicious overlays that make browsing on a television unbearable.
+You have invested in a stunning display. You have calibrated the audio. Yet, when you open a standard web browser on your television, the magic evaporates. The interface stutters, intrusive overlays obscure the screen, and simply navigating a menu feels like a chore.
 
-When you find something to watch, Keen can hand the media to your TV's hardware player for wider video and audio format support, reliable fullscreen playback and surround sound on compatible hardware.
+Your living room deserves better than a clunky afterthought.
 
-Open a magnet link or `.torrent` file and press once to start watching. Stream it immediately or save it to the box for offline playback.
+## Meet Keen
 
-All in a free, open-source app of about 18 MB.
+Keen is not merely a ported desktop browser; it is a precision instrument engineered exclusively for the big screen. We have rebuilt the web experience from the ground up to honor the hardware it runs on, transforming your television into a seamless, cinematic portal to the open web.
 
-No bundled Chromium. No popup maze. No unnecessary bloat.
+## Navigation that feels like second nature
 
-## Serious ad blocking
+We didn't just adapt a cursor for a remote control; we reimagined spatial navigation. Every pixel of Keen is optimized for the D-pad. Focus states are crisp, transitions are fluid, and menu traversal is instantaneous. For the rare, complex sites that demand it, our native pointer layer glides across the screen with zero latency. Browsing finally feels as natural on your couch as it does at your desk.
 
-Keen does more than apply a basic host list.
+## Cinematic playback, uncompromised
 
-Its layered defence blocks:
+Standard TV browsers choke on high-bitrate video and modern web codecs. Keen intercepts media streams and hands them directly to your television's native hardware decoders via Media3. The result? Buttery-smooth playback, support for premium audio formats like E-AC-3 and DTS, and flawless full-screen immersion. When the video starts, the browser disappears.
 
-- Ad and tracker requests
-- Service-worker advertising
-- Popups and unwanted new windows
-- Hostile redirects
-- Fake external-app launches
-- Intrusive overlays
-- Rotating machine-generated ad domains
-- Banner creatives dropped into the page with no advertising markup to identify them
-- Site-specific advertising and playback interference
+Films that carry more than one audio track let you choose between them from the player controls, so a dual-audio release plays in the language you want.
 
-Keen also considers whether the user actually chose to navigate somewhere.
+## A digital sanctuary
 
-Legitimate playback, login and verification flows can continue while unwanted popups and redirects are destroyed before they reach the screen.
+The modern web is noisy. Aggressive auto-play ads, deceptive redirects, and malicious overlays shatter the viewing experience. Keen employs a multi-layered, intelligent defense system that neutralizes these distractions before they ever reach your screen. It is smart enough to distinguish between a necessary login prompt and a deceptive popup, ensuring your attention remains exactly where you want it.
 
-When a genuine verification challenge cannot work inside the protected browser, Keen can move that site into an isolated compatibility session. The fully protected browser is restored when the user leaves that site.
+## Radically lightweight, unapologetically open
 
-## Better video and audio playback
+In an era of bloated applications, Keen is an exercise in restraint. By leveraging the native Android System WebView, we deliver a powerhouse experience in a package smaller than 20MB. There is no hidden telemetry, no bundled bloatware, and no walled garden. Keen is proudly open-source, built by enthusiasts, for enthusiasts.
 
-Android WebView cannot reliably play every format used by streaming sites.
+## Designed for the couch
 
-Keen can intercept supported media and hand it to Media3 and the TV's hardware decoders instead. This enables wider codec support, including formats such as E-AC-3 and DTS, with multichannel and surround sound where supported by the device.
+- **Continue Watching:** Pick up exactly where you left off with elegant home-screen cards.
+- **Smart History:** Address completion driven by your actual browsing habits.
+- **One Live View:** A single, optimized WebView environment. No messy stacks of forgotten tabs.
 
-Keen also provides:
+## Our commitment to the open web
 
-- Hardware-decoded playback
-- Reliable fullscreen video
-- Automatic English subtitles when available
-- Playback resume
-- Remote-friendly seeking
-- Recovery after an app or device restart
+Keen is a general-purpose web browser and media player designed to celebrate the open internet. We strictly respect intellectual property rights, bypass no DRM, and host no media. We simply provide the most beautiful, efficient window to the web ever built for a television. What you choose to view through that window is entirely up to you.
 
-## Stream magnets and torrents
+> [!IMPORTANT]
+> Only access content you are legally entitled to. Keen bypasses no DRM and defeats no access controls. It opens the web and open protocols; what you do with them is your responsibility.
 
-Open a magnet link or `.torrent` file and Keen begins downloading the main video sequentially.
+Experience the web the way it was meant to be seen.
 
-Playback starts once enough of the file is buffered. There is no need to wait for the entire download to finish or move between separate browser, torrent and media-player apps.
+## Installation
 
-While the stream prepares, Keen shows live buffering progress, seeders, leechers and download speed.
+Keen is not currently distributed through the Google Play Store. Download the APK above and sideload it onto your Android TV or Google TV device.
 
-The temporary streaming cache is removed when the session ends.
+### Which build to install
 
-## Save with one press
+Install the 32-bit build unless you are certain your device runs a 64-bit Android system. It is the right one for virtually every television and streaming box, and it updates an existing install in place, keeping favourites, history, watch positions and saved downloads.
 
-> Available in the current release.
-
-Press the star in the player to keep what you are watching. The download continues independently in the background and appears in the Downloaded row on the Keen home screen when complete.
-
-Saved titles:
-
-- Play offline from local storage
-- Continue downloading when you leave the player
-- Are not interrupted when another stream starts
-- Leave the swarm when the download completes
-- Never seed after completion
-- Can be deleted completely by pressing the star again
-
-Streaming and saved downloads run independently, each with its own torrent session.
-
-## Built for Android TV
-
-Keen is designed for a television and remote, not a desktop monitor.
-
-- Remote-first navigation
-- D-pad focus across complex websites
-- Pointer control when a site requires it
-- Favourites on the home screen
-- Continue-watching cards, up to 20 titles
-- Address completion from browsing history
-- Clean fullscreen playback
-- One live WebView instead of a stack of tabs and windows
-
-## No bundled browser engine
-
-Keen uses the Android System WebView already installed and maintained on your device.
-
-It does not package another copy of Chromium inside the APK. This keeps Keen small and avoids the storage, memory and maintenance burden of a second browser engine.
-
-## Download
-
-**[Download Keen v0.2.22](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.22/keen-0.2.22-32bit-armeabi-v7a.apk)** ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.22) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.22/SHA256SUMS)
-
-18.6 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
-
-This is the current release and the one to install on virtually every television and
-streaming box. It updates an existing install in place, keeping favourites, history,
-watch positions and saved downloads.
-
-**[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.22/keen-0.2.22-64bit-arm64-v8a.apk)** · 20.6 MiB · 64-bit ARM (`arm64-v8a`)
-
-Only for devices running a 64-bit Android build, in practice the Nvidia Shield TV and
-the 2nd-generation Fire TV Cube. Nearly all TV hardware runs a 32-bit system on 64-bit
-silicon, including the Google TV Streamer and the onn 4K Pro, and those need the 32-bit
-APK above. If you are unsure, install the 32-bit one; the 64-bit APK simply refuses to
-install (`INSTALL_FAILED_NO_MATCHING_ABIS`) on a device that cannot run it. Check with:
+The 64-bit build is only for devices running a 64-bit Android system, in practice the Nvidia Shield TV and the 2nd-generation Fire TV Cube. Nearly all TV hardware runs a 32-bit system on 64-bit silicon, including the Google TV Streamer and the onn 4K Pro. If you are unsure, install the 32-bit one; the 64-bit APK simply refuses to install (`INSTALL_FAILED_NO_MATCHING_ABIS`) on a device that cannot run it. Check with:
 
 ```bash
 adb shell getprop ro.product.cpu.abilist
 ```
 
-It installs alongside the 32-bit build rather than upgrading it, so the two do not share
-favourites or watch positions.
-
-## Installation
-
-Keen is not currently distributed through the Google Play Store. Download the APK above and sideload it onto your Android TV or Google TV device.
+The 64-bit build installs alongside the 32-bit one rather than upgrading it, so the two do not share favourites or watch positions.
 
 ### Install over Wi-Fi with ADB
 
@@ -195,13 +130,6 @@ testing on any other Android TV or Google TV device.
 
 - Confirmation of the 64-bit build on real 64-bit hardware
 - Wider site compatibility, driven by whatever breaks on real televisions
-
-## Responsible use
-
-Keen is a general-purpose browser and an open-protocol media client. The same underlying technologies are used to distribute Creative Commons films, Linux images, public-domain archives and self-hosted media.
-
-> [!IMPORTANT]
-> Only access content you are legally entitled to. Keen bypasses no DRM and defeats no access controls. It opens the web and open protocols; what you do with them is your responsibility.
 
 ## Contributing
 
