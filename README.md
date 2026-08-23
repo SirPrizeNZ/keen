@@ -73,9 +73,6 @@ In an era of bloated applications, Keen is an exercise in restraint. By leveragi
 
 Keen is a general-purpose web browser and media player designed to celebrate the open internet. We strictly respect intellectual property rights, bypass no DRM, and host no media. We simply provide the most beautiful, efficient window to the web ever built for a television. What you choose to view through that window is entirely up to you.
 
-> [!IMPORTANT]
-> Only access content you are legally entitled to. Keen bypasses no DRM and defeats no access controls. It opens the web and open protocols; what you do with them is your responsibility.
-
 Experience the web the way it was meant to be seen.
 
 ## Installation
