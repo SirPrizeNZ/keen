@@ -368,6 +368,7 @@ class KeenActivity : AppCompatActivity() {
                         speedBps = intent.getLongExtra(TorrentStreamingService.EXTRA_SPEED_BPS, -1),
                         swarmSeeds = intent.getIntExtra(TorrentStreamingService.EXTRA_SWARM_SEEDS, -1),
                         swarmPeers = intent.getIntExtra(TorrentStreamingService.EXTRA_SWARM_PEERS, -1),
+                        uploadBps = intent.getLongExtra(TorrentStreamingService.EXTRA_UPLOAD_BPS, -1),
                     )
                 }
                 // The bridge can serve bytes. Build the player NOW so it opens the
@@ -4021,9 +4022,16 @@ class KeenActivity : AppCompatActivity() {
         // layout re-centred everything above — the stage title visibly jumped as the
         // stream moved from "connecting to peers" to "buffering". Holding its space
         // keeps the title and spinner nailed in place while it fades in and out.
-        binding.torrentLoadingStats.animate().cancel()
-        binding.torrentLoadingStats.alpha = 0f
-        binding.torrentLoadingStats.visibility = View.INVISIBLE
+        for (row in listOf<View>(binding.torrentLoadingStats, binding.torrentSwarmStats)) {
+            row.animate().cancel()
+            row.alpha = 0f
+            // INVISIBLE, never GONE, for the one that is in play — see showStatLockUp.
+            row.visibility = if (SWARM_LOCKUP == (row === binding.torrentSwarmStats)) {
+                View.INVISIBLE
+            } else {
+                View.GONE
+            }
+        }
         // No real percent yet on a fresh session — the jumbo watermark only makes sense
         // once there's a real number behind it, so it stays hidden until buffering starts.
         // INVISIBLE, not GONE: keeps it participating in layout so its width/height are
@@ -4209,11 +4217,19 @@ class KeenActivity : AppCompatActivity() {
      * same code path the service drives with a fixed, repeatable script instead, so the
      * design can be judged on its own and nothing is downloaded to look at a margin.
      */
+    private var mockLoadingGeneration = 0
+
     private fun startMockLoadingOverlay() {
         showTorrentOverlay()
         val handler = binding.root
+        // A second launch while the first script is still running used to leave both
+        // posting, so the readout alternated between two points on the timeline — the rate
+        // appeared to jump backwards and the unit flipped with it. The runnables post to a
+        // view rather than a cancellable queue, so the newest run simply disowns the rest.
+        val generation = ++mockLoadingGeneration
         var elapsedMs = 0L
         fun tick() {
+            if (generation != mockLoadingGeneration) return
             val t = elapsedMs / 1000f
             when {
                 // Connecting: no percentage yet, peers arriving.
@@ -4223,6 +4239,13 @@ class KeenActivity : AppCompatActivity() {
                     peers = (t * 4).toInt().coerceAtMost(23),
                     seeds = (t * 2).toInt().coerceAtMost(11),
                     speedBps = 0L,
+                    // The swarm is found before the connections are: the tracker answers
+                    // in one go, and we then work our way up to a fraction of it. That gap
+                    // is exactly what the two-layer lock-up exists to show, so the mock
+                    // has to reproduce it rather than report one number twice.
+                    swarmSeeds = 45,
+                    swarmPeers = 128,
+                    uploadBps = (t * 12_000).toLong(),
                 )
                 // Buffering: a percentage that climbs in the coarse jumps the real
                 // service reports, so the counter's own pacing is what is on trial.
@@ -4233,7 +4256,14 @@ class KeenActivity : AppCompatActivity() {
                         percent = (p / 7) * 7,
                         peers = 23,
                         seeds = 11,
-                        speedBps = (2_400_000L..3_900_000L).random(),
+                        // Ramps from tens of KB/s up past a megabyte, the way a real
+                        // stream opens, so the readout's climb through the unit change is
+                        // something this harness actually exercises rather than skips.
+                        speedBps = (40_000L + ((t - MOCK_CONNECT_SEC) * 380_000L).toLong())
+                            .coerceAtMost(4_200_000L) + (-30_000L..30_000L).random(),
+                        swarmSeeds = 45,
+                        swarmPeers = 128,
+                        uploadBps = (180_000L..420_000L).random(),
                     )
                 }
             }
@@ -4255,6 +4285,7 @@ class KeenActivity : AppCompatActivity() {
         speedBps: Long,
         swarmSeeds: Int = -1,
         swarmPeers: Int = -1,
+        uploadBps: Long = -1,
     ) {
         if (!torrentOverlayVisible) return
         val stageText = when (stage) {
@@ -4344,7 +4375,8 @@ class KeenActivity : AppCompatActivity() {
             // still being found. Printing "0" told the user the torrent was dead while
             // it was in fact about to start, which is the one thing this readout must
             // never do — people turn it off and never learn it was working.
-            if (showSeeds <= 0 && showPeers <= 0 && !noPeers) {
+            val pending = showSeeds <= 0 && showPeers <= 0 && !noPeers
+            if (pending) {
                 binding.statSeeders.text = STAT_PENDING
                 binding.statLeechers.text = STAT_PENDING
             } else if (noPeers) {
@@ -4358,6 +4390,14 @@ class KeenActivity : AppCompatActivity() {
                 binding.statSeeders.text = showSeeds.coerceAtLeast(0).toString()
                 binding.statLeechers.text = showPeers.coerceAtLeast(0).toString()
             }
+
+            // `showSeeds` is the latched swarm figure, the same one the old row prints —
+            // deliberately not `seeds`, our own socket count. See SwarmStatsView.
+            binding.torrentSwarmStats.setStats(
+                seedsInSwarm = showSeeds,
+                downBps = speedBps.coerceAtLeast(0),
+                pending = pending,
+            )
             // Same reasoning for the rate. Head pieces arrive at tens of KB/s, which in
             // fixed MB/s rounds to "0.0" — a stream downloading perfectly well read as a
             // stream doing nothing. The unit follows the number instead.
@@ -4388,7 +4428,8 @@ class KeenActivity : AppCompatActivity() {
      * after the first stream of an app run.
      */
     private fun showStatLockUp(show: Boolean) {
-        val row = binding.torrentLoadingStats
+        val row: View =
+            if (SWARM_LOCKUP) binding.torrentSwarmStats else binding.torrentLoadingStats
         val alreadyShown = row.visibility == View.VISIBLE && row.alpha >= 1f
         if (show == alreadyShown) return
         row.animate().cancel()
@@ -6391,6 +6432,14 @@ class KeenActivity : AppCompatActivity() {
 
         /** Shown where a stat has no measurement yet — never a bare, dead-looking 0. */
         private const val STAT_PENDING = "—"
+
+        /**
+         * Which peer read-out the loading overlay uses: the two-layer swarm lock-up, or
+         * the three plain white numbers that shipped before it. Flip to false to put the
+         * old row back — nothing else in the overlay changes, because the spinner, the
+         * title and the jumbo percent belong to both.
+         */
+        private const val SWARM_LOCKUP = true
         private const val BYTES_PER_MB = 1_048_576L
 
         /** Subtitle height as a fraction of the video view; media3's default is 0.0533. */

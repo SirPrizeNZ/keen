@@ -751,6 +751,7 @@ class TorrentStreamingService : Service() {
                 speedBps = status.downloadRate().toLong(),
                 swarmSeeds = swarmSeedsOf(status),
                 swarmPeers = swarmPeersOf(status),
+                uploadBps = status.uploadRate().toLong(),
             )
         } catch (error: Throwable) {
             Log.w(TAG, "Seek buffer progress failed", error)
@@ -886,6 +887,7 @@ class TorrentStreamingService : Service() {
                         speedBps = status.downloadRate().toLong(),
                         swarmSeeds = swarmSeedsOf(status),
                         swarmPeers = swarmPeersOf(status),
+                        uploadBps = status.uploadRate().toLong(),
                     )
                 }
             } catch (error: Throwable) {
@@ -952,6 +954,7 @@ class TorrentStreamingService : Service() {
         speedBps: Long = -1,
         swarmSeeds: Int = -1,
         swarmPeers: Int = -1,
+        uploadBps: Long = -1,
     ) {
         sendBroadcast(
             Intent(ACTION_PROGRESS)
@@ -963,7 +966,8 @@ class TorrentStreamingService : Service() {
                 .putExtra(EXTRA_SEEDS, seeds)
                 .putExtra(EXTRA_SPEED_BPS, speedBps)
                 .putExtra(EXTRA_SWARM_SEEDS, swarmSeeds)
-                .putExtra(EXTRA_SWARM_PEERS, swarmPeers),
+                .putExtra(EXTRA_SWARM_PEERS, swarmPeers)
+                .putExtra(EXTRA_UPLOAD_BPS, uploadBps),
         )
     }
 
@@ -1167,6 +1171,7 @@ class TorrentStreamingService : Service() {
         /** Whole-swarm counts (tracker scrape / known peers), not our own connections. */
         const val EXTRA_SWARM_SEEDS = "swarm_seeds"
         const val EXTRA_SWARM_PEERS = "swarm_peers"
+        const val EXTRA_UPLOAD_BPS = "upload_bps"
         const val EXTRA_SPEED_BPS = "speed_bps"
 
         const val STAGE_FETCHING_TORRENT = "fetching_torrent"

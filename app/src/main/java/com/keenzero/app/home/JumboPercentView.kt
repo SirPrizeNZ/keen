@@ -33,17 +33,26 @@ class JumboPercentView @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        // A heavier cut of Google Sans than anything the family ships as a static.
-        // Its weight axis stops at 700, so this face is instanced at wght=700 plus
-        // GRAD=200 — the grade axis thickens strokes without widening the glyphs, so
-        // the digits get genuinely fatter instead of just bigger and looser. Subset to
-        // the ten digits and a percent sign, which is all this view ever draws, so the
-        // extra face costs 8 KB.
+        // Google Sans Flex instanced at wght=900, opsz=144 — a genuine Black, which the
+        // plain Google Sans family has no static for at all. Subset to the ten digits,
+        // which is all this view ever draws, so the face costs 2 KB.
         typeface = androidx.core.content.res.ResourcesCompat
-            .getFont(context, com.keenzero.app.R.font.google_sans_jumbo)
+            .getFont(context, com.keenzero.app.R.font.gsflex_jumbo)
             ?: Typeface.create(Typeface.DEFAULT, 900, false)
+        letterSpacing = -0.05f
     }
     private val bounds = Rect()
+
+    /**
+     * The wash that takes the foot of the numeral back down into the background, so the
+     * figure reads as fading out under the stat lock-up rather than being cut off by it.
+     * This is what replaced the progressive blur: it lands the same way and costs one
+     * gradient rect, where the blur cost a stack of masked full-screen replays and still
+     * left a seam wherever two of its bands met.
+     */
+    private val scrimPaint = Paint()
+    private var scrimTop = Float.NaN
+    private var scrimBottom = Float.NaN
 
     private var currentText = ""
     private var previousText = ""
@@ -121,7 +130,14 @@ class JumboPercentView @JvmOverloads constructor(
     private fun scheduleWalk() {
         if (walkPosted) return
         walkPosted = true
-        postDelayed(walkStep, if (displayed < target) STEP_MS else CREEP_MS)
+        postDelayed(
+            walkStep,
+            when {
+                displayed < target -> STEP_MS
+                displayed >= REAL_CEILING -> TAIL_MS
+                else -> CREEP_MS
+            },
+        )
     }
 
     private val walkStep = Runnable {
@@ -132,6 +148,12 @@ class JumboPercentView @JvmOverloads constructor(
             // only up to a point above the last real value — enough to look alive,
             // not enough to invent progress.
             displayed < (target + CREEP_ALLOWANCE).coerceAtMost(REAL_CEILING) -> displayed++
+            // The buffer is full and we are waiting on the player to open the container,
+            // which can take a couple of seconds and which no percentage can see. Without
+            // this the readout parked dead on [REAL_CEILING] for that whole wait — the same
+            // stuck-at-99 problem the ceiling was introduced to avoid, three points lower.
+            // So it keeps climbing, slowly enough that it cannot reach 100 on its own.
+            displayed < TAIL_CEILING -> displayed++
             else -> return@Runnable
         }
         setPercentText(displayed.toString().padStart(2, '0'))
@@ -177,8 +199,8 @@ class JumboPercentView @JvmOverloads constructor(
      */
     private fun buildFadeShader(h: Float) {
         if (h <= 0f) return
-        val solid = Color.argb(BASE_ALPHA, 255, 255, 255)
-        val clear = Color.argb(0, 255, 255, 255)
+        val solid = BASE_COLOUR
+        val clear = BASE_COLOUR and 0x00FFFFFF
         paint.shader = LinearGradient(
             0f, 0f, 0f, h,
             intArrayOf(clear, solid, solid, clear),
@@ -220,9 +242,44 @@ class JumboPercentView @JvmOverloads constructor(
         paint.getTextBounds(REFERENCE_GLYPHS, 0, REFERENCE_GLYPHS.length, bounds)
         val inkH = bounds.height().toFloat()
         val baseline = (h - inkH) / 2f - bounds.top
+        // Top of the painted ink. Must be read after `baseline` above: View has a
+        // `baseline` property of its own, so ordering this wrongly binds to that instead
+        // of to the local, compiles cleanly, and quietly puts the wash off-screen.
+        val inkTop = baseline + bounds.top
         val travel = inkH * TRAVEL_SLOTS
 
         val old = previousText
+        drawDigits(canvas, text, old, w, cell, baseline, travel)
+
+        val top = inkTop + SCRIM_START * inkH
+        val bottom = inkTop + SCRIM_END * inkH
+        if (top != scrimTop || bottom != scrimBottom) {
+            scrimTop = top
+            scrimBottom = bottom
+            scrimPaint.shader = LinearGradient(
+                0f, top, 0f, bottom,
+                Color.TRANSPARENT, BACKDROP,
+                Shader.TileMode.CLAMP,
+            )
+        }
+        // Down to the foot of the view, not just to the end of the ramp. A rolling digit
+        // travels in from more than two ink heights below, so it would otherwise be in
+        // plain sight under the band for most of its journey and only get covered at the
+        // end — the number appearing from nowhere and then being swallowed. The gradient
+        // clamps to solid at [SCRIM_END], so extending the rect costs nothing and the
+        // digit is hidden for the whole of its approach.
+        canvas.drawRect(0f, top, w, h, scrimPaint)
+    }
+
+    private fun drawDigits(
+        canvas: Canvas,
+        text: String,
+        old: String,
+        w: Float,
+        cell: Float,
+        baseline: Float,
+        travel: Float,
+    ) {
         when {
             roll >= 1f || old.isEmpty() -> drawRow(canvas, text, w, cell, baseline)
 
@@ -297,12 +354,14 @@ class JumboPercentView @JvmOverloads constructor(
         // Numeral height as a fraction of the clear reading band between the fades.
         // Together with the wider band above this puts the digits 25% taller than they
         // were (0.40h * 0.92 -> 0.60h * 0.77).
-        const val FILL_FRACTION = 0.77f
+        const val FILL_FRACTION = 0.85f
         const val WIDTH_FILL_FRACTION = 0.82f
-        // ~0x1A (~10% white). Was 14 (~5%), which was texture rather than a readable figure —
-        // on a TV at viewing distance the number simply could not be made out. Still sits
-        // behind the spinner and stats rather than competing with them.
-        const val BASE_ALPHA = 26
+        /**
+         * Opaque, not a low-alpha white, so the figure is one stated colour rather than a
+         * value that depends on what happens to be behind it. Dark enough to stay texture
+         * behind the spinner and the stats, light enough to be made out at TV distance.
+         */
+        val BASE_COLOUR = Color.parseColor("#FF131313")
         // Longer to match the greater distance: same speed, further to go.
         const val ROLL_DURATION_MS = 460L
 
@@ -318,6 +377,14 @@ class JumboPercentView @JvmOverloads constructor(
          * one place the old behaviour looked most like a hang.
          */
         const val REAL_CEILING = 96
+
+        /**
+         * Where the post-buffer crawl stops. Never 100: exactly one thing earns that, and
+         * it is [finish], called when the picture actually moves.
+         */
+        const val TAIL_CEILING = 99
+        /** Slow enough to read as the last of the work, not as more progress arriving. */
+        const val TAIL_MS = 1_100L
         /**
          * How far, in reference-ink heights, a rolling digit travels out and in.
          *
@@ -330,5 +397,17 @@ class JumboPercentView @JvmOverloads constructor(
         const val TRAVEL_SLOTS = 2.2f
         val EASE = PathInterpolator(0.2f, 0f, 0f, 1f)
         const val REFERENCE_GLYPHS = "0123456789"
+
+        /**
+         * The fade-off, as fractions of the numeral's own ink height so it lands on the
+         * same part of the glyphs whatever size they end up drawn at. The frame puts the
+         * band's clear edge two thirds of the way down the figure and its solid edge just
+         * past the baseline, which is why the digits appear to dissolve into the ground
+         * rather than to stop.
+         */
+        const val SCRIM_START = 0.646f
+        const val SCRIM_END = 1.006f
+        /** The overlay's own ground. The wash has to reach it exactly, or it leaves a step. */
+        val BACKDROP = Color.BLACK
     }
 }
