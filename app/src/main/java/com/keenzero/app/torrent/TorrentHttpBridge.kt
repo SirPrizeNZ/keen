@@ -375,6 +375,14 @@ class TorrentHttpBridge(
         private var source: RandomAccessFile? = null
         private var position = start
 
+        /**
+         * The piece range this reader currently holds deadlines on, or -1 when it holds
+         * none. Tracked per reader because deadlines are a property of the torrent, not of
+         * the reader that set them: see [armDeadlines].
+         */
+        private var armedFrom = -1
+        private var armedTo = -1
+
         override fun read(): Int {
             val one = ByteArray(1)
             return if (read(one, 0, 1) == 1) one[0].toInt() and 0xff else -1
@@ -401,6 +409,68 @@ class TorrentHttpBridge(
         }
 
         /**
+         * Move this reader's deadline window to [from] until [to], releasing only the
+         * pieces this reader itself had armed.
+         *
+         * The obvious thing to do when the playhead moves is `clearPieceDeadlines`, and
+         * that is what this used to do. But deadlines belong to the torrent, not to the
+         * reader that set them, and a stream routinely has two readers at once: the player
+         * opens the container at the head of the file and then seeks, leaving one reader
+         * near piece 0 and another wherever playback resumes. A global clear means each
+         * reader wipes the other's window every time it moves, so whichever ran last is
+         * the only position the swarm is working towards and the other simply waits.
+         *
+         * Measured on the Mi Box resuming a film at 3:44: two readers, one blocked on
+         * piece 1 and one on piece 9, both waiting over thirty seconds while the swarm
+         * delivered 2.8 MB/s, and 103 s from launch to picture. It was survivable before
+         * only by accident: a 12-piece window from the head reader happened to cover the
+         * seek reader's pieces too, so a clear-and-rearm left both positions armed. Once
+         * the window was sized correctly the two no longer overlapped and the accident
+         * stopped saving it.
+         *
+         * @return false if the handle went away, in which case the caller should stop.
+         */
+        private fun armDeadlines(from: Int, to: Int): Boolean {
+            val step = deadlineStepMsFor(pieceLength)
+            try {
+                if (armedFrom >= 0) {
+                    for (piece in armedFrom until armedTo) {
+                        if (piece < from || piece >= to) handle.resetPieceDeadline(piece)
+                    }
+                }
+                for (piece in from until to) {
+                    handle.setPieceDeadline(piece, (piece - from) * step)
+                }
+            } catch (_: Throwable) {
+                // Handle went away mid-loop: the file is complete, nothing left to ask for.
+                armedFrom = -1
+                armedTo = -1
+                return false
+            }
+            armedFrom = from
+            armedTo = to
+            return true
+        }
+
+        /**
+         * Give up this reader's claim on the swarm.
+         *
+         * A reader the player abandons after a seek would otherwise keep its window armed
+         * for as long as the torrent lives, competing with the reader that is actually
+         * feeding playback.
+         */
+        private fun releaseDeadlines() {
+            if (armedFrom < 0) return
+            try {
+                for (piece in armedFrom until armedTo) handle.resetPieceDeadline(piece)
+            } catch (_: Throwable) {
+                // Handle gone: nothing to release.
+            }
+            armedFrom = -1
+            armedTo = -1
+        }
+
+        /**
          * Block until the piece under the read cursor is on disk.
          *
          * Every call into libtorrent here is guarded, because the handle can go away
@@ -416,24 +486,10 @@ class TorrentHttpBridge(
         private fun awaitCurrentPiece() {
             if (!handleUsable()) return
             val firstPiece = ((torrentOffset + position) / pieceLength).toInt()
-            if (!havePieceSafe(firstPiece)) {
-                // Seek past the downloaded window: stale deadlines keep the swarm
-                // busy at the old playhead — drop them so bandwidth moves here now.
-                try {
-                    handle.clearPieceDeadlines()
-                } catch (_: Throwable) {
-                }
-            }
-            // Refresh the playhead window on every HTTP seek/range read.
+            // Refresh the playhead window whenever it moves.
             val deadlineEnd = minOf(pieceCount, firstPiece + deadlineWindowFor(pieceLength))
-            val step = deadlineStepMsFor(pieceLength)
-            try {
-                for (piece in firstPiece until deadlineEnd) {
-                    handle.setPieceDeadline(piece, (piece - firstPiece) * step)
-                }
-            } catch (_: Throwable) {
-                // Handle went away mid-loop: the file is complete, nothing left to ask for.
-                return
+            if (firstPiece != armedFrom || deadlineEnd != armedTo) {
+                if (!armDeadlines(firstPiece, deadlineEnd)) return
             }
             var waitedMs = 0L
             var nextNotifyMs = STALL_NOTIFY_FIRST_MS
@@ -486,6 +542,9 @@ class TorrentHttpBridge(
         }
 
         override fun close() {
+            // Hand back the swarm before anything else: a reader the player walked away
+            // from must not go on holding deadlines the active one needs.
+            releaseDeadlines()
             // Null when the stream was closed before a single piece landed, which is
             // exactly the case this lazy open exists for.
             source?.close()
