@@ -426,9 +426,10 @@ class TorrentHttpBridge(
             }
             // Refresh the playhead window on every HTTP seek/range read.
             val deadlineEnd = minOf(pieceCount, firstPiece + deadlineWindowFor(pieceLength))
+            val step = deadlineStepMsFor(pieceLength)
             try {
                 for (piece in firstPiece until deadlineEnd) {
-                    handle.setPieceDeadline(piece, (piece - firstPiece) * DEADLINE_STEP_MS)
+                    handle.setPieceDeadline(piece, (piece - firstPiece) * step)
                 }
             } catch (_: Throwable) {
                 // Handle went away mid-loop: the file is complete, nothing left to ask for.
@@ -528,8 +529,25 @@ class TorrentHttpBridge(
          * and reading it would put a large allocation on a 256 MB heap for nothing.
          */
         private const val TRACKS_MAX_BYTES = 4L * 1024 * 1024
-        /** Floor for the read-ahead window, and the value used when piece length is unknown. */
+        /** The window used when piece length is unknown and no byte budget can be worked out. */
         const val DEADLINE_WINDOW_PIECES = 12
+
+        /**
+         * Floor for the read-ahead window, in pieces.
+         *
+         * Two: the piece under the playhead and the one after it. Anything less and a
+         * finished piece leaves the swarm with no deadline to work towards.
+         *
+         * This used to be [DEADLINE_WINDOW_PIECES], which quietly defeated the byte budget
+         * below on exactly the torrents that could least afford it. A 12-piece floor is
+         * 96 MB when pieces are 8 MB and 192 MB when they are 16 MB, so a window meant to
+         * be 48 MB became two to four times that, and every piece in it fell due inside
+         * three seconds — one undifferentiated batch as far as the picker is concerned.
+         * The swarm spread its requests across all of it while the player sat waiting for
+         * the first piece: measured on the Mi Box, 61 seconds blocked on piece 0 with 806
+         * seeds connected and 2.8 MB/s arriving.
+         */
+        const val MIN_DEADLINE_WINDOW_PIECES = 2
 
         /**
          * How far ahead of the playhead the swarm is told to fetch.
@@ -550,8 +568,42 @@ class TorrentHttpBridge(
             if (pieceLength <= 0) {
                 DEADLINE_WINDOW_PIECES
             } else {
-                (READAHEAD_BYTES / pieceLength).toInt().coerceIn(DEADLINE_WINDOW_PIECES, 256)
+                (READAHEAD_BYTES / pieceLength).toInt()
+                    .coerceIn(MIN_DEADLINE_WINDOW_PIECES, 256)
             }
+
+        /**
+         * Gap between one piece's deadline and the next, scaled to how long a piece
+         * actually takes to arrive.
+         *
+         * A deadline is a request to have the piece by a given time, and the picker orders
+         * its work by them. A flat 250 ms made that ordering meaningless once pieces were
+         * large: a 12-piece window was entirely due within three seconds, while a single
+         * 8 MB piece needs about three seconds on its own at this box's typical rate. Every
+         * piece was late the moment it was armed, so none was more urgent than any other.
+         *
+         * Scaling by size restores the queue the deadlines are meant to express: the piece
+         * the player is blocked on is due now, the next is due about when the first should
+         * have landed, and so on. Small-piece torrents are unaffected, since the floor is
+         * the old constant.
+         */
+        fun deadlineStepMsFor(pieceLength: Int): Int =
+            if (pieceLength <= 0) {
+                DEADLINE_STEP_MS
+            } else {
+                ((pieceLength / BYTES_PER_MB) * DEADLINE_STEP_MS_PER_MB)
+                    .coerceIn(DEADLINE_STEP_MS, 4_000)
+            }
+
+        private const val BYTES_PER_MB = 1024 * 1024
+
+        /**
+         * Per megabyte of piece, added to a piece's deadline over its predecessor's. At
+         * 250 ms this assumes roughly 4 MB/s of useful throughput, which is at the
+         * optimistic end of what this box sees, so the ordering stays tight rather than
+         * artificially spacing pieces out.
+         */
+        private const val DEADLINE_STEP_MS_PER_MB = 250
         private const val DEADLINE_STEP_MS = 250
         private const val PIECE_POLL_MS = 75L
         private const val STALL_NOTIFY_FIRST_MS = 450L
