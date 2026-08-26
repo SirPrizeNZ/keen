@@ -4232,20 +4232,19 @@ class KeenActivity : AppCompatActivity() {
             if (generation != mockLoadingGeneration) return
             val t = elapsedMs / 1000f
             when {
-                // Connecting: no percentage yet, peers arriving.
+                // Connecting: no percentage and no peer figures at all.
+                //
+                // The service has no torrent status to read until metadata lands, so every
+                // tick of this phase carries -1 for peers, seeds and the swarm alike, and
+                // only a rate. This mock used to invent counts here, which is why the
+                // readout looked complete in the harness and came up blank on a real
+                // stream for the whole of the longest part of the wait.
                 t < MOCK_CONNECT_SEC -> updateTorrentOverlay(
                     stage = TorrentStreamingService.STAGE_CONNECTING,
                     percent = -1,
-                    peers = (t * 4).toInt().coerceAtMost(23),
-                    seeds = (t * 2).toInt().coerceAtMost(11),
-                    speedBps = 0L,
-                    // The swarm is found before the connections are: the tracker answers
-                    // in one go, and we then work our way up to a fraction of it. That gap
-                    // is exactly what the two-layer lock-up exists to show, so the mock
-                    // has to reproduce it rather than report one number twice.
-                    swarmSeeds = 45,
-                    swarmPeers = 128,
-                    uploadBps = (t * 12_000).toLong(),
+                    peers = -1,
+                    seeds = -1,
+                    speedBps = (t * 9_000).toLong(),
                 )
                 // Buffering: a percentage that climbs in the coarse jumps the real
                 // service reports, so the counter's own pacing is what is on trial.
@@ -4261,8 +4260,13 @@ class KeenActivity : AppCompatActivity() {
                         // something this harness actually exercises rather than skips.
                         speedBps = (40_000L + ((t - MOCK_CONNECT_SEC) * 380_000L).toLong())
                             .coerceAtMost(4_200_000L) + (-30_000L..30_000L).random(),
-                        swarmSeeds = 45,
-                        swarmPeers = 128,
+                        // Drifts rather than holding one figure. The real scrape moves a
+                        // few either way between samples and our connected seeds climb
+                        // into it, and a harness that reports a constant cannot show
+                        // whether the roll looks alive or looks stuck.
+                        swarmSeeds = 38 + ((t - MOCK_CONNECT_SEC) * 1.6f).toInt() +
+                            (-2..2).random(),
+                        swarmPeers = 128 + (-6..6).random(),
                         uploadBps = (180_000L..420_000L).random(),
                     )
                 }
@@ -4360,22 +4364,60 @@ class KeenActivity : AppCompatActivity() {
         // lasts — a late peer clears the stage and takes this with it.
         binding.torrentLoadingHint.visibility = if (noPeers) View.VISIBLE else View.GONE
 
-        // Peer stat lock-up: only shown once we have a real seeder/leecher breakdown,
-        // then it fades in and stays. Speed is always in MB/s to match the fixed label.
-        if (seeds >= 0 && peers >= 0) {
-            // Swarm size, not our socket count — and sticky, because the scrape figure
-            // arrives a few ticks in and a swarm does not really shrink to nothing
-            // between two 750 ms samples. Without the latch the numbers flickered
-            // between the tracker's answer and our own connections.
-            if (swarmSeeds >= 0) lastSwarmSeeds = maxOf(lastSwarmSeeds, swarmSeeds)
-            if (swarmPeers >= 0) lastSwarmPeers = maxOf(lastSwarmPeers, swarmPeers)
-            val showSeeds = if (lastSwarmSeeds >= 0) lastSwarmSeeds else seeds
-            val showPeers = if (lastSwarmPeers >= 0) lastSwarmPeers else (peers - seeds).coerceAtLeast(0)
-            // A count of zero this early is a state, not a measurement: the swarm is
-            // still being found. Printing "0" told the user the torrent was dead while
-            // it was in fact about to start, which is the one thing this readout must
-            // never do — people turn it off and never learn it was working.
-            val pending = showSeeds <= 0 && showPeers <= 0 && !noPeers
+        // Swarm size, not our socket count — and the latest reading, not the highest one
+        // ever seen.
+        //
+        // The service recomputes this every 750 ms from live status, so it genuinely
+        // moves: the tracker scrape refreshes, and our own connected seeds climb past it
+        // and are folded in. A high-water ratchet threw all of that away — the figure
+        // rolled up once and then sat frozen for the rest of the wait, which is the one
+        // number on screen that ought to look like it is still being measured.
+        //
+        // What the ratchet was actually protecting against was narrower: a tick with no
+        // scrape at all, where the readout fell back to our socket count and the number
+        // flickered between two different quantities. That is handled by keeping the last
+        // known figure when a reading is missing, and by refusing a zero once we have
+        // seen a real count — a swarm does not empty between two samples, so zero there
+        // means "not known this tick", not "nobody is sharing".
+        if (swarmSeeds > 0 || (swarmSeeds == 0 && lastSwarmSeeds < 0)) {
+            lastSwarmSeeds = swarmSeeds
+        }
+        if (swarmPeers > 0 || (swarmPeers == 0 && lastSwarmPeers < 0)) {
+            lastSwarmPeers = swarmPeers
+        }
+        // Our own seeder/leecher split, which the service only sends once it has metadata
+        // and a status object to read it from.
+        val haveBreakdown = seeds >= 0 && peers >= 0
+        val showSeeds = if (lastSwarmSeeds >= 0) lastSwarmSeeds else seeds
+        val showPeers = if (lastSwarmPeers >= 0) lastSwarmPeers else (peers - seeds).coerceAtLeast(0)
+        // A count of zero this early is a state, not a measurement: the swarm is
+        // still being found. Printing "0" told the user the torrent was dead while
+        // it was in fact about to start, which is the one thing this readout must
+        // never do — people turn it off and never learn it was working.
+        val pending = !haveBreakdown || (showSeeds <= 0 && showPeers <= 0 && !noPeers)
+
+        if (SWARM_LOCKUP) {
+            // Up from the first tick, like the jumbo percent beside it, rather than only
+            // once a breakdown lands.
+            //
+            // Waiting for `haveBreakdown` left both figures blank for the whole of
+            // fetching and connecting — the longest part of the wait, and the part where
+            // "is anything happening at all" is the only question on screen. The count
+            // shows a dash until it is real, but the rate is measured from the very first
+            // tick and there is no reason to hide it: bytes moving during metadata is
+            // exactly the reassurance this readout exists to give.
+            //
+            // `showSeeds` is the latched swarm figure, deliberately not `seeds`, our own
+            // socket count. See SwarmStatsView.
+            binding.torrentSwarmStats.setStats(
+                seedsInSwarm = showSeeds,
+                downBps = speedBps.coerceAtLeast(0),
+                pending = pending,
+            )
+            showStatLockUp(true)
+        } else if (haveBreakdown) {
+            // The three-number row that shipped before the lock-up: only shown once we
+            // have a real seeder/leecher breakdown, then it fades in and stays.
             if (pending) {
                 binding.statSeeders.text = STAT_PENDING
                 binding.statLeechers.text = STAT_PENDING
@@ -4390,14 +4432,6 @@ class KeenActivity : AppCompatActivity() {
                 binding.statSeeders.text = showSeeds.coerceAtLeast(0).toString()
                 binding.statLeechers.text = showPeers.coerceAtLeast(0).toString()
             }
-
-            // `showSeeds` is the latched swarm figure, the same one the old row prints —
-            // deliberately not `seeds`, our own socket count. See SwarmStatsView.
-            binding.torrentSwarmStats.setStats(
-                seedsInSwarm = showSeeds,
-                downBps = speedBps.coerceAtLeast(0),
-                pending = pending,
-            )
             // Same reasoning for the rate. Head pieces arrive at tens of KB/s, which in
             // fixed MB/s rounds to "0.0" — a stream downloading perfectly well read as a
             // stream doing nothing. The unit follows the number instead.

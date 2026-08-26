@@ -1,11 +1,13 @@
 package com.keenzero.app.home
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.util.AttributeSet
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import androidx.core.content.res.ResourcesCompat
 import com.keenzero.app.R
 
@@ -46,6 +48,21 @@ class SwarmStatsView @JvmOverloads constructor(
     private var rateDown = ""
 
     /**
+     * The count-up. Seeds rolls to its new figure; the rate never does.
+     *
+     * They look like the same kind of number and are not. Seeds is a total settling into
+     * place — it arrives as one jump from a dash to forty-odd, and counting through that
+     * span is what reads as "we are finding the swarm" rather than as a figure blinking
+     * into existence. The rate is a live measurement resampled every 750 ms: rolling it
+     * would mean the number on screen is never the rate, always a point a few hundred
+     * milliseconds behind, and a digit column that never stops moving next to a percent
+     * that is also moving is the distraction this screen can least afford.
+     */
+    private var seedsAnimator: ValueAnimator? = null
+    private var seedsShown = 0
+    private var seedsTarget = 0
+
+    /**
      * Swapped outright, never rolled. The unit is not a value changing, it is the same
      * value being said a different way, and sliding it made a quiet relabelling look like
      * an event — on the one line where nothing has actually happened.
@@ -69,10 +86,84 @@ class SwarmStatsView @JvmOverloads constructor(
      */
     fun setStats(seedsInSwarm: Int, downBps: Long, pending: Boolean) {
         chooseUnit(downBps)
-        seeds = if (pending) PENDING else seedsInSwarm.coerceAtLeast(0).toString()
+        if (pending) {
+            // Back to a dash, and back to zero behind it, so the first real figure counts
+            // up from nothing the way the swarm actually fills rather than from whatever
+            // the previous stream happened to end on.
+            seedsAnimator?.cancel()
+            seedsShown = 0
+            seedsTarget = 0
+            seeds = PENDING
+        } else {
+            rollSeedsTo(seedsInSwarm.coerceAtLeast(0))
+        }
         rateDown = formatRate(downBps)
         rateUnit = if (kilobytes) "KB/s" else "MB/s"
         invalidate()
+    }
+
+    /**
+     * Roll the seed count to [target], redrawing only when the printed digits change.
+     *
+     * That last part is the whole performance story. A ValueAnimator hands you a new
+     * fraction every frame, but this view prints an integer: counting 0 to 45 has 45
+     * distinct things to show, and invalidating on all 36 frames of a 600 ms roll would
+     * be 36 draws to show 45 states, most of them identical to the one before. Redrawing
+     * on the integer instead makes the work proportional to the count, not to the frame
+     * rate, and the draw itself is four drawText calls into a 201x58dp view with no
+     * layout, no allocation and no bitmap behind it.
+     *
+     * Duration follows the distance so a jump from 2 to 3 does not take as long as a jump
+     * from 0 to 400, and is capped so a huge swarm still lands before the wait is over.
+     */
+    private fun rollSeedsTo(target: Int) {
+        val from = seedsShown
+        val distance = kotlin.math.abs(target - from)
+        // Nothing worth animating: land on the figure and, crucially, print it. One
+        // number is not a roll — the animation would be over before it was legible, which
+        // reads as a flicker rather than as counting — and zero steps is no change at all.
+        //
+        // Returning early on an unchanged target without writing the text is a trap, and
+        // one this readout must not fall into. A dash reset leaves the target at zero, so
+        // a torrent whose first real count is zero — a genuine drought, the STAGE_NO_PEERS
+        // case the row above deliberately prints the zeros for — matches the target it
+        // already had, and the dash would stand for the rest of the session. That is the
+        // readout hiding the number at exactly the moment it turns bad.
+        if (distance < 2) {
+            seedsAnimator?.cancel()
+            seedsTarget = target
+            seedsShown = target
+            seeds = target.toString()
+            return
+        }
+        if (target == seedsTarget && seedsAnimator?.isRunning == true) return
+        seedsTarget = target
+        seedsAnimator?.cancel()
+        seedsAnimator = ValueAnimator.ofInt(from, target).apply {
+            duration = (ROLL_MS_PER_STEP * distance)
+                .coerceIn(ROLL_MIN_MS, ROLL_MAX_MS)
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val value = animation.animatedValue as Int
+                if (value == seedsShown) return@addUpdateListener
+                seedsShown = value
+                seeds = value.toString()
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    /**
+     * A detached view keeps no animator running. The overlay is torn down the moment
+     * playback starts, and an animator outliving it would go on posting frames to a view
+     * nobody is looking at, during the seconds the player is opening the container — the
+     * most contended part of the whole session.
+     */
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        seedsAnimator?.cancel()
+        seedsAnimator = null
     }
 
     /**
@@ -175,6 +266,15 @@ class SwarmStatsView @JvmOverloads constructor(
         const val PROMOTE_BPS = 1_048_576L
         const val DEMOTE_BPS = 838_860L
         const val PENDING = "–"
+
+        /**
+         * Roll pacing. Per-step so short hops stay brisk, floored so a two-step change is
+         * still visibly a count, ceilinged so a four-figure swarm does not spend the whole
+         * wait counting.
+         */
+        const val ROLL_MS_PER_STEP = 14L
+        const val ROLL_MIN_MS = 260L
+        const val ROLL_MAX_MS = 900L
 
     }
 }

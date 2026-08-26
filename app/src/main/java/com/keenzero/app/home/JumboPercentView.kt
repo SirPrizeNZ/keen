@@ -188,7 +188,23 @@ class JumboPercentView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         buildFadeShader(h.toFloat())
+        metricsW = -1f
     }
+
+    /**
+     * Type size and glyph geometry, held for as long as the view's size and the number of
+     * digits on screen stay the same. See [ensureMetrics].
+     */
+    private var metricsW = -1f
+    private var metricsH = -1f
+    private var metricsDigits = -1
+    private var cachedTextSize = 0f
+    private var cachedCell = 0f
+    private var cachedBaseline = 0f
+    private var cachedInkTop = 0f
+    private var cachedInkH = 0f
+    private val digitWidths = FloatArray(10)
+    private val glyph = CharArray(1)
 
     /**
      * Vertical fade fixed in view space: transparent at the very top and bottom
@@ -219,33 +235,15 @@ class JumboPercentView @JvmOverloads constructor(
 
         // Size to the clear reading band, not the whole view, so a settled number
         // sits fully inside the un-faded centre.
-        val bandH = h * (1f - 2f * FADE_FRACTION)
-        val targetH = bandH * FILL_FRACTION
-
-        val probe = 200f
-        paint.textSize = probe
-        paint.getTextBounds(REFERENCE_GLYPHS, 0, REFERENCE_GLYPHS.length, bounds)
-        if (bounds.height() <= 0) return
-        var size = probe * (targetH / bounds.height())
-        paint.textSize = size
-
-        // Keep the widest value inside the width budget (e.g. a 3-digit "100").
-        val maxW = w * WIDTH_FILL_FRACTION
-        if (text.length * widestDigit() > maxW) {
-            size *= maxW / (text.length * widestDigit())
-            paint.textSize = size
-        }
-        val cell = widestDigit()
-
-        // Baseline centres the reference ink block so every value shares one
-        // vertical centre line and none drift as the digits change.
-        paint.getTextBounds(REFERENCE_GLYPHS, 0, REFERENCE_GLYPHS.length, bounds)
-        val inkH = bounds.height().toFloat()
-        val baseline = (h - inkH) / 2f - bounds.top
-        // Top of the painted ink. Must be read after `baseline` above: View has a
-        // `baseline` property of its own, so ordering this wrongly binds to that instead
-        // of to the local, compiles cleanly, and quietly puts the wash off-screen.
-        val inkTop = baseline + bounds.top
+        if (!ensureMetrics(w, h, text.length)) return
+        // Restated rather than assumed: on a cache hit nothing above has touched the
+        // paint, but the size living in a field and the paint carrying it are two
+        // different things, and only one of them is what the glyphs are drawn at.
+        paint.textSize = cachedTextSize
+        val cell = cachedCell
+        val baseline = cachedBaseline
+        val inkH = cachedInkH
+        val inkTop = cachedInkTop
         val travel = inkH * TRAVEL_SLOTS
 
         val old = previousText
@@ -305,9 +303,68 @@ class JumboPercentView @JvmOverloads constructor(
         }
     }
 
-    private fun widestDigit(): Float {
+    /**
+     * Work out the type size and the geometry that follow from it, once per size and
+     * digit count rather than once per frame.
+     *
+     * All of this used to run on every frame of the roll. It is a fair amount of work to
+     * repeat sixty times a second for an answer that cannot change: two `getTextBounds`
+     * passes, and `widestDigit` measuring all ten glyphs — called two or three times a
+     * frame, each call allocating ten Strings to measure them from. None of it depends on
+     * anything that varies between frames. The inputs are the view's size and how many
+     * digits are on screen, so that is the key.
+     *
+     * @return false if the font has no ink to measure yet, the same guard the inline
+     *   version had.
+     */
+    private fun ensureMetrics(w: Float, h: Float, digits: Int): Boolean {
+        if (metricsW == w && metricsH == h && metricsDigits == digits) return cachedCell > 0f
+
+        val bandH = h * (1f - 2f * FADE_FRACTION)
+        val targetH = bandH * FILL_FRACTION
+
+        val probe = 200f
+        paint.textSize = probe
+        paint.getTextBounds(REFERENCE_GLYPHS, 0, REFERENCE_GLYPHS.length, bounds)
+        if (bounds.height() <= 0) return false
+        var size = probe * (targetH / bounds.height())
+        paint.textSize = size
+
+        // Keep the widest value inside the width budget (e.g. a 3-digit "100").
+        val maxW = w * WIDTH_FILL_FRACTION
+        var widest = measureDigits()
+        if (digits * widest > maxW) {
+            size *= maxW / (digits * widest)
+            paint.textSize = size
+            widest = measureDigits()
+        }
+
+        // Baseline centres the reference ink block so every value shares one
+        // vertical centre line and none drift as the digits change.
+        paint.getTextBounds(REFERENCE_GLYPHS, 0, REFERENCE_GLYPHS.length, bounds)
+        cachedInkH = bounds.height().toFloat()
+        cachedBaseline = (h - cachedInkH) / 2f - bounds.top
+        // Top of the painted ink. Must be read after the baseline above: View has a
+        // `baseline` property of its own, so ordering this wrongly binds to that instead
+        // of to the local, compiles cleanly, and quietly puts the wash off-screen.
+        cachedInkTop = cachedBaseline + bounds.top
+        cachedCell = widest
+        cachedTextSize = size
+        metricsW = w
+        metricsH = h
+        metricsDigits = digits
+        return true
+    }
+
+    /** Fills [digitWidths] at the current type size and returns the widest. */
+    private fun measureDigits(): Float {
         var max = 0f
-        for (d in '0'..'9') max = maxOf(max, paint.measureText(d.toString()))
+        for (d in 0..9) {
+            glyph[0] = ('0' + d)
+            val gw = paint.measureText(glyph, 0, 1)
+            digitWidths[d] = gw
+            if (gw > max) max = gw
+        }
         return max
     }
 
@@ -337,12 +394,14 @@ class JumboPercentView @JvmOverloads constructor(
         baseline: Float,
         fade: Float = 1f,
     ) {
-        val s = ch.toString()
-        val gw = paint.measureText(s)
+        // Drawn from a reused char array rather than a String per glyph per frame, and
+        // measured from the table [measureDigits] already filled at this type size.
+        glyph[0] = ch
+        val gw = if (ch in '0'..'9') digitWidths[ch - '0'] else paint.measureText(glyph, 0, 1)
         val previous = paint.alpha
         // Modulates the shader, so this rides on top of the positional gradient.
         paint.alpha = (255f * fade.coerceIn(0f, 1f)).toInt()
-        canvas.drawText(s, cellLeft + (cell - gw) / 2f, baseline, paint)
+        canvas.drawText(glyph, 0, 1, cellLeft + (cell - gw) / 2f, baseline, paint)
         paint.alpha = previous
     }
 
