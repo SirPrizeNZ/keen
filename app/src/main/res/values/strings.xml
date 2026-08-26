@@ -31,6 +31,10 @@
     <string name="torrent_stage_fetching">Downloading torrent info…</string>
     <string name="torrent_stage_metadata">Connecting to peers…</string>
     <string name="torrent_stage_buffering">Buffering</string>
+    <!-- The buffer is full but the player still cannot start: it is waiting on the piece
+         that holds the film's header, which on a torrent with large pieces is several
+         megabytes that have to arrive whole. Without this the counter simply sat at 99. -->
+    <string name="torrent_stage_opening">Opening the film…</string>
     <!-- Nobody answered at all. -->
     <string name="torrent_stage_no_seeders">No seeders found — nobody is sharing this</string>
     <!-- Peers are connected, but none of them hold the file. -->

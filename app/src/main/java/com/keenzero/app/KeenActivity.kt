@@ -3982,6 +3982,12 @@ class KeenActivity : AppCompatActivity() {
     // Last swarm figures seen this loader session (tracker scrape, or peers known from
     // DHT/PEX). Held so the readout does not flicker back to our own connection count
     // between announces. Reset with the percent each time the loader reappears.
+    /** Says what the wait is really for, once the progress ticks have stopped. */
+    private val openingTitleRunnable = Runnable {
+        if (!torrentFirstFrameShown && torrentOverlayVisible) {
+            binding.torrentLoadingTitle.setText(R.string.torrent_stage_opening)
+        }
+    }
     private var lastSwarmSeeds = -1
     private var lastSwarmPeers = -1
 
@@ -4013,6 +4019,7 @@ class KeenActivity : AppCompatActivity() {
         autoContinuePending = false
         binding.torrentLoadingOverlay.cutoutRadius = 0f
         lastGiantPercent = -1
+        binding.root.removeCallbacks(openingTitleRunnable)
         lastSwarmSeeds = -1
         lastSwarmPeers = -1
         currentFocus?.let { hideKeyboard(it) }
@@ -4148,7 +4155,18 @@ class KeenActivity : AppCompatActivity() {
         // that read as a flash followed by a full second of edges retreating around an
         // already-visible picture. The radius runs to the corners, so the tail of the
         // curve IS the corners, and starving it is what showed.
-        animator.interpolator = android.view.animation.PathInterpolator(0f, 0f, 0.2f, 1f)
+        // Slow enough at the front to be seen at all.
+        //
+        // (0, 0, 0.2, 1) reached 160px of radius in a single frame and 473px by 200ms,
+        // and the readout it opens through sits within ~250px of centre, so the numbers
+        // and spinner were gone almost before the animation started. Filmed off the box on
+        // a film that opens on black, the whole reveal read as a hard cut: the only thing
+        // with any contrast was eaten in the first frames, and a black circle growing
+        // across a black picture is nothing to look at.
+        //
+        // This holds the first 300ms under 130px, so the hole is seen opening through the
+        // figures, and still decelerates into the corners rather than starving the tail.
+        animator.interpolator = android.view.animation.PathInterpolator(0.45f, 0f, 0.25f, 1f)
         animator.addUpdateListener { overlay.cutoutRadius = it.animatedValue as Float }
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
@@ -4166,6 +4184,7 @@ class KeenActivity : AppCompatActivity() {
      */
     private fun dismissTorrentOverlayNow() {
         stopTitlePulse()
+        binding.root.removeCallbacks(openingTitleRunnable)
         binding.torrentLoadingOverlay.animate().cancel()
         // Whole again, so the next stream's surface is not born with a hole in it.
         binding.torrentLoadingOverlay.cutoutRadius = 0f
@@ -4292,7 +4311,7 @@ class KeenActivity : AppCompatActivity() {
         uploadBps: Long = -1,
     ) {
         if (!torrentOverlayVisible) return
-        val stageText = when (stage) {
+        var stageText = when (stage) {
             TorrentStreamingService.STAGE_FETCHING_TORRENT -> getString(R.string.torrent_stage_fetching)
             TorrentStreamingService.STAGE_CONNECTING,
             TorrentStreamingService.STAGE_METADATA,
@@ -4352,6 +4371,7 @@ class KeenActivity : AppCompatActivity() {
             val ceiling = if (torrentFirstFrameShown) 100 else 99
             val clamped = percent.coerceIn(0, ceiling).coerceAtLeast(lastGiantPercent)
             lastGiantPercent = clamped
+
             binding.torrentLoadingSpinner.setProgress(clamped / 100f)
             binding.torrentLoadingPercentGiant.setPercent(clamped)
         } else {
@@ -4359,6 +4379,20 @@ class KeenActivity : AppCompatActivity() {
             binding.torrentLoadingSpinner.startIndeterminate()
         }
         binding.torrentLoadingTitle.text = stageText
+        // The wait after the buffer is full has no ticks of its own, so silence is what
+        // marks it.
+        //
+        // The service runs its progress loop until the buffer completes and then stops,
+        // which is the exact moment the player starts waiting on the piece that holds the
+        // film's header. Nothing is broadcast from then until the picture appears, so the
+        // title is re-armed on every tick and only fires once they stop. Keying it to the
+        // percentage instead does not work: the counter creeps on its own inside the
+        // readout, so the number on screen and the number this code last saw are not the
+        // same, and the first attempt at this sat on "Buffering" for the whole wait.
+        binding.root.removeCallbacks(openingTitleRunnable)
+        if (!torrentFirstFrameShown) {
+            binding.root.postDelayed(openingTitleRunnable, STAGE_OPENING_AFTER_MS)
+        }
         val noPeers = stage == TorrentStreamingService.STAGE_NO_PEERS
         // Says the session is still up and Back is a way out. Only while the drought
         // lasts — a late peer clears the stage and takes this with it.
@@ -6464,6 +6498,13 @@ class KeenActivity : AppCompatActivity() {
          * one minute of media, so pressing/holding walks it by the minute. */
         private const val TORRENT_TIMEBAR_KEY_INCREMENT_MS = 60_000L
 
+        /**
+         * How long the readout may sit at its ceiling before the title stops saying
+         * "Buffering" and says what the wait is really for. Long enough that a stream
+         * which is about to start does not flash a second message on its way through.
+         */
+        private const val STAGE_OPENING_AFTER_MS = 4_000L
+
         /** Shown where a stat has no measurement yet — never a bare, dead-looking 0. */
         private const val STAT_PENDING = "—"
 
@@ -6595,7 +6636,7 @@ class KeenActivity : AppCompatActivity() {
         private const val BADGE_PILL_COLOUR = 0xFF000000.toInt()
         /** Circular reveal from loading surface to picture. Long enough to read, short
          *  enough that it never sits between the user and the film. */
-        private const val TORRENT_REVEAL_MS = 1250L
+        private const val TORRENT_REVEAL_MS = 1400L
 
         /**
          * How long before the end of an episode the next one is offered.

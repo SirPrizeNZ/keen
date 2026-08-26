@@ -4,7 +4,10 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Shader
 import android.util.AttributeSet
 import android.view.View
 import android.view.animation.DecelerateInterpolator
@@ -63,6 +66,21 @@ class SwarmStatsView @JvmOverloads constructor(
     private var seedsTarget = 0
 
     /**
+     * The pending count is a shimmering zero rather than a dash.
+     *
+     * A dash says "no value"; a zero that is visibly still loading says "no value yet",
+     * which is the true state and the one that does not read as a dead torrent. The
+     * shimmer is what carries that distinction, so it has to keep moving for as long as
+     * the figure is unknown: a static grey zero would be indistinguishable from a real
+     * count of zero, which is the readout this screen must never show by accident.
+     */
+    private var pendingSeeds = false
+    private var shimmerAnimator: ValueAnimator? = null
+    private var shimmerPhase = 0f
+    private val shimmerMatrix = Matrix()
+    private var shimmerShader: LinearGradient? = null
+
+    /**
      * Swapped outright, never rolled. The unit is not a value changing, it is the same
      * value being said a different way, and sliding it made a quiet relabelling look like
      * an event — on the one line where nothing has actually happened.
@@ -87,19 +105,61 @@ class SwarmStatsView @JvmOverloads constructor(
     fun setStats(seedsInSwarm: Int, downBps: Long, pending: Boolean) {
         chooseUnit(downBps)
         if (pending) {
-            // Back to a dash, and back to zero behind it, so the first real figure counts
-            // up from nothing the way the swarm actually fills rather than from whatever
-            // the previous stream happened to end on.
+            // Back to zero behind it too, so the first real figure counts up from nothing
+            // the way the swarm actually fills rather than from whatever the previous
+            // stream happened to end on.
             seedsAnimator?.cancel()
             seedsShown = 0
             seedsTarget = 0
             seeds = PENDING
+            startShimmer()
         } else {
+            stopShimmer()
             rollSeedsTo(seedsInSwarm.coerceAtLeast(0))
         }
         rateDown = formatRate(downBps)
         rateUnit = if (kilobytes) "KB/s" else "MB/s"
         invalidate()
+    }
+
+    private fun startShimmer() {
+        pendingSeeds = true
+        if (shimmerAnimator?.isRunning == true) return
+        shimmerAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = SHIMMER_MS
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                shimmerPhase = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun stopShimmer() {
+        pendingSeeds = false
+        shimmerAnimator?.cancel()
+        shimmerAnimator = null
+    }
+
+    /**
+     * A band of light swept across the glyph, left to right, on a loop.
+     *
+     * Built once per size and moved with a matrix rather than rebuilt per frame: a new
+     * LinearGradient every frame is an allocation sixty times a second for a shape that
+     * never changes, and this view already learned that lesson with its tints.
+     */
+    private fun shimmerShaderFor(width: Float): LinearGradient {
+        shimmerShader?.let { return it }
+        val band = LinearGradient(
+            0f, 0f, width * SHIMMER_BAND, 0f,
+            intArrayOf(SHIMMER_DIM, SHIMMER_BRIGHT, SHIMMER_DIM),
+            floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        shimmerShader = band
+        return band
     }
 
     /**
@@ -164,6 +224,7 @@ class SwarmStatsView @JvmOverloads constructor(
         super.onDetachedFromWindow()
         seedsAnimator?.cancel()
         seedsAnimator = null
+        stopShimmer()
     }
 
     /**
@@ -199,6 +260,8 @@ class SwarmStatsView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        // Sized from the column, so it is only valid for the size it was built at.
+        shimmerShader = null
         unit = if (w > 0) w / DESIGN_W else 1f
         numberPaint.textSize = NUMBER_SIZE * unit
         labelPaint.textSize = LABEL_SIZE * unit
@@ -209,7 +272,25 @@ class SwarmStatsView @JvmOverloads constructor(
         if (unit <= 0f || seeds.isEmpty()) return
 
         val numberBaseline = baselineOf(numberPaint, NUMBER_TOP, NUMBER_LINE)
-        canvas.drawText(seeds, columnCentre(0f), numberBaseline, numberPaint)
+        if (pendingSeeds) {
+            // Sweep the band from just off the left of the column to just off the right,
+            // so the bright part crosses the glyph rather than appearing inside it.
+            val columnWidth = COLUMN_W * unit
+            val travel = columnWidth * (1f + SHIMMER_BAND * 2f)
+            val shader = shimmerShaderFor(columnWidth)
+            shimmerMatrix.reset()
+            shimmerMatrix.setTranslate(
+                columnCentre(0f) - columnWidth / 2f - columnWidth * SHIMMER_BAND +
+                    travel * shimmerPhase,
+                0f,
+            )
+            shader.setLocalMatrix(shimmerMatrix)
+            numberPaint.shader = shader
+            canvas.drawText(seeds, columnCentre(0f), numberBaseline, numberPaint)
+            numberPaint.shader = null
+        } else {
+            canvas.drawText(seeds, columnCentre(0f), numberBaseline, numberPaint)
+        }
         canvas.drawText(rateDown, columnCentre(COLUMN_PITCH), numberBaseline, numberPaint)
 
         val labelBaseline = baselineOf(labelPaint, LABEL_TOP, LABEL_LINE)
@@ -265,7 +346,14 @@ class SwarmStatsView @JvmOverloads constructor(
         /** Promote at a megabyte a second; drop back only well below it. */
         const val PROMOTE_BPS = 1_048_576L
         const val DEMOTE_BPS = 838_860L
-        const val PENDING = "–"
+        /** The pending count. A zero that shimmers, not a dash: see [pendingSeeds]. */
+        const val PENDING = "0"
+
+        const val SHIMMER_MS = 1_150L
+        /** Band width as a fraction of the column, so the sweep reads at TV distance. */
+        const val SHIMMER_BAND = 0.55f
+        const val SHIMMER_DIM = 0x40FFFFFF
+        const val SHIMMER_BRIGHT = -0x1 // opaque white
 
         /**
          * Roll pacing. Per-step so short hops stay brisk, floored so a two-step change is
