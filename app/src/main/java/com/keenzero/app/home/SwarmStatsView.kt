@@ -40,7 +40,7 @@ class SwarmStatsView @JvmOverloads constructor(
         typeface = ResourcesCompat.getFont(context, R.font.gsflex_big)
     }
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(128, 255, 255, 255)
+        color = LABEL_COLOUR
         textAlign = Paint.Align.CENTER
         letterSpacing = -0.05f
         typeface = ResourcesCompat.getFont(context, R.font.gsflex_label)
@@ -144,7 +144,14 @@ class SwarmStatsView @JvmOverloads constructor(
     }
 
     /**
-     * A band of light swept across the glyph, left to right, on a loop.
+     * A band of light raked across the seeds lock-up at [SHIMMER_ANGLE_DEG], top left to
+     * bottom right, on a loop.
+     *
+     * Diagonal rather than upright because the sweep has to read as light passing over
+     * the figure and its label together: a vertical band crossing a two-line lock-up hits
+     * both lines at the same instant, which looks like the whole block blinking. Raked
+     * over, the highlight reaches the number first and the word underneath a moment
+     * later, so the lock-up is one object being lit rather than two things flashing.
      *
      * Built once per size and moved with a matrix rather than rebuilt per frame: a new
      * LinearGradient every frame is an allocation sixty times a second for a shape that
@@ -152,6 +159,8 @@ class SwarmStatsView @JvmOverloads constructor(
      */
     private fun shimmerShaderFor(width: Float): LinearGradient {
         shimmerShader?.let { return it }
+        // Horizontal band; the rake comes from the matrix, which rotates it and the
+        // travel together so the sweep runs square to the band's own edge.
         val band = LinearGradient(
             0f, 0f, width * SHIMMER_BAND, 0f,
             intArrayOf(SHIMMER_DIM, SHIMMER_BRIGHT, SHIMMER_DIM),
@@ -272,31 +281,84 @@ class SwarmStatsView @JvmOverloads constructor(
         if (unit <= 0f || seeds.isEmpty()) return
 
         val numberBaseline = baselineOf(numberPaint, NUMBER_TOP, NUMBER_LINE)
-        if (pendingSeeds) {
-            // Sweep the band from just off the left of the column to just off the right,
-            // so the bright part crosses the glyph rather than appearing inside it.
-            val columnWidth = COLUMN_W * unit
-            val travel = columnWidth * (1f + SHIMMER_BAND * 2f)
-            val shader = shimmerShaderFor(columnWidth)
-            shimmerMatrix.reset()
-            shimmerMatrix.setTranslate(
-                columnCentre(0f) - columnWidth / 2f - columnWidth * SHIMMER_BAND +
-                    travel * shimmerPhase,
-                0f,
-            )
-            shader.setLocalMatrix(shimmerMatrix)
-            numberPaint.shader = shader
-            canvas.drawText(seeds, columnCentre(0f), numberBaseline, numberPaint)
-            numberPaint.shader = null
-        } else {
-            canvas.drawText(seeds, columnCentre(0f), numberBaseline, numberPaint)
-        }
-        canvas.drawText(rateDown, columnCentre(COLUMN_PITCH), numberBaseline, numberPaint)
-
         val labelBaseline = baselineOf(labelPaint, LABEL_TOP, LABEL_LINE)
-        canvas.drawText(seedsLabel, columnCentre(0f), labelBaseline, labelPaint)
+        val seedsCentre = columnCentre(0f)
+
+        if (pendingSeeds) {
+            // One band for the whole seeds lock-up, number and label alike: the count is
+            // what is unknown, and the word under it belongs to the same unknown figure.
+            // Lighting only the digit left the label sitting dead beside a moving glyph.
+            applyShimmer()
+            canvas.drawText(seeds, seedsCentre, numberBaseline, numberPaint)
+            canvas.drawText(seedsLabel, seedsCentre, labelBaseline, labelPaint)
+            clearShimmer()
+        } else {
+            canvas.drawText(seeds, seedsCentre, numberBaseline, numberPaint)
+            canvas.drawText(seedsLabel, seedsCentre, labelBaseline, labelPaint)
+        }
+
+        canvas.drawText(rateDown, columnCentre(COLUMN_PITCH), numberBaseline, numberPaint)
         canvas.drawText(rateUnit, columnCentre(COLUMN_PITCH), labelBaseline, labelPaint)
     }
+
+    /**
+     * Point both seeds paints at the raked band, positioned for this frame.
+     *
+     * The band is built horizontal and rotated here, so the sweep travels square to its
+     * own edge: rotating the gradient but translating along x would slide the highlight
+     * along the band rather than across it, and the bright part would never leave the
+     * glyphs. Travel is measured along the raked axis and covers the lock-up's diagonal
+     * plus a band's width at each end, so the highlight starts and finishes clear of the
+     * type instead of appearing inside it.
+     */
+    private fun applyShimmer() {
+        val columnWidth = COLUMN_W * unit
+        val lockUpH = (LABEL_TOP + LABEL_LINE) * unit
+        val shader = shimmerShaderFor(columnWidth)
+        val radians = Math.toRadians(SHIMMER_ANGLE_DEG.toDouble())
+        val cos = kotlin.math.cos(radians).toFloat()
+        val sin = kotlin.math.sin(radians).toFloat()
+        // How much of the lock-up the band has to cross, measured along its own axis
+        // rather than along the view: a raked band travels the box's projection onto that
+        // axis, which is longer than either side.
+        val span = kotlin.math.abs(columnWidth * cos) + kotlin.math.abs(lockUpH * sin)
+        val bandWidth = columnWidth * SHIMMER_BAND
+        val travel = span + bandWidth * 2f
+
+        shimmerMatrix.reset()
+        // Rotated about the centre of the lock-up, so the band lies the same way over the
+        // figure and the word under it, then walked along its own axis from a band's width
+        // clear of one edge to a band's width clear of the other.
+        shimmerMatrix.setTranslate(
+            LEFT_PAD * unit + columnWidth / 2f,
+            TOP_PAD * unit + lockUpH / 2f,
+        )
+        // The band travels down and to the right, so the light enters at the top left of
+        // the lock-up and leaves at the bottom right. (The bright line it draws leans the
+        // other way, being perpendicular to its own axis — the direction of travel is what
+        // the eye reads as the angle, and that is what this states.)
+        shimmerMatrix.preRotate(SHIMMER_ANGLE_DEG)
+        shimmerMatrix.preTranslate(-travel / 2f + travel * shimmerPhase, 0f)
+        shader.setLocalMatrix(shimmerMatrix)
+
+        numberPaint.shader = shader
+        // At full alpha, so the band itself is what colours the word. The label paint
+        // carries 50% white, and multiplying that into the band's dim end left the label
+        // at about an eighth of white — under its own resting grey, so the sweep was
+        // invisible on it and only the figure appeared to move.
+        labelPaint.alpha = 255
+        labelPaint.shader = shader
+    }
+
+    /** Put the label paint back to its resting grey after a shimmered draw. */
+    private fun clearShimmer() {
+        numberPaint.shader = null
+        labelPaint.shader = null
+        labelPaint.color = LABEL_COLOUR
+    }
+
+    /** Left edge of the seeds column, in device px. */
+    private fun seedsLockUpLeft(): Float = LEFT_PAD * unit
 
     private fun columnCentre(x: Float): Float = (LEFT_PAD + x + COLUMN_W / 2f) * unit
 
@@ -349,9 +411,25 @@ class SwarmStatsView @JvmOverloads constructor(
         /** The pending count. A zero that shimmers, not a dash: see [pendingSeeds]. */
         const val PENDING = "0"
 
+        /** The label's resting grey, restored after every shimmered draw. */
+        val LABEL_COLOUR = Color.argb(128, 255, 255, 255)
+
         const val SHIMMER_MS = 1_150L
-        /** Band width as a fraction of the column, so the sweep reads at TV distance. */
-        const val SHIMMER_BAND = 0.55f
+        /**
+         * Rake of the sweep, degrees clockwise from horizontal: top left to bottom right.
+         * Shallow enough that the highlight still crosses the figure quickly, steep enough
+         * to reach the number before the label under it.
+         */
+        const val SHIMMER_ANGLE_DEG = 45f
+        /**
+         * Band width as a fraction of the column.
+         *
+         * A stripe, not a wash. At 0.55 the band was wider than the figure it crossed, so
+         * the glyph only ever saw a broad ramp — filmed on the box it read as the number
+         * brightening and dimming in place, with no direction to it at all, which is the
+         * one thing the rake exists to show.
+         */
+        const val SHIMMER_BAND = 0.3f
         const val SHIMMER_DIM = 0x40FFFFFF
         const val SHIMMER_BRIGHT = -0x1 // opaque white
 
