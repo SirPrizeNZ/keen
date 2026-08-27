@@ -58,6 +58,17 @@ class TorrentStreamingService : Service() {
     private var bridge: TorrentHttpBridge? = null
     private var sessionDir: File? = null
     private var progressTask: ScheduledFuture<*>? = null
+
+    /**
+     * The peer read-out, which runs for as long as the torrent does.
+     *
+     * Deliberately not part of the buffer loop. That loop ends the moment the buffer is
+     * full, which is the moment playback starts — so every measurement of how well the
+     * swarm is being used stopped at exactly the point the answer starts to matter. Tuning
+     * peer turnover against forty seconds of start-up is tuning against the least
+     * representative part of a two-hour session.
+     */
+    private var peerWatchTask: ScheduledFuture<*>? = null
     @Volatile private var requestId: String? = null
     @Volatile private var mediaHandle: org.libtorrent4j.TorrentHandle? = null
 
@@ -780,6 +791,7 @@ class TorrentStreamingService : Service() {
         // sat on "Connecting to peers…" at 00% and "—/—" for ever, with no way to tell
         // that from a slow start. Time it from here.
         val loopStartedAt = System.currentTimeMillis()
+        startPeerWatch(id)
         progressTask = ticker.scheduleWithFixedDelay({
             try {
                 val handle = mediaHandle
@@ -788,6 +800,7 @@ class TorrentStreamingService : Service() {
                 if (whole >= bufferPieces.size) {
                     stopProgressLoop()
                     sendBroadcast(mediaIntent(ACTION_READY, id, server, title, mediaPath))
+                    startOpeningLoop(id)
                 } else {
                     // Byte-accurate: completed buffer pieces plus the finished blocks
                     // of any in-flight buffer piece. The buffer window is only a
@@ -945,6 +958,55 @@ class TorrentStreamingService : Service() {
         progressTask = null
     }
 
+    /**
+     * Keep the read-out alive while the player opens the container.
+     *
+     * This is the wait the percentage cannot see: every buffer piece is on disk, so the
+     * loop that was reporting has nothing left to count, but the player still has to read
+     * the header before a frame exists. The swarm does not stop during it — the peer
+     * read-out shows megabytes a second still arriving — so the figures on screen are the
+     * only thing that stops, and they stop at exactly the moment the viewer is most likely
+     * to think the app has hung.
+     *
+     * Reports the live rate and swarm under [STAGE_OPENING] until the stream is torn down
+     * or [OPENING_LOOP_MAX_MS] passes, whichever comes first. The cap is there because
+     * nothing here can observe the first frame — that happens in the player, in another
+     * process — and a loop with no end would outlive the overlay it feeds.
+     */
+    private fun startOpeningLoop(id: String) {
+        val startedAt = System.currentTimeMillis()
+        progressTask = ticker.scheduleWithFixedDelay({
+            try {
+                val handle = mediaHandle
+                if (id != requestId || handle == null || !handle.isValid) {
+                    stopProgressLoop()
+                    return@scheduleWithFixedDelay
+                }
+                if (System.currentTimeMillis() - startedAt > OPENING_LOOP_MAX_MS) {
+                    stopProgressLoop()
+                    return@scheduleWithFixedDelay
+                }
+                val status = handle.status()
+                sendProgress(
+                    id,
+                    STAGE_OPENING,
+                    // The buffer is full; the percentage has nothing left to say. The
+                    // readout holds its own last figure and creeps, which is the honest
+                    // picture of a wait whose length nothing can measure.
+                    percent = 99,
+                    peers = status.numPeers(),
+                    seeds = status.numSeeds(),
+                    speedBps = status.downloadRate().toLong(),
+                    swarmSeeds = swarmSeedsOf(status),
+                    swarmPeers = swarmPeersOf(status),
+                    uploadBps = status.uploadRate().toLong(),
+                )
+            } catch (_: Throwable) {
+                stopProgressLoop()
+            }
+        }, PROGRESS_INTERVAL_MS, PROGRESS_INTERVAL_MS, TimeUnit.MILLISECONDS)
+    }
+
     private fun sendProgress(
         id: String,
         stage: String,
@@ -1051,6 +1113,7 @@ class TorrentStreamingService : Service() {
      */
     private fun cleanup() = synchronized(LIFECYCLE_LOCK) {
         stopProgressLoop()
+        stopPeerWatch()
         mediaHandle = null
         streamInfoHash = null
         bridge?.stop()
@@ -1081,6 +1144,7 @@ class TorrentStreamingService : Service() {
     }
 
     override fun onDestroy() {
+        stopPeerWatch()
         stopForeground(STOP_FOREGROUND_REMOVE)
         cleanup()
         ticker.shutdownNow()
@@ -1115,6 +1179,62 @@ class TorrentStreamingService : Service() {
         "m4v" -> "video/x-m4v"
         "mov" -> "video/quicktime"
         else -> "video/mp4"
+    }
+
+    /**
+     * Report, for as long as the stream lives, how much of the connection budget is
+     * actually delivering.
+     *
+     * The tick line says how many peers are connected, which is the number that looks
+     * healthy and means least: a peer sending nothing occupies a connection slot exactly as
+     * fully as one sending a megabyte. Measured on this box against a 6-seed swarm, 33
+     * connections were held while 7 of them sent anything at all and the median peer sent
+     * zero — the connection budget was full and mostly worthless, with 500 vetted
+     * candidates queued behind it.
+     *
+     * So: how many are moving bytes, how many clear [PEER_WORTHWHILE_BPS], and what the
+     * best and median are worth. That is what says whether the turnover in
+     * [TorrentNetworkTuning] is finding better peers or churning through equally poor ones.
+     */
+    private fun startPeerWatch(id: String) {
+        stopPeerWatch()
+        peerWatchTask = ticker.scheduleWithFixedDelay({
+            try {
+                val handle = mediaHandle
+                if (id != requestId || handle == null || !handle.isValid) return@scheduleWithFixedDelay
+                val peers = runCatching { handle.peerInfo() }.getOrNull().orEmpty()
+                if (peers.isEmpty()) return@scheduleWithFixedDelay
+                val ranked = peers.sortedByDescending { it.downSpeed() }
+                val rates = ranked.map { it.downSpeed() }
+                val status = handle.status()
+                Log.i(
+                    TAG,
+                    "peers: total=${rates.size} sending=${rates.count { it > 0 }} " +
+                        "over${PEER_WORTHWHILE_BPS / 1024}k=${rates.count { it >= PEER_WORTHWHILE_BPS }} " +
+                        "best=${rates.first()} median=${rates[rates.size / 2]} " +
+                        "rate=${status.downloadRate()} up=${status.uploadRate()}",
+                )
+                // Who, not just how many. The aggregate says the swarm is being used well
+                // or badly; this says whether the same few addresses are carrying every
+                // session — the thing you cannot work out from a count, and the only way
+                // to tell a good peer being turned over by mistake from a bad one being
+                // replaced correctly.
+                Log.i(
+                    TAG,
+                    "peers top: " + ranked.take(PEER_TOP_N).joinToString(" ") {
+                        "${it.ip()}=${it.downSpeed() / 1024}k" +
+                            (it.client()?.takeIf(String::isNotBlank)?.let { c -> "($c)" } ?: "")
+                    },
+                )
+            } catch (_: Throwable) {
+                // Diagnostics must never take a stream down with them.
+            }
+        }, PEER_WATCH_INTERVAL_MS, PEER_WATCH_INTERVAL_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private fun stopPeerWatch() {
+        peerWatchTask?.cancel(false)
+        peerWatchTask = null
     }
 
     companion object {
@@ -1192,6 +1312,19 @@ class TorrentStreamingService : Service() {
         /** Mid-playback seek outran the downloaded window — not start-up buffering. */
         const val STAGE_SEEK_BUFFERING = "seek_buffering"
 
+        /**
+         * The buffer is full and the player is opening the container.
+         *
+         * A stage of its own because it is a real part of the wait that nothing used to
+         * report. The buffer loop ended the moment the window filled, which is also the
+         * moment the player starts reading the header — so for the ten to twenty seconds
+         * that takes, the overlay showed the last rate the loop happened to broadcast,
+         * frozen, while the swarm went on delivering megabytes a second. A number that has
+         * stopped moving is the one thing a waiting screen must never show, because it is
+         * indistinguishable from a stream that has died.
+         */
+        const val STAGE_OPENING = "opening"
+
 
         /**
          * Below this a video is an extra, not the thing you asked for — samples,
@@ -1228,6 +1361,30 @@ class TorrentStreamingService : Service() {
          * over on concurrent-socket count long before they run out of bandwidth, and 40
          * peers saturates a 1200 Mbps link on this hardware just as well as 60.
          */
+        /**
+         * How often the peer read-out samples.
+         *
+         * Five seconds, not eight: `downSpeed` is an instantaneous rate, so the sample
+         * interval is the resolution at which a peer's contribution can be seen at all. At
+         * eight seconds a peer that arrives, delivers and is turned over inside one
+         * turnover cycle can appear in only two or three lines, which is not enough to say
+         * whether it was worth keeping. Six samples per cycle is.
+         */
+        private const val PEER_WATCH_INTERVAL_MS = 5_000L
+        /**
+         * How long the opening read-out may run before it gives up.
+         *
+         * Long enough for the slowest container open measured on this box with room to
+         * spare, short enough that a stream which never starts stops talking.
+         */
+        private const val OPENING_LOOP_MAX_MS = 90_000L
+
+        /** How many of the fastest peers are named in the read-out each sample. */
+        private const val PEER_TOP_N = 3
+
+        /** Below this a connection is not paying for the slot it holds. */
+        private const val PEER_WORTHWHILE_BPS = 16 * 1024
+
         private const val CONNECTION_LIMIT = 40
         private const val ACTIVE_DOWNLOADS = 1
         private const val DISK_QUEUE_BYTES = 24 * 1024 * 1024
