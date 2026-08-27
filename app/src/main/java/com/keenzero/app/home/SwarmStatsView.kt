@@ -1,0 +1,446 @@
+package com.keenzero.app.home
+
+import android.animation.ValueAnimator
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Shader
+import android.util.AttributeSet
+import android.view.View
+import android.view.animation.DecelerateInterpolator
+import androidx.core.content.res.ResourcesCompat
+import com.keenzero.app.R
+
+/**
+ * The loading overlay's peer read-out: two figures, each over a label.
+ *
+ * Seeds is the swarm's count, not this box's socket count — the two answer different
+ * questions and only one of them is worth a number on screen. Connections build over the
+ * first ten seconds, so our own count reads "2" while a laptop shows the same torrent as
+ * 55, and a readout that says 2 at the moment you press play is the one thing this screen
+ * must never do: people turn the app off and never learn it was working. The rate beside
+ * it is what we are actually pulling, which is the other half of "is this going to play".
+ *
+ * Drawn rather than laid out, because the geometry is a grid the frame specifies to the
+ * unit and four views' worth of margins would only approximate it. Positions below are in
+ * the frame's own units, scaled by [unit], so they can be checked against it directly.
+ */
+class SwarmStatsView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+) : View(context, attrs) {
+
+    private val numberPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        letterSpacing = -0.05f
+        typeface = ResourcesCompat.getFont(context, R.font.gsflex_big)
+    }
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = LABEL_COLOUR
+        textAlign = Paint.Align.CENTER
+        letterSpacing = -0.05f
+        typeface = ResourcesCompat.getFont(context, R.font.gsflex_label)
+    }
+    private val seedsLabel: String = context.getString(R.string.torrent_stat_seeds)
+
+    private var seeds = ""
+    private var rateDown = ""
+
+    /**
+     * The count-up. Seeds rolls to its new figure; the rate never does.
+     *
+     * They look like the same kind of number and are not. Seeds is a total settling into
+     * place — it arrives as one jump from a dash to forty-odd, and counting through that
+     * span is what reads as "we are finding the swarm" rather than as a figure blinking
+     * into existence. The rate is a live measurement resampled every 750 ms: rolling it
+     * would mean the number on screen is never the rate, always a point a few hundred
+     * milliseconds behind, and a digit column that never stops moving next to a percent
+     * that is also moving is the distraction this screen can least afford.
+     */
+    private var seedsAnimator: ValueAnimator? = null
+    private var seedsShown = 0
+    private var seedsTarget = 0
+
+    /**
+     * The pending count is a shimmering zero rather than a dash.
+     *
+     * A dash says "no value"; a zero that is visibly still loading says "no value yet",
+     * which is the true state and the one that does not read as a dead torrent. The
+     * shimmer is what carries that distinction, so it has to keep moving for as long as
+     * the figure is unknown: a static grey zero would be indistinguishable from a real
+     * count of zero, which is the readout this screen must never show by accident.
+     */
+    private var pendingSeeds = false
+    private var shimmerAnimator: ValueAnimator? = null
+    private var shimmerPhase = 0f
+    private val shimmerMatrix = Matrix()
+    private var shimmerShader: LinearGradient? = null
+
+    /**
+     * Swapped outright, never rolled. The unit is not a value changing, it is the same
+     * value being said a different way, and sliding it made a quiet relabelling look like
+     * an event — on the one line where nothing has actually happened.
+     */
+    private var rateUnit = ""
+
+    /**
+     * Starts true so the very first bytes land as a big moving number rather than as
+     * "0.0". Sticky in both directions — see [chooseUnit].
+     */
+    private var kilobytes = true
+
+    /** Device px per frame unit, from the view's width. Everything below scales by this. */
+    private var unit = 1f
+
+    /**
+     * @param seedsInSwarm the tracker and DHT figure, not our connection count. See the
+     *   class note for why this readout is the swarm's and not ours.
+     * @param pending true before a real breakdown has arrived: the count shows a dash
+     *   rather than a zero, because zero this early is a state and not a measurement.
+     */
+    fun setStats(seedsInSwarm: Int, downBps: Long, pending: Boolean) {
+        chooseUnit(downBps)
+        if (pending) {
+            // Back to zero behind it too, so the first real figure counts up from nothing
+            // the way the swarm actually fills rather than from whatever the previous
+            // stream happened to end on.
+            seedsAnimator?.cancel()
+            seedsShown = 0
+            seedsTarget = 0
+            seeds = PENDING
+            startShimmer()
+        } else {
+            stopShimmer()
+            rollSeedsTo(seedsInSwarm.coerceAtLeast(0))
+        }
+        rateDown = formatRate(downBps)
+        rateUnit = if (kilobytes) "KB/s" else "MB/s"
+        invalidate()
+    }
+
+    private fun startShimmer() {
+        pendingSeeds = true
+        if (shimmerAnimator?.isRunning == true) return
+        shimmerAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = SHIMMER_MS
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                shimmerPhase = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun stopShimmer() {
+        pendingSeeds = false
+        shimmerAnimator?.cancel()
+        shimmerAnimator = null
+    }
+
+    /**
+     * A band of light raked across the seeds lock-up at [SHIMMER_ANGLE_DEG], top left to
+     * bottom right, on a loop.
+     *
+     * Diagonal rather than upright because the sweep has to read as light passing over
+     * the figure and its label together: a vertical band crossing a two-line lock-up hits
+     * both lines at the same instant, which looks like the whole block blinking. Raked
+     * over, the highlight reaches the number first and the word underneath a moment
+     * later, so the lock-up is one object being lit rather than two things flashing.
+     *
+     * Built once per size and moved with a matrix rather than rebuilt per frame: a new
+     * LinearGradient every frame is an allocation sixty times a second for a shape that
+     * never changes, and this view already learned that lesson with its tints.
+     */
+    private fun shimmerShaderFor(width: Float): LinearGradient {
+        shimmerShader?.let { return it }
+        // Horizontal band; the rake comes from the matrix, which rotates it and the
+        // travel together so the sweep runs square to the band's own edge.
+        val band = LinearGradient(
+            0f, 0f, width * SHIMMER_BAND, 0f,
+            intArrayOf(SHIMMER_DIM, SHIMMER_BRIGHT, SHIMMER_DIM),
+            floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        shimmerShader = band
+        return band
+    }
+
+    /**
+     * Roll the seed count to [target], redrawing only when the printed digits change.
+     *
+     * That last part is the whole performance story. A ValueAnimator hands you a new
+     * fraction every frame, but this view prints an integer: counting 0 to 45 has 45
+     * distinct things to show, and invalidating on all 36 frames of a 600 ms roll would
+     * be 36 draws to show 45 states, most of them identical to the one before. Redrawing
+     * on the integer instead makes the work proportional to the count, not to the frame
+     * rate, and the draw itself is four drawText calls into a 201x58dp view with no
+     * layout, no allocation and no bitmap behind it.
+     *
+     * Duration follows the distance so a jump from 2 to 3 does not take as long as a jump
+     * from 0 to 400, and is capped so a huge swarm still lands before the wait is over.
+     */
+    private fun rollSeedsTo(target: Int) {
+        val from = seedsShown
+        val distance = kotlin.math.abs(target - from)
+        // Nothing worth animating: land on the figure and, crucially, print it. One
+        // number is not a roll — the animation would be over before it was legible, which
+        // reads as a flicker rather than as counting — and zero steps is no change at all.
+        //
+        // Returning early on an unchanged target without writing the text is a trap, and
+        // one this readout must not fall into. A dash reset leaves the target at zero, so
+        // a torrent whose first real count is zero — a genuine drought, the STAGE_NO_PEERS
+        // case the row above deliberately prints the zeros for — matches the target it
+        // already had, and the dash would stand for the rest of the session. That is the
+        // readout hiding the number at exactly the moment it turns bad.
+        if (distance < 2) {
+            seedsAnimator?.cancel()
+            seedsTarget = target
+            seedsShown = target
+            seeds = target.toString()
+            return
+        }
+        if (target == seedsTarget && seedsAnimator?.isRunning == true) return
+        seedsTarget = target
+        seedsAnimator?.cancel()
+        seedsAnimator = ValueAnimator.ofInt(from, target).apply {
+            duration = (ROLL_MS_PER_STEP * distance)
+                .coerceIn(ROLL_MIN_MS, ROLL_MAX_MS)
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val value = animation.animatedValue as Int
+                if (value == seedsShown) return@addUpdateListener
+                seedsShown = value
+                seeds = value.toString()
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    /**
+     * A detached view keeps no animator running. The overlay is torn down the moment
+     * playback starts, and an animator outliving it would go on posting frames to a view
+     * nobody is looking at, during the seconds the player is opening the container — the
+     * most contended part of the whole session.
+     */
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        seedsAnimator?.cancel()
+        seedsAnimator = null
+        stopShimmer()
+    }
+
+    /**
+     * Kilobytes until the stream is genuinely doing megabytes, and with a gap between the
+     * two thresholds so it cannot oscillate.
+     *
+     * Both halves of that matter to how the wait reads. A stream opens at tens of KB/s,
+     * where megabytes round to "0.1" and sit there — a number that is not moving, on the
+     * one screen where the whole job is to show that something is. In kilobytes the same
+     * bytes read 90, 240, 600, which is visibly a stream picking up speed. And a single
+     * threshold would flip the label every tick while the rate hovered around a megabyte,
+     * swapping "1024 KB/s" and "1.0 MB/s" back and forth, so the promotion happens at a
+     * megabyte and the demotion only when it drops well back below one.
+     */
+    private fun chooseUnit(downBps: Long) {
+        kilobytes = when {
+            downBps >= PROMOTE_BPS -> false
+            downBps < DEMOTE_BPS -> true
+            else -> kilobytes
+        }
+    }
+
+    private fun formatRate(bps: Long): String {
+        if (bps <= 0) return "0"
+        if (kilobytes) return (bps / 1024L).coerceAtLeast(1L).toString()
+        val mb = bps / 1_048_576.0
+        return when {
+            mb >= 10 -> String.format(java.util.Locale.US, "%.0f", mb)
+            mb < 0.05 -> "0"
+            else -> String.format(java.util.Locale.US, "%.1f", mb)
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // Sized from the column, so it is only valid for the size it was built at.
+        shimmerShader = null
+        unit = if (w > 0) w / DESIGN_W else 1f
+        numberPaint.textSize = NUMBER_SIZE * unit
+        labelPaint.textSize = LABEL_SIZE * unit
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (unit <= 0f || seeds.isEmpty()) return
+
+        val numberBaseline = baselineOf(numberPaint, NUMBER_TOP, NUMBER_LINE)
+        val labelBaseline = baselineOf(labelPaint, LABEL_TOP, LABEL_LINE)
+        val seedsCentre = columnCentre(0f)
+
+        if (pendingSeeds) {
+            // One band for the whole seeds lock-up, number and label alike: the count is
+            // what is unknown, and the word under it belongs to the same unknown figure.
+            // Lighting only the digit left the label sitting dead beside a moving glyph.
+            applyShimmer()
+            canvas.drawText(seeds, seedsCentre, numberBaseline, numberPaint)
+            canvas.drawText(seedsLabel, seedsCentre, labelBaseline, labelPaint)
+            clearShimmer()
+        } else {
+            canvas.drawText(seeds, seedsCentre, numberBaseline, numberPaint)
+            canvas.drawText(seedsLabel, seedsCentre, labelBaseline, labelPaint)
+        }
+
+        canvas.drawText(rateDown, columnCentre(COLUMN_PITCH), numberBaseline, numberPaint)
+        canvas.drawText(rateUnit, columnCentre(COLUMN_PITCH), labelBaseline, labelPaint)
+    }
+
+    /**
+     * Point both seeds paints at the raked band, positioned for this frame.
+     *
+     * The band is built horizontal and rotated here, so the sweep travels square to its
+     * own edge: rotating the gradient but translating along x would slide the highlight
+     * along the band rather than across it, and the bright part would never leave the
+     * glyphs. Travel is measured along the raked axis and covers the lock-up's diagonal
+     * plus a band's width at each end, so the highlight starts and finishes clear of the
+     * type instead of appearing inside it.
+     */
+    private fun applyShimmer() {
+        val columnWidth = COLUMN_W * unit
+        val lockUpH = (LABEL_TOP + LABEL_LINE) * unit
+        val shader = shimmerShaderFor(columnWidth)
+        val radians = Math.toRadians(SHIMMER_ANGLE_DEG.toDouble())
+        val cos = kotlin.math.cos(radians).toFloat()
+        val sin = kotlin.math.sin(radians).toFloat()
+        // How much of the lock-up the band has to cross, measured along its own axis
+        // rather than along the view: a raked band travels the box's projection onto that
+        // axis, which is longer than either side.
+        val span = kotlin.math.abs(columnWidth * cos) + kotlin.math.abs(lockUpH * sin)
+        val bandWidth = columnWidth * SHIMMER_BAND
+        val travel = span + bandWidth * 2f
+
+        shimmerMatrix.reset()
+        // Rotated about the centre of the lock-up, so the band lies the same way over the
+        // figure and the word under it, then walked along its own axis from a band's width
+        // clear of one edge to a band's width clear of the other.
+        shimmerMatrix.setTranslate(
+            LEFT_PAD * unit + columnWidth / 2f,
+            TOP_PAD * unit + lockUpH / 2f,
+        )
+        // The band travels down and to the right, so the light enters at the top left of
+        // the lock-up and leaves at the bottom right. (The bright line it draws leans the
+        // other way, being perpendicular to its own axis — the direction of travel is what
+        // the eye reads as the angle, and that is what this states.)
+        shimmerMatrix.preRotate(SHIMMER_ANGLE_DEG)
+        shimmerMatrix.preTranslate(-travel / 2f + travel * shimmerPhase, 0f)
+        shader.setLocalMatrix(shimmerMatrix)
+
+        numberPaint.shader = shader
+        // At full alpha, so the band itself is what colours the word. The label paint
+        // carries 50% white, and multiplying that into the band's dim end left the label
+        // at about an eighth of white — under its own resting grey, so the sweep was
+        // invisible on it and only the figure appeared to move.
+        labelPaint.alpha = 255
+        labelPaint.shader = shader
+    }
+
+    /** Put the label paint back to its resting grey after a shimmered draw. */
+    private fun clearShimmer() {
+        numberPaint.shader = null
+        labelPaint.shader = null
+        labelPaint.color = LABEL_COLOUR
+    }
+
+    /** Left edge of the seeds column, in device px. */
+    private fun seedsLockUpLeft(): Float = LEFT_PAD * unit
+
+    private fun columnCentre(x: Float): Float = (LEFT_PAD + x + COLUMN_W / 2f) * unit
+
+    /**
+     * Where the frame puts the baseline of a text box: the font's own ascent-to-descent
+     * box centred inside the stated line height, with the baseline one ascent down from
+     * the top of that. Worked out from the metrics rather than kept as a per-role constant
+     * because the two roles here run at different line heights — 67% of type size on the
+     * figures, 120% on the labels — and no single ratio describes both.
+     */
+    private fun baselineOf(paint: Paint, boxTop: Float, lineHeight: Float): Float {
+        val fm = paint.fontMetrics
+        val leading = (lineHeight * unit - (fm.descent - fm.ascent)) / 2f
+        return (TOP_PAD + boxTop) * unit + leading - fm.ascent
+    }
+
+    private companion object {
+        /**
+         * The frame's own units. The lock-up is 468.74 wide and 126 tall; the rest of
+         * [DESIGN_W] is the margin the figures spill into — they are set on a line two
+         * thirds of their type size, so they overrun their own boxes by design.
+         */
+        const val DESIGN_W = 502f
+        const val LEFT_PAD = 16f
+        const val TOP_PAD = 12f
+
+        const val COLUMN_W = 193.736f
+
+        /**
+         * Wider than the frame's 208. The frame draws a single digit in each column; a real
+         * read-out says "206" and "968", and at that width the two figures very nearly
+         * touch. This is the gap the frame's spacing implies once the numbers are as long
+         * as they actually get.
+         */
+        const val COLUMN_PITCH = 275f
+
+        const val NUMBER_SIZE = 100f
+        const val LABEL_SIZE = 30.252f
+
+        /** Deliberately tighter than the type size: the frame sets these lines at 67%. */
+        const val NUMBER_LINE = 67.358f
+        const val LABEL_LINE = 36.302f
+
+        const val NUMBER_TOP = 0f
+        const val LABEL_TOP = 90f
+
+        /** Promote at a megabyte a second; drop back only well below it. */
+        const val PROMOTE_BPS = 1_048_576L
+        const val DEMOTE_BPS = 838_860L
+        /** The pending count. A zero that shimmers, not a dash: see [pendingSeeds]. */
+        const val PENDING = "0"
+
+        /** The label's resting grey, restored after every shimmered draw. */
+        val LABEL_COLOUR = Color.argb(128, 255, 255, 255)
+
+        const val SHIMMER_MS = 1_150L
+        /**
+         * Rake of the sweep, degrees clockwise from horizontal: top left to bottom right.
+         * Shallow enough that the highlight still crosses the figure quickly, steep enough
+         * to reach the number before the label under it.
+         */
+        const val SHIMMER_ANGLE_DEG = 45f
+        /**
+         * Band width as a fraction of the column.
+         *
+         * A stripe, not a wash. At 0.55 the band was wider than the figure it crossed, so
+         * the glyph only ever saw a broad ramp — filmed on the box it read as the number
+         * brightening and dimming in place, with no direction to it at all, which is the
+         * one thing the rake exists to show.
+         */
+        const val SHIMMER_BAND = 0.3f
+        const val SHIMMER_DIM = 0x40FFFFFF
+        const val SHIMMER_BRIGHT = -0x1 // opaque white
+
+        /**
+         * Roll pacing. Per-step so short hops stay brisk, floored so a two-step change is
+         * still visibly a count, ceilinged so a four-figure swarm does not spend the whole
+         * wait counting.
+         */
+        const val ROLL_MS_PER_STEP = 14L
+        const val ROLL_MIN_MS = 260L
+        const val ROLL_MAX_MS = 900L
+
+    }
+}

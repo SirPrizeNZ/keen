@@ -255,7 +255,8 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:gravity="center_horizontal"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:translationY="54dp">
 
             <com.keenzero.app.home.SpinnerBarsView
                 android:id="@+id/torrentLoadingSpinner"
@@ -391,6 +392,18 @@
                         android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
+
+            <!-- The replacement for the row above: the swarm's seed count and the rate,
+                 each over its label. Exactly one of the two rows is ever shown, chosen by
+                 SWARM_LOCKUP in KeenActivity, so backing this out is
+                 a one-line change and the spinner, title and jumbo never move either way. -->
+            <com.keenzero.app.home.SwarmStatsView
+                android:id="@+id/torrentSwarmStats"
+                android:layout_width="201dp"
+                android:layout_height="58dp"
+                android:layout_marginTop="26dp"
+                android:alpha="0"
+                android:visibility="gone" />
         </LinearLayout>
     </com.keenzero.app.home.CircleCutoutFrameLayout>
 

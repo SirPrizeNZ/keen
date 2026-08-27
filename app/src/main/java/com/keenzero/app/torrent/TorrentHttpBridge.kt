@@ -6,6 +6,7 @@ import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class TorrentHttpBridge(
     private val mediaFile: File,
@@ -63,6 +64,63 @@ class TorrentHttpBridge(
 
     private val patchLock = Any()
 
+    /**
+     * Who is holding a deadline on which piece, for the whole bridge.
+     *
+     * Deadlines are a property of the torrent, so a reader can only safely take one back
+     * if no other reader still wants it. Ownership per reader was not enough: readers
+     * overlap. The player opens the container at the head of the file and then seeks, and
+     * the bridge itself reads the header region to build the Matroska patch, so two or
+     * three readers routinely hold windows that share pieces. Whichever one closed or
+     * moved first reset the shared pieces out from under a reader that was blocked on
+     * them, and with no deadline the swarm had nothing to prioritise: playback started,
+     * ran out the pieces already on disk, and then sat black.
+     *
+     * Counted rather than owned, so a piece is only handed back when the last holder
+     * lets go.
+     */
+    /**
+     * Which player range request is the live one.
+     *
+     * The player does not close a range it has finished with politely: it resets the
+     * socket and opens another one somewhere else. Filmed on the Mi Box opening a 1.09 GB
+     * mp4, it walked forward in nine steps — 8.8 MB, 74, 110, 133, 160, 187, 212, 234,
+     * 276 — inside about a minute, each one resetting the connection roughly 100 ms after
+     * it was served.
+     *
+     * Nothing told the reader behind the dead socket to stop. It stayed blocked on its
+     * piece with a 48 MB deadline window armed, so the swarm was being asked to prioritise
+     * several hundred megabytes scattered across the file at once, at the 1-4 MB/s this
+     * box actually gets. Every position was therefore late, including the one the player
+     * was really waiting on: 33 seconds blocked on a single piece with the swarm running
+     * at 4.3 MB/s and the buffer window long since full.
+     *
+     * A stream is served to one player, so the newest request is the only playhead there
+     * is. Older readers stop waiting, hand their pieces back and let their thread go.
+     */
+    private val streamGeneration = AtomicInteger()
+
+    private val deadlineHolders = HashMap<Int, Int>()
+
+    /** @return true if this is the first hold on [piece], so a deadline must be set. */
+    private fun retainPiece(piece: Int): Boolean = synchronized(deadlineHolders) {
+        val next = (deadlineHolders[piece] ?: 0) + 1
+        deadlineHolders[piece] = next
+        next == 1
+    }
+
+    /** @return true if that was the last hold, so the deadline may be reset. */
+    private fun releasePiece(piece: Int): Boolean = synchronized(deadlineHolders) {
+        val next = (deadlineHolders[piece] ?: 0) - 1
+        if (next <= 0) {
+            deadlineHolders.remove(piece)
+            true
+        } else {
+            deadlineHolders[piece] = next
+            false
+        }
+    }
+
     val playerUrl: String get() = "http://$LOOPBACK:$listeningPort/player"
     val streamUrl: String get() = "http://$LOOPBACK:$listeningPort/stream"
 
@@ -115,6 +173,7 @@ class TorrentHttpBridge(
         val response = if (session.method == Method.HEAD) {
             newFixedLengthResponse(status, mimeType, "")
         } else {
+            val generation = streamGeneration.incrementAndGet()
             newFixedLengthResponse(
                 status,
                 mimeType,
@@ -128,6 +187,9 @@ class TorrentHttpBridge(
                     handle = handle,
                     closed = closed,
                     onStall = onStall,
+                    isCurrent = { streamGeneration.get() == generation },
+                    retainPiece = ::retainPiece,
+                    releasePiece = ::releasePiece,
                     patcher = if (patchTracks) ::patchServedBytes else null,
                 ),
                 range.length,
@@ -175,6 +237,10 @@ class TorrentHttpBridge(
                 handle = handle,
                 closed = closed,
                 onStall = onStall,
+                // The bridge's own read, not a playhead: no later request supersedes it.
+                isCurrent = { true },
+                retainPiece = ::retainPiece,
+                releasePiece = ::releasePiece,
                 patcher = null,
             ).use { stream ->
                 val out = ByteArray(want)
@@ -351,6 +417,12 @@ class TorrentHttpBridge(
         private val handle: TorrentHandle,
         private val closed: AtomicBoolean,
         private val onStall: ((piece: Int) -> Unit)?,
+        /** False once a later range request has replaced this one as the playhead. */
+        private val isCurrent: () -> Boolean,
+        /** Take a share in a piece's deadline; true when this reader is the first holder. */
+        private val retainPiece: (Int) -> Boolean,
+        /** Give a share back; true when this reader was the last holder. */
+        private val releasePiece: (Int) -> Boolean,
         /**
          * Rewrites bytes on their way out, given their absolute position in the file.
          * Null for reads the bridge makes on its own behalf, which must see the file as
@@ -428,28 +500,55 @@ class TorrentHttpBridge(
          * the window was sized correctly the two no longer overlapped and the accident
          * stopped saving it.
          *
+         * Ownership alone is not enough either, which is what [freePiece] adds: readers
+         * overlap, so the pieces one reader is leaving may be the pieces another is
+         * blocked on. Holds are counted for the whole bridge and a deadline is only reset
+         * when the last holder lets go.
+         *
          * @return false if the handle went away, in which case the caller should stop.
          */
         private fun armDeadlines(from: Int, to: Int): Boolean {
             val step = deadlineStepMsFor(pieceLength)
-            try {
-                if (armedFrom >= 0) {
-                    for (piece in armedFrom until armedTo) {
-                        if (piece < from || piece >= to) handle.resetPieceDeadline(piece)
-                    }
+            // Drop the pieces this reader is leaving before taking the new ones, and only
+            // where nobody else is still holding them: another reader may be blocked on
+            // this very piece, and taking its deadline away leaves the swarm with no
+            // reason to fetch it.
+            if (armedFrom >= 0) {
+                for (piece in armedFrom until armedTo) {
+                    if (piece < from || piece >= to) freePiece(piece)
                 }
+            }
+            // How far the loop got, so a handle that dies mid-window hands back exactly
+            // the pieces this reader took.
+            var held = from
+            try {
                 for (piece in from until to) {
+                    if (armedFrom < 0 || piece < armedFrom || piece >= armedTo) retainPiece(piece)
+                    held = piece + 1
                     handle.setPieceDeadline(piece, (piece - from) * step)
                 }
             } catch (_: Throwable) {
-                // Handle went away mid-loop: the file is complete, nothing left to ask for.
-                armedFrom = -1
-                armedTo = -1
+                // Handle went away mid-loop: the file is complete, nothing left to ask
+                // for. Hand back everything this reader is counted as holding, or the
+                // registry keeps those pieces armed for the life of the bridge.
+                armedFrom = from
+                armedTo = maxOf(held, from)
+                releaseDeadlines()
                 return false
             }
             armedFrom = from
             armedTo = to
             return true
+        }
+
+        /** Give up one piece, resetting its deadline only if no other reader wants it. */
+        private fun freePiece(piece: Int) {
+            if (!releasePiece(piece)) return
+            try {
+                handle.resetPieceDeadline(piece)
+            } catch (_: Throwable) {
+                // Handle gone: nothing to reset.
+            }
         }
 
         /**
@@ -461,11 +560,7 @@ class TorrentHttpBridge(
          */
         private fun releaseDeadlines() {
             if (armedFrom < 0) return
-            try {
-                for (piece in armedFrom until armedTo) handle.resetPieceDeadline(piece)
-            } catch (_: Throwable) {
-                // Handle gone: nothing to release.
-            }
+            for (piece in armedFrom until armedTo) freePiece(piece)
             armedFrom = -1
             armedTo = -1
         }
@@ -488,12 +583,24 @@ class TorrentHttpBridge(
             val firstPiece = ((torrentOffset + position) / pieceLength).toInt()
             // Refresh the playhead window whenever it moves.
             val deadlineEnd = minOf(pieceCount, firstPiece + deadlineWindowFor(pieceLength))
-            if (firstPiece != armedFrom || deadlineEnd != armedTo) {
+            // Arming a window for a reader the player has already left behind is the
+            // whole problem: see [streamGeneration].
+            if (isCurrent() && (firstPiece != armedFrom || deadlineEnd != armedTo)) {
                 if (!armDeadlines(firstPiece, deadlineEnd)) return
             }
             var waitedMs = 0L
             var nextNotifyMs = STALL_NOTIFY_FIRST_MS
             while (!closed.get() && handleUsable() && !havePieceSafe(firstPiece)) {
+                if (!isCurrent()) {
+                    // The player has moved on and reset this socket. Stop competing with
+                    // the request that replaced us: give the pieces back and let the
+                    // thread go. Closing the stream is what releases the deadlines.
+                    android.util.Log.i(
+                        "KeenTorrent",
+                        "bridge superseded: piece=$firstPiece waitedMs=$waitedMs",
+                    )
+                    throw java.io.IOException("Superseded by a later range request")
+                }
                 Thread.sleep(PIECE_POLL_MS)
                 waitedMs += PIECE_POLL_MS
                 if (waitedMs >= nextNotifyMs) {

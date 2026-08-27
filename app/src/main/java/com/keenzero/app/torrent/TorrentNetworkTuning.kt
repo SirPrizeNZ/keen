@@ -124,11 +124,109 @@ internal object TorrentNetworkTuning {
     private const val DHT_UPLOAD_RATE_LIMIT = 2000
 
     /**
+     * How often the worst-performing connected peers are dropped and replaced.
+     *
+     * libtorrent already vets its peers: every [PEER_TURNOVER_INTERVAL_SECONDS] it ranks the
+     * connections by what they are actually delivering and disconnects the slowest
+     * [PEER_TURNOVER_PERCENT], replacing them from the candidate list. The defaults are
+     * written for a seedbox that stays up for days — every five minutes, four percent, and
+     * only once the connection budget is 90% full — which over a two-minute wait to start a
+     * film amounts to nothing at all.
+     *
+     * Measured on the Mi Box against a 6-seed swarm: 28-38 connections held against a budget
+     * of 40, with 500 peer candidates queued behind them and no turnover in the whole
+     * session. A connection to a peer that never sends a byte costs exactly as much of that
+     * budget as one running at a megabyte, and holds it indefinitely.
+     *
+     * Fifteen seconds, fifteen percent, from 70% of the budget: a dead connection is now
+     * given a quarter of a minute to prove itself rather than five minutes, and the swarm
+     * this box ends up talking to is the fast end of what it found rather than the first
+     * forty addresses that answered.
+     *
+     * Shortened from thirty once the per-peer read-out showed the fast peers surviving the
+     * cull rather than being churned with the rest: the same three addresses held the top
+     * of the ranking across samples, which is what says a shorter interval costs good
+     * connections nothing. It is the floor for this setting on this box, though — every
+     * replacement is a NAT flow closed and another opened, and that pressure is what took
+     * the wifi down before, so this is watched rather than tuned further.
+     */
+    private const val PEER_TURNOVER_INTERVAL_SECONDS = 15
+
+    /**
+     * Percentage of connected peers replaced each interval. The default is 4.
+     *
+     * Fifteen is about five connections at this box's budget, which is enough to clear a
+     * bad intake within two intervals without churning a working set: the peers that are
+     * delivering rank at the top and are never the ones chosen.
+     */
+    private const val PEER_TURNOVER_PERCENT = 15
+
+    /**
+     * How full the connection budget must be before any peer is dropped. The default is 90.
+     *
+     * At 90 a session sitting on 33 of 40 connections — which is where this box actually
+     * sits — never turns a single peer over, because it never looks full enough to bother.
+     * Seventy makes the vetting apply at the occupancy the box really runs at.
+     */
+    private const val PEER_TURNOVER_CUTOFF_PERCENT = 70
+
+    /**
+     * Seconds a connected peer may send nothing before it is dropped. The default is 120.
+     *
+     * Turnover alone is a ranking: it removes the slowest fraction on a timer, whatever
+     * the absolute numbers are. This is the floor underneath it — a peer that has sent
+     * nothing at all for this long is not slow, it is not participating, and on a box with
+     * forty slots and five hundred candidates the cheapest thing to do is take the slot
+     * back and try someone else.
+     *
+     * Forty-five seconds rather than something shorter because being choked is normal and
+     * temporary: a seed that has us queued will unchoke within a round or two of its own
+     * choker (ten-second intervals by default), and a peer dropped mid-handshake is a slot
+     * spent for nothing. This is comfortably past both, and a third of the default.
+     */
+    private const val PEER_TIMEOUT_SECONDS = 45
+
+    /**
+     * How long a peer that has been asked for a piece has to deliver it. The default is 20.
+     *
+     * The streaming case is not the seedbox case. A piece that has not arrived in fifteen
+     * seconds has already cost more than the read-ahead window is worth, and the request
+     * has to be re-issued to somebody else before the player runs out of buffer — which is
+     * the whole difference between a stall the viewer sees and one they do not.
+     */
+    private const val PIECE_TIMEOUT_SECONDS = 15
+
+    /** libtorrent's own defaults, restored by the kill switch. See [vettingDisabled]. */
+    private const val DEFAULT_TURNOVER_INTERVAL_SECONDS = 300
+    private const val DEFAULT_TURNOVER_PERCENT = 4
+    private const val DEFAULT_TURNOVER_CUTOFF_PERCENT = 90
+    private const val DEFAULT_PEER_TIMEOUT_SECONDS = 120
+    private const val DEFAULT_PIECE_TIMEOUT_SECONDS = 20
+
+    /**
      * Apply the router-friendly throttles to [pack], returning it for chaining.
      *
      * Additive: nothing here touches a setting a caller has set or may set, so it composes
      * with each session's own connection budget.
      */
+    /**
+     * Kill switch for the peer vetting, in the style of the bridge's other diagnostic
+     * flags: `adb shell touch /data/local/tmp/keen_no_peer_turnover` and restart the
+     * stream.
+     *
+     * It exists to make the vetting falsifiable. "Sending peers went from 7 to 35" is only
+     * evidence if the alternative was measured on the same box, against the same swarm, at
+     * the same time of day — and a swarm drifts enough over an hour that two builds run
+     * back to back prove very little. A flag that can be toggled between runs makes an
+     * interleaved A/B possible without reinstalling, which is the only design that
+     * controls for the swarm changing underneath the measurement.
+     *
+     * With it set, every value below reverts to libtorrent's own default, so the flag
+     * reproduces the behaviour that shipped before this work rather than some third thing.
+     */
+    private fun vettingDisabled(): Boolean =
+        java.io.File("/data/local/tmp", "keen_no_peer_turnover").exists()
+
     fun apply(pack: SettingsPack): SettingsPack = pack
         .setInteger(settings_pack.int_types.connection_speed.swigValue(), CONNECTION_SPEED)
         .setInteger(
@@ -140,6 +238,36 @@ internal object TorrentNetworkTuning {
             PEER_CONNECT_TIMEOUT_SECONDS,
         )
         .setInteger(settings_pack.int_types.max_peerlist_size.swigValue(), MAX_PEERLIST_SIZE)
+        // Drop the peers that are not delivering and take new ones from the candidate
+        // list; see [PEER_TURNOVER_INTERVAL_SECONDS]. Costs no new NAT flows on balance —
+        // each disconnect frees a tracked flow before its replacement opens one. Stated
+        // either way round rather than simply skipped when the flag is set, so a session
+        // running with the vetting off is running libtorrent's documented defaults and not
+        // whatever a previous applySettings happened to leave behind.
+        .setInteger(
+            settings_pack.int_types.peer_turnover_interval.swigValue(),
+            if (vettingDisabled()) DEFAULT_TURNOVER_INTERVAL_SECONDS
+            else PEER_TURNOVER_INTERVAL_SECONDS,
+        )
+        .setInteger(
+            settings_pack.int_types.peer_turnover.swigValue(),
+            if (vettingDisabled()) DEFAULT_TURNOVER_PERCENT else PEER_TURNOVER_PERCENT,
+        )
+        .setInteger(
+            settings_pack.int_types.peer_turnover_cutoff.swigValue(),
+            if (vettingDisabled()) DEFAULT_TURNOVER_CUTOFF_PERCENT
+            else PEER_TURNOVER_CUTOFF_PERCENT,
+        )
+        // The floor under the turnover ranking: a connection that has sent nothing for
+        // this long is not slow, it is idle, and the slot is worth more than it is.
+        .setInteger(
+            settings_pack.int_types.peer_timeout.swigValue(),
+            if (vettingDisabled()) DEFAULT_PEER_TIMEOUT_SECONDS else PEER_TIMEOUT_SECONDS,
+        )
+        .setInteger(
+            settings_pack.int_types.piece_timeout.swigValue(),
+            if (vettingDisabled()) DEFAULT_PIECE_TIMEOUT_SECONDS else PIECE_TIMEOUT_SECONDS,
+        )
         .setInteger(
             settings_pack.int_types.dht_upload_rate_limit.swigValue(),
             DHT_UPLOAD_RATE_LIMIT,
@@ -225,5 +353,15 @@ internal object TorrentNetworkTuning {
     val summary: String
         get() = "connectionSpeed=$CONNECTION_SPEED boost=$TORRENT_CONNECT_BOOST " +
             "connectTimeout=${PEER_CONNECT_TIMEOUT_SECONDS}s peerlist=$MAX_PEERLIST_SIZE " +
-            "dhtUp=$DHT_UPLOAD_RATE_LIMIT lsd=off dht=until-${RETIRE_DHT_AFTER_PEERS}-peers"
+            "dhtUp=$DHT_UPLOAD_RATE_LIMIT lsd=off dht=until-${RETIRE_DHT_AFTER_PEERS}-peers " +
+            if (vettingDisabled()) {
+                "vetting=OFF turnover=$DEFAULT_TURNOVER_PERCENT%/" +
+                    "${DEFAULT_TURNOVER_INTERVAL_SECONDS}s@$DEFAULT_TURNOVER_CUTOFF_PERCENT% " +
+                    "peerTimeout=${DEFAULT_PEER_TIMEOUT_SECONDS}s " +
+                    "pieceTimeout=${DEFAULT_PIECE_TIMEOUT_SECONDS}s"
+            } else {
+                "vetting=ON turnover=$PEER_TURNOVER_PERCENT%/${PEER_TURNOVER_INTERVAL_SECONDS}s" +
+                    "@$PEER_TURNOVER_CUTOFF_PERCENT% peerTimeout=${PEER_TIMEOUT_SECONDS}s " +
+                    "pieceTimeout=${PIECE_TIMEOUT_SECONDS}s"
+            }
 }
