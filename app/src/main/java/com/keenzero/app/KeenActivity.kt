@@ -354,6 +354,23 @@ class KeenActivity : AppCompatActivity() {
                     if (stage == TorrentStreamingService.STAGE_SEEK_BUFFERING && !torrentPlaybackStarted) {
                         return
                     }
+                    // And the mirror of it: STAGE_OPENING is only true BEFORE the first
+                    // frame. The service cannot see that frame — it happens in the player
+                    // process — so its opening loop keeps broadcasting for a fixed ninety
+                    // seconds after READY whatever the player is doing.
+                    //
+                    // Resume a film part-way in and rewind to the start inside that
+                    // window and both loops are live at once, each on the same 750 ms
+                    // tick: the bridge saying SEEK_BUFFERING because it is blocked on a
+                    // piece the resume never fetched, the opening loop still saying
+                    // OPENING. The overlay swapped between "Buffering" and "Opening film…"
+                    // about once a second until the ninety seconds ran out.
+                    //
+                    // Once playback has started the opening report is stale by
+                    // definition. Drop it and let the stall speak for itself.
+                    if (stage == TorrentStreamingService.STAGE_OPENING && torrentPlaybackStarted) {
+                        return
+                    }
                     if (!torrentOverlayVisible && nativeTorrentPlayerActive &&
                         stage == TorrentStreamingService.STAGE_SEEK_BUFFERING &&
                         torrentPlayer?.playbackState == Player.STATE_BUFFERING
@@ -4012,6 +4029,10 @@ class KeenActivity : AppCompatActivity() {
         dismissHomeKeyboard()
         autoContinuePending = false
         binding.torrentLoadingOverlay.cutoutRadius = 0f
+        // The reveal fades this out on its way past; a second stream must not inherit
+        // an invisible spinner.
+        binding.torrentLoadingSpinner.animate().cancel()
+        binding.torrentLoadingSpinner.alpha = 1f
         lastGiantPercent = -1
         lastSwarmSeeds = -1
         lastSwarmPeers = -1
@@ -4047,6 +4068,9 @@ class KeenActivity : AppCompatActivity() {
         binding.torrentLoadingOverlay.animate().alpha(1f).setDuration(200).start()
         // Content pops in a beat after the scrim so the eye lands on the ring, not a flash.
         binding.torrentLoadingContent.animate().cancel()
+        // The reveal hid this outright; a second stream must not open into a blank
+        // surface with a hole growing through nothing.
+        binding.torrentLoadingContent.visibility = View.VISIBLE
         binding.torrentLoadingContent.alpha = 0f
         binding.torrentLoadingContent.scaleX = 0.9f
         binding.torrentLoadingContent.scaleY = 0.9f
@@ -4132,11 +4156,29 @@ class KeenActivity : AppCompatActivity() {
             hideTorrentOverlayWithCollapse()
             return
         }
-        // The readout reaches 100 here and nowhere else: the buffer being full was never
-        // the finish line, the picture moving is. It is on screen at 100 only for the
-        // opening of the circle that eats it, which is exactly the intent.
-        binding.torrentLoadingPercentGiant.snapToComplete()
-        binding.torrentLoadingSpinner.setProgress(1f)
+        // The read-out is GONE before the first pixel of the hole is cut.
+        //
+        // Two earlier attempts got this wrong in the same way, by treating the figures as
+        // something the circle should carry off with it. First they rode the reveal out
+        // whole; then the bar alone was faded over 120 ms while the rest stayed. Both
+        // still put lit interface on top of a film that had already started — the hole
+        // opens as a small disc in the middle of the screen, so everything outside it is
+        // still the loading surface, spinner and counters and all, sitting over moving
+        // video for the better part of a second.
+        //
+        // The circle exists to reveal the picture. Nothing else may be on screen while it
+        // does that, so the whole column and the jumbo watermark go INVISIBLE in the same
+        // frame the animation starts: from here on the surface is plain black with a hole
+        // growing through it, and what comes through the hole is only ever the film.
+        //
+        // INVISIBLE rather than GONE keeps the centred column's geometry intact, so a
+        // second stream re-shows into the same layout instead of re-measuring it.
+        binding.torrentLoadingSpinner.animate().cancel()
+        binding.torrentLoadingSpinner.stop()
+        binding.torrentLoadingContent.animate().cancel()
+        binding.torrentLoadingContent.visibility = View.INVISIBLE
+        binding.torrentLoadingPercentGiant.animate().cancel()
+        binding.torrentLoadingPercentGiant.visibility = View.INVISIBLE
         val radius = kotlin.math.hypot(overlay.width / 2f, overlay.height / 2f)
         val animator = android.animation.ValueAnimator.ofFloat(0f, radius)
         animator.duration = TORRENT_REVEAL_MS
