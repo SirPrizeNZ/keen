@@ -741,14 +741,16 @@ class TorrentStreamingService : Service() {
             if (id != requestId || !handle.isValid) return
             // Must match the bridge's own read-ahead window or the buffering percent
             // measures a different span than the one actually being fetched.
+            // Same rate the bridge sizes its window from, or the percent again measures a
+            // different span than the one being fetched.
+            val status = handle.status()
             val windowEnd = minOf(
                 lastPiece + 1,
-                piece + TorrentHttpBridge.deadlineWindowFor(pieceLength),
+                piece + TorrentHttpBridge.deadlineWindowFor(pieceLength, status.downloadRate()),
             )
             val window = piece until windowEnd
             val have = window.count { handle.havePiece(it) }
             val size = (windowEnd - piece).coerceAtLeast(1)
-            val status = handle.status()
             sendProgress(
                 id,
                 // Distinct from the initial buffer loop's STAGE_BUFFERING. They used to
@@ -1219,6 +1221,16 @@ class TorrentStreamingService : Service() {
                 // session — the thing you cannot work out from a count, and the only way
                 // to tell a good peer being turned over by mistake from a bad one being
                 // replaced correctly.
+                // How much of the file each of the fastest peers actually holds. A seed
+                // reports 100. Cheap, and it is the line that settles "the playhead piece
+                // is not arriving" against "nobody we are connected to has it" — which
+                // cost a whole session to tell apart on 2026-09-01.
+                Log.i(
+                    TAG,
+                    "peer coverage: " + ranked.take(PEER_TOP_N).joinToString(" ") {
+                        "${it.ip()}=${(it.progress() * 100).toInt()}%"
+                    },
+                )
                 Log.i(
                     TAG,
                     "peers top: " + ranked.take(PEER_TOP_N).joinToString(" ") {

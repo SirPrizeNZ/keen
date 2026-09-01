@@ -507,8 +507,17 @@ class TorrentHttpBridge(
          *
          * @return false if the handle went away, in which case the caller should stop.
          */
+        /**
+         * What the swarm is giving this reader right now, for sizing the read-ahead
+         * window and the deadline spacing. Zero when the handle has gone or nothing has
+         * been measured yet, which both callers read as "assume slow" — the narrowest
+         * window, which is what gets the piece under the playhead served first.
+         */
+        private fun currentRateBps(): Int =
+            runCatching { handle.status().downloadRate() }.getOrDefault(0)
+
         private fun armDeadlines(from: Int, to: Int): Boolean {
-            val step = deadlineStepMsFor(pieceLength)
+            val step = deadlineStepMsFor(pieceLength, currentRateBps())
             // Drop the pieces this reader is leaving before taking the new ones, and only
             // where nobody else is still holding them: another reader may be blocked on
             // this very piece, and taking its deadline away leaves the swarm with no
@@ -582,7 +591,7 @@ class TorrentHttpBridge(
             if (!handleUsable()) return
             val firstPiece = ((torrentOffset + position) / pieceLength).toInt()
             // Refresh the playhead window whenever it moves.
-            val deadlineEnd = minOf(pieceCount, firstPiece + deadlineWindowFor(pieceLength))
+            val deadlineEnd = minOf(pieceCount, firstPiece + deadlineWindowFor(pieceLength, currentRateBps()))
             // Arming a window for a reader the player has already left behind is the
             // whole problem: see [streamGeneration].
             if (isCurrent() && (firstPiece != armedFrom || deadlineEnd != armedTo)) {
@@ -730,12 +739,46 @@ class TorrentHttpBridge(
          */
         const val READAHEAD_BYTES = 48L * 1024 * 1024
 
-        fun deadlineWindowFor(pieceLength: Int): Int =
+        /**
+         * Seconds of *fetching*, at the rate the swarm is actually giving us, that the
+         * read-ahead window is allowed to cover.
+         *
+         * [READAHEAD_BYTES] alone was a budget on the file, not on the download, and the
+         * difference is everything once the swarm is slow. Forty-eight megabytes is about
+         * twelve seconds of fetching at 4 MB/s and about seven and a half minutes at
+         * 110 KB/s, so the same constant meant "a small cushion" on a fast torrent and
+         * "most of the next ten minutes, all at once" on a thin one.
+         *
+         * Measured on this box, 2026-09-01: a 5.1 GB film with 4 MB pieces and one seed at
+         * 110 KB/s armed twelve pieces, and after three minutes the pieces on disk were
+         * 6 and 7 while the player sat blocked on piece 0. Spreading one slow peer across
+         * a 48 MB window means nothing near the playhead finishes; the pieces land in
+         * whatever order the swarm offers them.
+         */
+        const val READAHEAD_SECONDS = 12
+
+        /**
+         * How many pieces to hold deadlines on, given [pieceLength] and the rate we are
+         * actually achieving.
+         *
+         * Two budgets, whichever is smaller: the byte cushion in [READAHEAD_BYTES], and
+         * what can realistically be fetched in [READAHEAD_SECONDS]. A fast swarm is
+         * limited by the first and so behaves exactly as before; a slow one is limited by
+         * the second and narrows to the few pieces it can actually deliver in time, which
+         * is what lets the piece under the playhead finish first.
+         *
+         * A rate of zero — the first arming of a cold stream, before anything has been
+         * measured — takes the floor, which is the right guess: at the moment playback is
+         * waiting on the very first piece, the narrowest possible window is what gets it.
+         */
+        fun deadlineWindowFor(pieceLength: Int, downloadRateBps: Int): Int =
             if (pieceLength <= 0) {
                 DEADLINE_WINDOW_PIECES
             } else {
-                (READAHEAD_BYTES / pieceLength).toInt()
-                    .coerceIn(MIN_DEADLINE_WINDOW_PIECES, 256)
+                val affordable = downloadRateBps.toLong().coerceAtLeast(0L) * READAHEAD_SECONDS
+                minOf(READAHEAD_BYTES, affordable).let { budget ->
+                    (budget / pieceLength).toInt().coerceIn(MIN_DEADLINE_WINDOW_PIECES, 256)
+                }
             }
 
         /**
@@ -753,13 +796,29 @@ class TorrentHttpBridge(
          * have landed, and so on. Small-piece torrents are unaffected, since the floor is
          * the old constant.
          */
-        fun deadlineStepMsFor(pieceLength: Int): Int =
+        fun deadlineStepMsFor(pieceLength: Int, downloadRateBps: Int): Int =
             if (pieceLength <= 0) {
                 DEADLINE_STEP_MS
-            } else {
+            } else if (downloadRateBps <= 0) {
+                // Nothing measured yet: fall back to the old fixed-rate assumption.
                 ((pieceLength / BYTES_PER_MB) * DEADLINE_STEP_MS_PER_MB)
-                    .coerceIn(DEADLINE_STEP_MS, 4_000)
+                    .coerceIn(DEADLINE_STEP_MS, MAX_DEADLINE_STEP_MS)
+            } else {
+                // How long this piece will really take. That is the only spacing under
+                // which "due now, then due when the first should have landed" is true.
+                (pieceLength.toLong() * 1_000L / downloadRateBps).toInt()
+                    .coerceIn(DEADLINE_STEP_MS, MAX_DEADLINE_STEP_MS)
             }
+
+        /**
+         * Ceiling on the gap between consecutive deadlines.
+         *
+         * Was 4 s while the step was derived from an assumed 4 MB/s. Now that it is
+         * derived from the measured rate a slow swarm produces a genuinely long gap — a
+         * 4 MB piece at 110 KB/s takes about 38 s — and clamping that back to 4 s would
+         * reintroduce the flattening this change exists to remove.
+         */
+        private const val MAX_DEADLINE_STEP_MS = 60_000
 
         private const val BYTES_PER_MB = 1024 * 1024
 
