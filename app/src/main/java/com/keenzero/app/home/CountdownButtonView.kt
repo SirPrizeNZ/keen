@@ -59,13 +59,20 @@ class CountdownButtonView @JvmOverloads constructor(
         }
 
     init {
-        // Deliberately not focusable. While the film is up the activity routes every key
-        // to the PlayerView and pulls focus back to it on each event, so a focusable
-        // button here would be unreachable and would fight that model. The activity hands
-        // this view the OK press directly for as long as the offer is showing.
-        isFocusable = false
+        // Focusable, so the offer is a control the viewer can actually land on while
+        // moving through the player's own controls. It was previously not focusable and
+        // relied on the activity claiming OK outright, which made the offer and the
+        // transport row mutually exclusive: whichever one you were looking at, OK went to
+        // the other. The activity now routes keys to whichever holds focus.
+        isFocusable = true
+        isFocusableInTouchMode = false
         edgePaint.strokeWidth = 2f * density
         textPaint.textSize = 14f * density
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        invalidate()
     }
 
     /**
@@ -109,6 +116,10 @@ class CountdownButtonView @JvmOverloads constructor(
     }
 
     override fun onDraw(canvas: Canvas) {
+        // Settled before the body is inset by it, so the focused outline is drawn inside
+        // the view rather than clipped at its edge.
+        edgePaint.strokeWidth = if (isFocused) FOCUS_STROKE_DP * density else STROKE_DP * density
+        edgePaint.color = if (isFocused) Color.WHITE else RESTING_EDGE_COLOR
         body.set(0f, 0f, width.toFloat(), height.toFloat())
         val inset = edgePaint.strokeWidth
         body.inset(inset, inset)
@@ -127,8 +138,10 @@ class CountdownButtonView @JvmOverloads constructor(
             canvas.restore()
         }
 
-        // A permanent outline, since there is no focus state to show one: over a bright
-        // frame the solid body alone can sit too close to the picture to read as a button.
+        // A permanent outline: over a bright frame the solid body alone can sit too close
+        // to the picture to read as a button. Focus thickens and brightens the same
+        // outline rather than adding a second one, so the button does not change size or
+        // grow a halo the moment it is landed on.
         canvas.drawRoundRect(body, radius, radius, edgePaint)
 
         if (label.isNotEmpty()) {
@@ -149,5 +162,10 @@ class CountdownButtonView @JvmOverloads constructor(
         /** Solid resting colour, and the lighter block that fills across it. */
         const val BASE_COLOR = 0xFF2A3038.toInt()
         const val FILL_COLOR = 0xFF6F7B8C.toInt()
+
+        /** Outline: dimmed at rest so that focus reads as a real change. */
+        const val RESTING_EDGE_COLOR = 0xB3FFFFFF.toInt()
+        const val STROKE_DP = 2f
+        const val FOCUS_STROKE_DP = 4f
     }
 }

@@ -3433,7 +3433,11 @@ class KeenActivity : AppCompatActivity() {
     private fun dismissNextEpisode() {
         nextEpisodeArmed = false
         binding.torrentNextEpisode.cancelCountdown()
+        // Hand focus back before hiding. A focused view going GONE leaves the window with
+        // nothing focused, and the next key press would land nowhere.
+        val hadFocus = binding.torrentNextEpisode.hasFocus()
         binding.torrentNextEpisode.visibility = View.GONE
+        if (hadFocus) binding.torrentPlayerView.requestFocus()
     }
 
     /**
@@ -5744,33 +5748,73 @@ class KeenActivity : AppCompatActivity() {
                 hideKeyboard(binding.browseUrlEdit)
                 binding.browseUrlEdit.clearFocus()
             }
-            if (binding.torrentPlayerView.findFocus() == null) {
+            // Focus normally lives in the PlayerView, but the next-episode offer is a
+            // sibling of it, not a child: while the offer holds focus this check reads as
+            // "nothing is focused" and would yank focus off the offer on the very press
+            // meant to reach it.
+            if (binding.torrentPlayerView.findFocus() == null &&
+                !binding.torrentNextEpisode.hasFocus()
+            ) {
                 binding.torrentPlayerView.requestFocus()
             }
-            // The next-episode offer owns OK while it is up. It is the only thing on
-            // screen asking to be pressed at that moment, and claiming the key here is
-            // what makes it reachable at all — every key below is routed to the
-            // PlayerView regardless of focus, so a focusable button could never win it.
             if (nextEpisodeArmed) {
-                if (event.action == KeyEvent.ACTION_UP &&
-                    (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                val offerFocused = binding.torrentNextEpisode.hasFocus()
+                val controlsUp = binding.torrentPlayerView.isControllerFullyVisible
+                when {
+                    event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
                         event.keyCode == KeyEvent.KEYCODE_ENTER ||
-                        event.keyCode == KeyEvent.KEYCODE_BUTTON_A)
-                ) {
-                    playNextEpisode()
-                    return true
-                }
-                // Back is "no thanks": withdraw the offer and let the credits run. It must
-                // not also leave the player, so it is consumed here.
-                if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-                    if (event.action == KeyEvent.ACTION_UP) {
-                        nextEpisodeDeclined = true
-                        dismissNextEpisode()
+                        event.keyCode == KeyEvent.KEYCODE_BUTTON_A -> {
+                        // OK takes the offer when the offer is what OK is pointed at:
+                        // either it holds focus, or the controls are down and it is the
+                        // only thing on screen asking to be pressed. With the controls up
+                        // and a transport button focused, OK belongs to that button —
+                        // claiming it unconditionally is what made the control row and
+                        // the offer mutually unreachable.
+                        if (offerFocused || !controlsUp) {
+                            // Both actions, so the button underneath never sees half a press.
+                            if (event.action == KeyEvent.ACTION_UP) playNextEpisode()
+                            return true
+                        }
                     }
-                    return true
+                    // Back is "no thanks": withdraw the offer and let the credits run. It
+                    // must not also leave the player, so it is consumed here.
+                    event.keyCode == KeyEvent.KEYCODE_BACK -> {
+                        if (event.action == KeyEvent.ACTION_UP) {
+                            nextEpisodeDeclined = true
+                            dismissNextEpisode()
+                        }
+                        return true
+                    }
+                    // Any direction off the offer is the user reaching for the film.
+                    offerFocused && event.keyCode in DPAD_DIRECTIONS -> {
+                        if (event.action == KeyEvent.ACTION_UP) {
+                            binding.torrentPlayerView.requestFocus()
+                            binding.torrentPlayerView.showController()
+                        }
+                        return true
+                    }
+                    // Up out of the top of the control row reaches the offer, which sits
+                    // above it. Claimed only when Media3 has nothing above the focused
+                    // control anyway, so moving between the scrubber and the button row
+                    // keeps working exactly as before.
+                    !offerFocused && controlsUp && event.keyCode == KeyEvent.KEYCODE_DPAD_UP -> {
+                        val focused = binding.torrentPlayerView.findFocus()
+                        val above = focused?.focusSearch(View.FOCUS_UP)
+                        if (focused != null && (above == null || above === focused)) {
+                            if (event.action == KeyEvent.ACTION_UP) {
+                                binding.torrentNextEpisode.requestFocus()
+                            }
+                            return true
+                        }
+                    }
                 }
-                // Any DPAD press is the user reaching for the film, not the offer — but
-                // swallow only the OK/Back above, so seeking still works underneath.
+                // Everything else falls through: seeking still works under the offer.
+            }
+            // The offer is outside the PlayerView, so the blanket routing at the end of
+            // this block would never deliver a key to it. While it holds focus, the
+            // ordinary view hierarchy owns the remote.
+            if (binding.torrentNextEpisode.hasFocus()) {
+                return super.dispatchKeyEvent(event)
             }
             if (event.keyCode == KeyEvent.KEYCODE_BACK) {
                 return super.dispatchKeyEvent(event)
@@ -6679,6 +6723,14 @@ class KeenActivity : AppCompatActivity() {
         private const val REVEAL_MOTION_SAMPLE_MS = 250L
         private const val REVEAL_MOTION_MIN_MS = 100L
         private const val REVEAL_MOTION_RETRY_MS = 400L
+
+        /** The four directions that mean "off the next-episode offer, back to the film". */
+        private val DPAD_DIRECTIONS = setOf(
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+        )
 
         private const val NEXT_EPISODE_LEAD_MS = 60_000L
         private const val NEXT_EPISODE_POLL_MS = 1_000L
