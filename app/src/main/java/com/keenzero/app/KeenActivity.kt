@@ -277,7 +277,7 @@ class KeenActivity : AppCompatActivity() {
     /** Caps how long a real load may run the line, whatever the page claims. */
     private val navLoadingSettle = Runnable { setNavLoading(false) }
 
-    /** Star injected into the player controls, left of the subtitle button. */
+    /** Keep-on-the-box button injected into the player controls, left of subtitles. */
     private var playerStarButton: android.widget.ImageButton? = null
 
     /**
@@ -2627,6 +2627,11 @@ class KeenActivity : AppCompatActivity() {
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .setLoadControl(loadControl)
+            // Both skip buttons are drawn with a 5 on them, so both move five seconds.
+            // media3's own default is five back and fifteen forward, which would make
+            // the forward icon a lie.
+            .setSeekBackIncrementMs(SEEK_STEP_MS)
+            .setSeekForwardIncrementMs(SEEK_STEP_MS)
             .build()
         torrentPlayer = player
         torrentFirstFrameShown = false
@@ -2824,6 +2829,8 @@ class KeenActivity : AppCompatActivity() {
         )?.apply { setKeyTimeIncrement(TORRENT_TIMEBAR_KEY_INCREMENT_MS) }
         installPlayerAudioButton()
         installPlayerStarButton()
+        hideSeekAmountLabels()
+        spaceCenterControls()
         refreshPlayerStarIcon()
         refreshPlayerAudioButton()
         // Take the page out of view for the duration.
@@ -2884,6 +2891,71 @@ class KeenActivity : AppCompatActivity() {
     }
 
     /**
+     * Size and space the five centre controls, centre outwards.
+     *
+     * media3 gives all five the same 52dp box and a 5dp side margin, which was drawn for
+     * its own thin line icons. Ours are solid discs that fill their box, so the same
+     * geometry read as one crowded lump. Three sizes put the eye on play first, the
+     * five-second skips next, and the episode steps last, and the wider margins give the
+     * row the air the artwork needs.
+     */
+    private fun spaceCenterControls() {
+        val sizes = listOf(
+            androidx.media3.ui.R.id.exo_prev to CENTER_STEP_SIZE_DP,
+            androidx.media3.ui.R.id.exo_rew_with_amount to CENTER_SKIP_SIZE_DP,
+            androidx.media3.ui.R.id.exo_play_pause to CENTER_PLAY_SIZE_DP,
+            androidx.media3.ui.R.id.exo_ffwd_with_amount to CENTER_SKIP_SIZE_DP,
+            androidx.media3.ui.R.id.exo_next to CENTER_STEP_SIZE_DP,
+        )
+        for ((id, sizeDp) in sizes) {
+            val button = binding.torrentPlayerView.findViewById<View>(id) ?: continue
+            val params = button.layoutParams as? android.widget.LinearLayout.LayoutParams ?: continue
+            params.width = dpToPx(sizeDp)
+            params.height = dpToPx(sizeDp)
+            params.leftMargin = dpToPx(CENTER_GAP_DP)
+            params.rightMargin = dpToPx(CENTER_GAP_DP)
+            button.layoutParams = params
+        }
+    }
+
+    private fun dpToPx(dp: Int): Int =
+        (dp * resources.displayMetrics.density).toInt()
+
+    /**
+     * Silence the seconds media3 prints across the skip buttons.
+     *
+     * Those two buttons draw their icon as a background with the seek amount as the
+     * button's own text on top. Our icons already carry the 5, so the stock label only
+     * showed through as a second, thinner numeral. The text keeps being rewritten on
+     * every player change; the colour is not, so clearing that is what sticks.
+     */
+    private fun hideSeekAmountLabels() {
+        for (id in intArrayOf(androidx.media3.ui.R.id.exo_rew_with_amount, androidx.media3.ui.R.id.exo_ffwd_with_amount)) {
+            binding.torrentPlayerView.findViewById<android.widget.TextView>(id)
+                ?.setTextColor(android.graphics.Color.TRANSPARENT)
+        }
+    }
+
+    /**
+     * Give an injected control the subtitle button's own box: its layout params, margins
+     * and gravity, and its padding.
+     *
+     * Copied rather than approximated with constants of our own. A plain
+     * ViewGroup.LayoutParams carries no gravity and no margins, so the injected buttons
+     * sat a few pixels off the stock ones and the bottom row read as two rows. Taking
+     * media3's numbers keeps the row on one line whatever it changes them to.
+     */
+    private fun View.matchControlRowMetrics(model: View) {
+        layoutParams = (model.layoutParams as? android.widget.LinearLayout.LayoutParams)
+            ?.let { android.widget.LinearLayout.LayoutParams(it) }
+            ?: android.widget.LinearLayout.LayoutParams(
+                model.width.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
+                model.height.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
+            ).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        setPadding(model.paddingLeft, model.paddingTop, model.paddingRight, model.paddingBottom)
+    }
+
+    /**
      * Put the audio-track picker into the control row, left of the star.
      *
      * Same runtime injection as the star, and for the same reason: the stock controller
@@ -2906,11 +2978,7 @@ class KeenActivity : AppCompatActivity() {
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
             isFocusable = true
             isClickable = true
-            layoutParams = android.view.ViewGroup.LayoutParams(
-                subtitleButton.width.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
-                subtitleButton.height.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
-            )
-            setPadding(STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX)
+            matchControlRowMetrics(subtitleButton)
             visibility = View.GONE
             setOnClickListener { promptAudioTrackChoice() }
         }
@@ -2995,8 +3063,8 @@ class KeenActivity : AppCompatActivity() {
     }
 
     /**
-     * Put the star into the player's control row, immediately left of the subtitle (CC)
-     * button.
+     * Put the keep-on-the-box button into the player's control row, immediately left of
+     * the subtitle (CC) button.
      *
      * Injected into the stock controller at runtime rather than shipped as a custom
      * `controller_layout_id`. Overriding the layout means copying media3's entire control
@@ -3011,7 +3079,7 @@ class KeenActivity : AppCompatActivity() {
         ) ?: return
         val row = subtitleButton.parent as? android.view.ViewGroup ?: return
         val star = android.widget.ImageButton(this).apply {
-            setImageResource(R.drawable.ic_star)
+            setImageResource(R.drawable.ic_download)
             background = androidx.core.content.ContextCompat.getDrawable(
                 this@KeenActivity,
                 R.drawable.focusable_icon,
@@ -3020,11 +3088,7 @@ class KeenActivity : AppCompatActivity() {
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
             isFocusable = true
             isClickable = true
-            layoutParams = android.view.ViewGroup.LayoutParams(
-                subtitleButton.width.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
-                subtitleButton.height.takeIf { it > 0 } ?: STAR_BUTTON_FALLBACK_PX,
-            )
-            setPadding(STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX, STAR_BUTTON_PADDING_PX)
+            matchControlRowMetrics(subtitleButton)
             setOnClickListener { toggleStarForCurrentTorrent() }
         }
         row.addView(star, row.indexOfChild(subtitleButton))
@@ -3032,7 +3096,7 @@ class KeenActivity : AppCompatActivity() {
         refreshPlayerStarIcon()
     }
 
-    /** Filled/bright when this title is in the library, dim when it is not. */
+    /** Bright when this title is in the library, dim when it is not. */
     private fun refreshPlayerStarIcon() {
         val starred = libraryStore.isStarred(torrentOriginKey)
         playerStarButton?.alpha = if (starred) 1.0f else 0.35f
@@ -4721,9 +4785,13 @@ class KeenActivity : AppCompatActivity() {
 
     private fun updateFavIcon() {
         val fav = favouritesStore.isFavourite(currentUrl ?: lastChromeUrl)
-        // Star and K logo are the same white vector already — matching the logo's own
-        // alpha (chromeLogo, now fully opaque) makes a favourited star render as
-        // literally the same colour as the logo, not just visually close.
+        // Two drawings, not one drawing at two alphas: the favourited star carries a
+        // tick, the unfavourited one does not, so the state reads from across the room
+        // rather than from a brightness the television has already washed out. The
+        // alpha still rides along, matching the K logo's own when it is favourited.
+        binding.chromeFavButton.setImageResource(
+            if (fav) R.drawable.ic_fav_filled else R.drawable.ic_fav,
+        )
         binding.chromeFavButton.alpha = if (fav) 1.0f else 0.35f
     }
 
@@ -6670,7 +6738,15 @@ class KeenActivity : AppCompatActivity() {
         )
 
         private const val STAR_BUTTON_FALLBACK_PX = 96
-        private const val STAR_BUTTON_PADDING_PX = 18
+
+        /** Skip step for the two arrow buttons, matching the 5 drawn on them. */
+        private const val SEEK_STEP_MS = 5_000L
+
+        /** Centre controls, largest in the middle. See spaceCenterControls. */
+        private const val CENTER_PLAY_SIZE_DP = 64
+        private const val CENTER_SKIP_SIZE_DP = 54
+        private const val CENTER_STEP_SIZE_DP = 46
+        private const val CENTER_GAP_DP = 10
 
         private const val TORRENT_MIN_BUFFER_MS = 60_000
         private const val TORRENT_MAX_BUFFER_MS = 180_000

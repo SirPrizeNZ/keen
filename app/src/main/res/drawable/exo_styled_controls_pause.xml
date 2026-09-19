@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pause, drawn to match "Play 1 [Vectorized].svg" (keen icons v2): the same disc,
+     with the triangle replaced by two bars. The icon set ships no pause of its own. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="52dp"
+    android:height="52dp"
+    android:viewportWidth="1000"
+    android:viewportHeight="1000">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M499 0c276.142 0 500 223.858 500 500s-223.858 500-500 500S-1 776.142-1 500 222.858 0 499 0M380 320a60 60 0 0 0-60 60v240a60 60 0 0 0 120 0V380a60 60 0 0 0-60-60M620 320a60 60 0 0 0-60 60v240a60 60 0 0 0 120 0V380a60 60 0 0 0-60-60" />
+</vector>
