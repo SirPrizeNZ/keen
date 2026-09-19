@@ -567,7 +567,7 @@ class TorrentStreamingService : Service() {
             handle.pause()
             pendingChoice = PendingChoice(id, root, handle, layout)
             Log.i(TAG, "picker_open paused files=${features.size} of=${layout.numFiles}")
-            val ordered = features.sortedBy { slots[it].name.lowercase() }
+            val ordered = features.sortedWith { l, r -> EpisodeOrder.compare(slots[l].name, slots[r].name) }
             sendBroadcast(
                 Intent(ACTION_CHOOSE_FILE)
                     .setPackage(packageName)
@@ -583,7 +583,7 @@ class TorrentStreamingService : Service() {
         // Name order is the same order the picker lists them in — for the season packs
         // this is aimed at, that is episode order.
         liveMedia = PendingChoice(id, root, handle, layout)
-        packOrder = features.sortedBy { slots[it].name.lowercase() }
+        packOrder = features.sortedWith { l, r -> EpisodeOrder.compare(slots[l].name, slots[r].name) }
         packNames = packOrder.map { slots[it].name }
         playingIndex = largestIndex
 
