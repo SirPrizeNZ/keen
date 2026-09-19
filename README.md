@@ -20,13 +20,13 @@
 
 <br>
 
-### [Download Keen v0.2.24](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.24/keen-0.2.24-32bit-armeabi-v7a.apk)
+### [Download Keen v0.2.25](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.25/keen-0.2.25-32bit-armeabi-v7a.apk)
 
-18.6 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
+18.5 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
-[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.24/keen-0.2.24-64bit-arm64-v8a.apk) ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.24) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.24/SHA256SUMS) ·
+[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.25/keen-0.2.25-64bit-arm64-v8a.apk) ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.25) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.25/SHA256SUMS) ·
 [Installation](#installation)
 
 <br>
@@ -68,6 +68,8 @@ In an era of bloated applications, Keen is an exercise in restraint. By leveragi
 - **Continue Watching:** Pick up exactly where you left off with elegant home-screen cards.
 - **Smart History:** Address completion driven by your actual browsing habits.
 - **One Live View:** A single, optimized WebView environment. No messy stacks of forgotten tabs.
+- **Season packs:** Files are offered in episode order, and the next episode is offered as the
+  current one ends.
 
 ## Our commitment to the open web
 
@@ -107,7 +109,7 @@ adb install -r <keen-apk-filename>
 For example:
 
 ```bash
-adb install -r keen-0.2.24-32bit-armeabi-v7a.apk
+adb install -r keen-0.2.25-32bit-armeabi-v7a.apk
 ```
 
 Use the exact IP address and port displayed by the television. Wireless debugging may use a port other than `5555`.
@@ -119,9 +121,9 @@ The `-r` flag updates an existing installation while preserving its local data.
 Keen is developed and tested on a Xiaomi MiTV-AFMU0 (twilight) running Android TV 14, which
 is a 32-bit (`armeabi-v7a`) system.
 
-The 64-bit build has not yet been run on 64-bit hardware. It is verified only as far as
-packaging. Reports from Shield TV and Fire TV Cube owners are particularly welcome, as is
-testing on any other Android TV or Google TV device.
+The 64-bit build runs on 64-bit hardware, verified on a Galaxy Note 10 (`arm64-v8a`), but
+it has not yet been run on a 64-bit television. Reports from Shield TV and Fire TV Cube
+owners are particularly welcome, as is testing on any other Android TV or Google TV device.
 
 ## Roadmap
 
