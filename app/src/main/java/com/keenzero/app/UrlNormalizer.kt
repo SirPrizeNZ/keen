@@ -5,9 +5,16 @@ package com.keenzero.app
  */
 object UrlNormalizer {
 
+    /** The bundled open-source notices, served by the WebView asset loader. */
+    const val LICENCES_URL = "https://appassets.androidplatform.net/assets/licenses/notices.html"
+
+    /** Address-bar words that open [LICENCES_URL]. Both spellings, since both get typed. */
+    private val LICENCES_ALIASES = setOf("about:licences", "about:licenses", "about:credits")
+
     fun normalize(raw: String): String? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
+        if (trimmed.lowercase() in LICENCES_ALIASES) return LICENCES_URL
         if (trimmed.startsWith("magnet:?", ignoreCase = true)) {
             val query = trimmed.substringAfter('?', "")
             return trimmed.takeIf {
