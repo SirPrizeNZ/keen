@@ -23,6 +23,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.doOnLayout
 import com.keenzero.app.continuity.ContinuityCheckpoint
 import com.keenzero.app.continuity.ContinuityStore
 import com.keenzero.app.databinding.ActivityKeenBinding
@@ -158,40 +159,40 @@ class KeenActivity : AppCompatActivity() {
 
     /** On-disk media file the bridge serves — the source for Continue-card frame grabs. */
     private var torrentMediaPath: String? = null
-    /** Pending hold-to-seek target while DPAD left/right is held in the torrent player. */
-    private var torrentSeekTargetMs: Long = -1L
     private var torrentSeekLastEventMs: Long = 0L
-    /** True while a Keen hold-seek gesture owns left/right (between key-down and key-up).
-     * Once a gesture starts it keeps ownership through release — showController() moves
-     * focus to the scrubber mid-gesture, and re-checking focus would otherwise abandon
-     * the seek (and leave the target-time preview stuck on screen). */
+    /** True while a Keen seek gesture owns left/right (between key-down and key-up).
+     * Once a gesture starts it keeps ownership through release: showController() can
+     * move focus mid-gesture, and re-checking focus would abandon the scrub halfway. */
     private var torrentSeekActive = false
+    /** The current gesture auto-repeated, i.e. it was a hold rather than a tap. */
+    private var torrentSeekHeld = false
+    /** The time bar accepted a step this gesture, so it is scrubbing and can commit. */
+    private var torrentSeekScrubbed = false
 
-    /** Media3's scrubber, driven to the pending target while a hold-seek is in flight. */
-    private var torrentTimeBar: androidx.media3.ui.DefaultTimeBar? = null
-
-    /**
-     * Keeps the scrubber pinned to the pending seek target while a hold is in progress.
-     *
-     * The seek itself only commits on key-release (one piece-deadline reset instead of
-     * one per repeat), so the time bar would otherwise sit at the player's real position
-     * and look frozen while the target raced ahead in the text preview. Media3's own
-     * progress loop rewrites the bar every couple of hundred ms, so re-asserting the
-     * target every frame is what keeps the thumb travelling smoothly.
-     */
-    private val torrentScrubTick = object : Runnable {
+    /** The frosted focus disc behind the centre controls; see [installPlayerFocusLens]. */
+    private var focusLens: com.keenzero.app.home.FocusLensView? = null
+    /** Centre control the disc is on, or null while focus is anywhere else. */
+    private var focusLensTarget: View? = null
+    /** 0..1: the disc's own fade, multiplied by the centre row's alpha on every frame. */
+    private var focusLensShown = 0f
+    private var focusLensFader: android.animation.ValueAnimator? = null
+    private var focusLensMover: android.view.ViewPropertyAnimator? = null
+    private var focusLensCopyPending = false
+    /** The sample on screen, and the one the next copy writes into. */
+    private var focusLensFront: android.graphics.Bitmap? = null
+    private var focusLensBack: android.graphics.Bitmap? = null
+    private val focusLensTick = object : Runnable {
         override fun run() {
-            if (!torrentSeekActive) return
-            val duration = torrentPlayer?.duration ?: 0L
-            if (duration > 0 && torrentSeekTargetMs >= 0) {
-                // One writer, every frame: the fill is the target and nothing else ever
-                // sets it, so the skim is smooth however long the hold runs.
-                binding.torrentScrubFill.scaleX =
-                    (torrentSeekTargetMs.toFloat() / duration).coerceIn(0f, 1f)
-            }
-            binding.root.postDelayed(this, TORRENT_SCRUB_FRAME_MS)
+            if (focusLensTarget == null) return
+            sampleFocusLens()
+            binding.root.postDelayed(this, FOCUS_LENS_SAMPLE_MS)
         }
     }
+
+    /** Media3's time bar. Left/right scrub it directly; see [handleTorrentSeekKey]. */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private var torrentTimeBar: androidx.media3.ui.DefaultTimeBar? = null
+
     /**
      * True once this torrent has actually produced playback. Until then the bridge's
      * stall reporting is start-up noise, not a seek: the player's first range read
@@ -213,6 +214,17 @@ class KeenActivity : AppCompatActivity() {
 
     /** A playhead-movement sample is in flight; stops every event queueing another. */
     private var revealMotionCheckPending = false
+
+    /** The film is running and the circle is waiting for it to show some light. */
+    private var revealAwaitingLight = false
+    /**
+     * The circle is growing. The surface belongs to it until it ends: a READY arriving
+     * mid-reveal (a stream rebuffering in its first second) used to start the 160 ms
+     * fade as well, which turned the last slivers of the surface translucent.
+     */
+    private var revealRunning = false
+    /** 16x9 read-back of the whole picture, for [revealWhenLit]. */
+    private var revealLightSample: android.graphics.Bitmap? = null
 
     /** True from launch until a restored session has taken over the screen. */
     private var autoContinuePending = false
@@ -466,6 +478,7 @@ class KeenActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dropHarnessExtrasUnlessLab(intent)
         binding = ActivityKeenBinding.inflate(layoutInflater)
         setContentView(binding.root)
         continuityStore = ContinuityStore(this)
@@ -582,31 +595,52 @@ class KeenActivity : AppCompatActivity() {
         // loads underneath an IME nobody asked for.
         autoContinuePending = intent?.getStringExtra("com.keenzero.app.extra.LAB_URL").isNullOrBlank() &&
             intent?.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) != true &&
-            continuityStore.load()?.url != null &&
-            !continuityStore.wasAtHome()
+            resumesOnLaunch(continuityStore.load())
         showHome(status = getString(R.string.status_home))
         recordEvent(NavigationEvent(System.currentTimeMillis(), "native_home_ready"))
-        // LAB_URL / harness extras allowed on release for physical TV validation.
+        // LAB_URL / harness extras allowed on the sideload release for physical TV
+        // validation. The Play build dropped them at the top of onCreate.
         handleDebugIntent(intent)
-        // Cold start lands exactly where the user left off (page or playback).
-        // Only a deliberate back-out to home (at_home flag) keeps the launch on
-        // the Continue watching surface.
+        // Cold start reopens the page the user was on; see resumesOnLaunch for what it
+        // leaves on the home screen instead.
         if (webHost == null && torrentRequestId == null &&
             intent?.getStringExtra("com.keenzero.app.extra.LAB_URL").isNullOrBlank() &&
             intent?.getBooleanExtra(EXTRA_AUTO_CONTINUE, false) != true &&
             intent?.getBooleanExtra(EXTRA_LAB_AUTO_JOURNEY, false) != true
         ) {
-            val checkpoint = continuityStore.load()
-            if (checkpoint?.url != null && !continuityStore.wasAtHome()) {
-                continueFromCheckpoint()
-            }
+            if (resumesOnLaunch(continuityStore.load())) continueFromCheckpoint()
         }
     }
 
+    /**
+     * Whether a cold start should reopen [checkpoint] by itself.
+     *
+     * A page, yes: that is where the user was reading. A video, no. Launching straight
+     * back into a film, and into a torrent reconnecting to its swarm, takes the choice away
+     * from someone who may have opened Keen to watch something else, and the film is one
+     * press away on its Continue watching card. A deliberate back-out to home (the at_home
+     * flag) stays on home as before.
+     */
+    private fun resumesOnLaunch(checkpoint: ContinuityCheckpoint?): Boolean =
+        checkpoint?.url != null &&
+            !checkpoint.requiresMediaRestore() &&
+            !continuityStore.wasAtHome()
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        dropHarnessExtrasUnlessLab(intent)
         setIntent(intent)
         handleDebugIntent(intent)
+    }
+
+    /**
+     * Every extra KeenActivity reads is a harness extra, and the activity is exported for
+     * the launcher. On the Play build any installed app could otherwise send LAB_FAVS_ADD,
+     * LAB_UI_PREVIEW_CLEAR and the rest, so the extras are erased before anything reads
+     * them. The launcher and the notification intents carry none, so they are unaffected.
+     */
+    private fun dropHarnessExtrasUnlessLab(intent: Intent?) {
+        if (!BuildConfig.LAB_HARNESS) intent?.replaceExtras(null as Bundle?)
     }
 
     override fun onPause() {
@@ -2637,6 +2671,8 @@ class KeenActivity : AppCompatActivity() {
         torrentFirstFrameShown = false
         torrentRenderedFirstFrame = false
         revealMotionCheckPending = false
+        revealAwaitingLight = false
+        revealRunning = false
         // Turn on English subtitles by default whenever the media carries them —
         // preferring an "en"-tagged text track, and falling back to an untagged
         // one (common in torrent MKVs where the English subs have no language tag).
@@ -2774,7 +2810,9 @@ class KeenActivity : AppCompatActivity() {
                     return
                 }
                 if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
-                    if (torrentFirstFrameShown && torrentOverlayVisible && nativeTorrentPlayerActive) {
+                    if (torrentFirstFrameShown && !revealAwaitingLight && !revealRunning &&
+                        torrentOverlayVisible && nativeTorrentPlayerActive
+                    ) {
                         hideTorrentOverlay()
                     }
                 }
@@ -2822,15 +2860,36 @@ class KeenActivity : AppCompatActivity() {
         binding.browseUrlEdit.clearFocus()
         binding.torrentPlayerView.player = player
         styleSubtitles()
-        // Scrubber (circle) walks the timeline a minute at a time when focused and
-        // pressed/held left or right, instead of a duration-relative fraction.
+        // Left/right scrub this bar directly (handleTorrentSeekKey), which sets the step
+        // per press. The listener only records where a scrub landed; Media3's controller
+        // performs the seek itself.
         torrentTimeBar = binding.torrentPlayerView.findViewById<androidx.media3.ui.DefaultTimeBar>(
             androidx.media3.ui.R.id.exo_progress,
-        )?.apply { setKeyTimeIncrement(TORRENT_TIMEBAR_KEY_INCREMENT_MS) }
+        )?.apply {
+            addListener(object : androidx.media3.ui.TimeBar.OnScrubListener {
+                override fun onScrubStart(timeBar: androidx.media3.ui.TimeBar, position: Long) = Unit
+                override fun onScrubMove(timeBar: androidx.media3.ui.TimeBar, position: Long) = Unit
+                override fun onScrubStop(
+                    timeBar: androidx.media3.ui.TimeBar,
+                    position: Long,
+                    canceled: Boolean,
+                ) {
+                    if (canceled) return
+                    recordEvent(
+                        NavigationEvent(
+                            System.currentTimeMillis(),
+                            "torrent_seek_commit",
+                            detail = "from=${torrentPlayer?.currentPosition} to=$position",
+                        ),
+                    )
+                }
+            })
+        }
         installPlayerAudioButton()
         installPlayerStarButton()
         hideSeekAmountLabels()
         spaceCenterControls()
+        installPlayerFocusLens()
         refreshPlayerStarIcon()
         refreshPlayerAudioButton()
         // Take the page out of view for the duration.
@@ -2956,6 +3015,199 @@ class KeenActivity : AppCompatActivity() {
     }
 
     /**
+     * One frosted disc behind whichever centre control has focus.
+     *
+     * Media3 highlights these five with Android's ripple, which came out a circle behind
+     * previous, play and next and a square behind the two skip buttons: those carry their
+     * icon as the background, so the ripple lands in the foreground and takes the
+     * button's rectangle. Both ripples are removed and a single
+     * [com.keenzero.app.home.FocusLensView] glides between the buttons instead, the same
+     * circle for all five, filled with the film behind it, blurred.
+     *
+     * The disc is a child of the controller itself, just under the centre row, so it sits
+     * above the scrim and below the icons, and it takes the row's alpha every frame so it
+     * fades in and out with the controls rather than popping.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun installPlayerFocusLens() {
+        if (focusLens != null) return
+        val playerView = binding.torrentPlayerView
+        val center = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_center_controls) ?: return
+        val host = center.parent as? android.view.ViewGroup ?: return
+        for (id in CENTER_CONTROL_IDS) {
+            val button = playerView.findViewById<View>(id) ?: continue
+            if (id == androidx.media3.ui.R.id.exo_rew_with_amount ||
+                id == androidx.media3.ui.R.id.exo_ffwd_with_amount
+            ) {
+                button.foreground = null
+            } else {
+                button.background = null
+            }
+        }
+        val size = dpToPx(FOCUS_LENS_MAX_DP)
+        val lens = com.keenzero.app.home.FocusLensView(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(size, size)
+            pivotX = size / 2f
+            pivotY = size / 2f
+            alpha = 0f
+        }
+        host.addView(lens, host.indexOfChild(center))
+        focusLens = lens
+        playerView.viewTreeObserver.addOnGlobalFocusChangeListener { _, newFocus ->
+            onPlayerFocusChanged(newFocus)
+        }
+        playerView.viewTreeObserver.addOnPreDrawListener {
+            val alpha = focusLensShown * center.alpha
+            if (lens.alpha != alpha) lens.alpha = alpha
+            true
+        }
+        // Whenever the controls come up, play/pause takes focus. Measured on the box, they
+        // otherwise opened with it on the Keep button in the bottom row: Media3 does not
+        // consume the Down that shows them, so Android's own focus search carried on down
+        // from the player and landed there. Left alone are a scrub, which has put focus
+        // on the time bar deliberately, and the next-episode offer, outside the player.
+        playerView.setControllerVisibilityListener(
+            androidx.media3.ui.PlayerView.ControllerVisibilityListener { visibility ->
+                if (visibility == View.VISIBLE) playerView.post { focusPlayPauseOnShow(0) }
+            },
+        )
+    }
+
+    /**
+     * Give play/pause focus as the controls come up; see [installPlayerFocusLens].
+     *
+     * Retried because the listener fires as the controls start to animate in, while
+     * Media3 still holds the centre row invisible, and an invisible view refuses focus
+     * without saying so. On the box a single attempt landed about half the time.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun focusPlayPauseOnShow(attempt: Int) {
+        val playerView = binding.torrentPlayerView
+        val focused = currentFocus
+        val keep = focused != null && focused !== playerView &&
+            (focused is androidx.media3.ui.DefaultTimeBar || !isInside(focused, playerView))
+        if (keep) return
+        val playPause = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause) ?: return
+        if (playPause.isShown && playPause.requestFocus()) return
+        if (attempt < FOCUS_ON_SHOW_ATTEMPTS) {
+            playerView.postDelayed({ focusPlayPauseOnShow(attempt + 1) }, FOCUS_ON_SHOW_RETRY_MS)
+        }
+    }
+
+    private fun isInside(view: View, ancestor: View): Boolean {
+        var parent = view.parent
+        while (parent != null) {
+            if (parent === ancestor) return true
+            parent = parent.parent
+        }
+        return false
+    }
+
+    private fun onPlayerFocusChanged(newFocus: View?) {
+        val lens = focusLens ?: return
+        val candidate = newFocus?.takeIf { it.id in CENTER_CONTROL_IDS }
+        // The controls' first appearance focuses play/pause before the row has ever been
+        // laid out, so it has no size or position yet and the disc would be skipped or
+        // placed at 0,0. Come back once it has.
+        if (candidate != null && !candidate.isLaidOut) {
+            candidate.doOnLayout { if (it.isFocused) onPlayerFocusChanged(it) }
+            return
+        }
+        val target = candidate?.takeIf { it.width > 0 }
+        focusLensMover?.cancel()
+        if (target == null) {
+            focusLensTarget = null
+            binding.root.removeCallbacks(focusLensTick)
+            animateFocusLensShown(0f)
+            return
+        }
+        val arrivingFresh = focusLensTarget == null || focusLensShown == 0f
+        focusLensTarget = target
+        val host = lens.parent as? android.view.ViewGroup ?: return
+        val box = android.graphics.Rect(0, 0, target.width, target.height)
+        host.offsetDescendantRectToMyCoords(target, box)
+        val diameter = maxOf(target.width, target.height) + 2 * dpToPx(FOCUS_LENS_HALO_DP)
+        val toX = box.exactCenterX() - lens.width / 2f
+        val toY = box.exactCenterY() - lens.height / 2f
+        val toScale = diameter.toFloat() / lens.width
+        if (arrivingFresh) {
+            lens.translationX = toX
+            lens.translationY = toY
+            lens.scaleX = toScale
+            lens.scaleY = toScale
+            lens.setSample(null)
+            animateFocusLensShown(1f)
+        } else {
+            focusLensMover = lens.animate()
+                .translationX(toX)
+                .translationY(toY)
+                .scaleX(toScale)
+                .scaleY(toScale)
+                .setDuration(FOCUS_LENS_MOVE_MS)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .also { it.start() }
+        }
+        binding.root.removeCallbacks(focusLensTick)
+        binding.root.post(focusLensTick)
+    }
+
+    private fun animateFocusLensShown(to: Float) {
+        focusLensFader?.cancel()
+        focusLensFader = android.animation.ValueAnimator.ofFloat(focusLensShown, to).apply {
+            duration = FOCUS_LENS_FADE_MS
+            addUpdateListener {
+                focusLensShown = it.animatedValue as Float
+                focusLens?.invalidate()
+            }
+            start()
+        }
+    }
+
+    /**
+     * Refresh the picture inside the disc from the film behind it.
+     *
+     * A copy the size of the disc is read back into a 24 px square, blurred there and
+     * shown scaled up. Two bitmaps alternate so the one on screen is never the one being
+     * written. Runs a dozen times a second while a centre control holds focus and the
+     * controls are up, and not at all otherwise.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun sampleFocusLens() {
+        val lens = focusLens ?: return
+        if (focusLensTarget == null || focusLensCopyPending) return
+        if (!binding.torrentPlayerView.isControllerFullyVisible) return
+        val surface = binding.torrentPlayerView.videoSurfaceView as? android.view.SurfaceView ?: return
+        val lensAt = IntArray(2)
+        val surfaceAt = IntArray(2)
+        lens.getLocationInWindow(lensAt)
+        surface.getLocationInWindow(surfaceAt)
+        val span = lens.width * lens.scaleX
+        val left = (lensAt[0] - surfaceAt[0]).toFloat()
+        val top = (lensAt[1] - surfaceAt[1]).toFloat()
+        val src = android.graphics.Rect(
+            left.toInt(),
+            top.toInt(),
+            (left + span).toInt(),
+            (top + span).toInt(),
+        )
+        if (!src.intersect(0, 0, surface.width, surface.height)) return
+        val back = focusLensBack ?: android.graphics.Bitmap.createBitmap(
+            FOCUS_LENS_SAMPLE_PX,
+            FOCUS_LENS_SAMPLE_PX,
+            android.graphics.Bitmap.Config.ARGB_8888,
+        ).also { focusLensBack = it }
+        focusLensCopyPending = true
+        com.keenzero.app.playback.SurfaceSampler.copy(surface, src, back) { ok ->
+            focusLensCopyPending = false
+            if (!ok || focusLensTarget == null) return@copy
+            com.keenzero.app.playback.SurfaceSampler.boxBlur(back, FOCUS_LENS_BLUR_PASSES)
+            focusLensBack = focusLensFront
+            focusLensFront = back
+            focusLens?.setSample(back)
+        }
+    }
+
+    /**
      * Put the audio-track picker into the control row, left of the star.
      *
      * Same runtime injection as the star, and for the same reason: the stock controller
@@ -2986,10 +3238,19 @@ class KeenActivity : AppCompatActivity() {
         playerAudioButton = button
     }
 
-    /** Show the picker only when there is a choice to make. */
+    /**
+     * Show the picker only when there is a choice to make.
+     *
+     * media3's settings cog goes with it. The cog opens speed and audio track, and with a
+     * single audio track its audio page has nothing to pick, which leaves a button for
+     * playback speed alone. media3 only ever enables or dims the cog, never hides it, so
+     * the visibility set here sticks.
+     */
     private fun refreshPlayerAudioButton() {
-        playerAudioButton?.visibility =
-            if (playableAudioTracks().size > 1) View.VISIBLE else View.GONE
+        val visibility = if (playableAudioTracks().size > 1) View.VISIBLE else View.GONE
+        playerAudioButton?.visibility = visibility
+        binding.torrentPlayerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)
+            ?.visibility = visibility
     }
 
     /**
@@ -3371,18 +3632,18 @@ class KeenActivity : AppCompatActivity() {
     private fun hideNativeTorrentPlayer() {
         binding.root.removeCallbacks(torrentCheckpointRunnable)
         binding.root.removeCallbacks(torrentFrameCaptureRunnable)
-        binding.root.removeCallbacks(torrentScrubTick)
         binding.root.removeCallbacks(nextEpisodeWatchRunnable)
         binding.root.removeCallbacks(firstFrameWatchdog)
+        binding.root.removeCallbacks(focusLensTick)
+        focusLensTarget = null
+        focusLensShown = 0f
+        revealAwaitingLight = false
         nextEpisodeArmed = false
         binding.torrentNextEpisode.cancelCountdown()
         binding.torrentNextEpisode.visibility = View.GONE
         torrentTimeBar = null
         saveTorrentResumePoint()
         torrentSeekActive = false
-        torrentSeekTargetMs = -1L
-        binding.torrentSeekPreview.visibility = View.GONE
-        binding.torrentScrubTrack.visibility = View.GONE
         binding.torrentPlayerView.player = null
         torrentOpenedStreamUrl = null
         binding.torrentPlayerContainer.visibility = View.GONE
@@ -4198,7 +4459,7 @@ class KeenActivity : AppCompatActivity() {
             if (live.isPlaying && live.currentPosition - startedAt >= REVEAL_MOTION_MIN_MS) {
                 torrentFirstFrameShown = true
                 binding.root.removeCallbacks(firstFrameWatchdog)
-                revealPlayerWithCircle()
+                revealWhenLit(android.os.SystemClock.uptimeMillis())
             } else {
                 // Not moving yet. onIsPlayingChanged will call back when it recovers, but
                 // a stall that never flips that flag would otherwise wait forever, so
@@ -4206,6 +4467,57 @@ class KeenActivity : AppCompatActivity() {
                 binding.root.postDelayed({ considerRevealingPicture() }, REVEAL_MOTION_RETRY_MS)
             }
         }, REVEAL_MOTION_SAMPLE_MS)
+    }
+
+    /**
+     * Hold the circle until the picture has some light in it, then open it.
+     *
+     * Most films open on black, and the playhead moving is all [considerRevealingPicture]
+     * can know. Revealing then grew a black hole through a black surface: filmed off the
+     * box on Sintel, the read-out vanished, the screen sat black for two seconds and the
+     * film faded up on its own, with no circle anyone could see. So the picture is read
+     * back (see [com.keenzero.app.playback.SurfaceSampler]) until its mean brightness
+     * clears [REVEAL_MIN_LUMA], and only then does the circle open.
+     *
+     * Capped at [REVEAL_LIGHT_WAIT_MAX_MS]: a film can open on a long dark scene, and the
+     * sound is already running under the surface. A surface that cannot be read reveals
+     * at once, as before.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun revealWhenLit(startedAtMs: Long) {
+        fun reveal(reason: String) {
+            revealAwaitingLight = false
+            if (!torrentOverlayVisible) return
+            android.util.Log.i("KeenBack", "reveal_light $reason")
+            revealPlayerWithCircle()
+        }
+        // Back, or an error, took the surface down while this waited.
+        if (!torrentOverlayVisible) {
+            revealAwaitingLight = false
+            return
+        }
+        val surface = binding.torrentPlayerView.videoSurfaceView as? android.view.SurfaceView
+        val waitedMs = android.os.SystemClock.uptimeMillis() - startedAtMs
+        if (surface == null) return reveal("no_surface")
+        if (waitedMs >= REVEAL_LIGHT_WAIT_MAX_MS) return reveal("cap waited=${waitedMs}ms")
+        revealAwaitingLight = true
+        val sample = revealLightSample
+            ?: android.graphics.Bitmap.createBitmap(16, 9, android.graphics.Bitmap.Config.ARGB_8888)
+                .also { revealLightSample = it }
+        com.keenzero.app.playback.SurfaceSampler.copy(surface, null, sample) { ok ->
+            // Superseded: a new stream, or the surface came down some other way.
+            if (!revealAwaitingLight) return@copy
+            if (!ok) return@copy reveal("unreadable")
+            val luma = com.keenzero.app.playback.SurfaceSampler.meanLuma(sample)
+            if (luma >= REVEAL_MIN_LUMA) {
+                reveal("lit luma=${"%.3f".format(luma)} waited=${waitedMs}ms")
+            } else {
+                binding.root.postDelayed(
+                    { if (revealAwaitingLight) revealWhenLit(startedAtMs) },
+                    REVEAL_LIGHT_RETRY_MS,
+                )
+            }
+        }
     }
 
     /**
@@ -4221,9 +4533,19 @@ class KeenActivity : AppCompatActivity() {
     private fun revealPlayerWithCircle() {
         val overlay = binding.torrentLoadingOverlay
         if (!torrentOverlayVisible || overlay.width == 0 || overlay.height == 0) {
+            android.util.Log.w(
+                "KeenBack",
+                "reveal_skipped visible=$torrentOverlayVisible size=${overlay.width}x${overlay.height}",
+            )
             hideTorrentOverlayWithCollapse()
             return
         }
+        // The one line that says the circle ran. A film that opens on black shows nothing
+        // through the hole, which on screen is indistinguishable from no reveal at all.
+        android.util.Log.i(
+            "KeenBack",
+            "reveal_circle positionMs=${torrentPlayer?.currentPosition} durationMs=$TORRENT_REVEAL_MS",
+        )
         // The read-out is GONE before the first pixel of the hole is cut.
         //
         // Two earlier attempts got this wrong in the same way, by treating the figures as
@@ -4247,36 +4569,56 @@ class KeenActivity : AppCompatActivity() {
         binding.torrentLoadingContent.visibility = View.INVISIBLE
         binding.torrentLoadingPercentGiant.animate().cancel()
         binding.torrentLoadingPercentGiant.visibility = View.INVISIBLE
-        val radius = kotlin.math.hypot(overlay.width / 2f, overlay.height / 2f)
+        val radius = revealRadiusFor(overlay)
         val animator = android.animation.ValueAnimator.ofFloat(0f, radius)
         animator.duration = TORRENT_REVEAL_MS
-        // Decelerate, over the whole duration.
+        // Ease in: slow while the hole is small, fastest as it leaves the screen.
         //
-        // An earlier curve — PathInterpolator(0.05, 0.8, 0.06, 1) — put its first control
-        // point at 80% output for 5% of the time, so the circle hit four fifths of its
-        // radius in about 60 ms and then crawled through the rest. Filmed off the box,
-        // that read as a flash followed by a full second of edges retreating around an
-        // already-visible picture. The radius runs to the corners, so the tail of the
-        // curve IS the corners, and starving it is what showed.
-        // Slow enough at the front to be seen at all.
+        // The screen is wider than it is tall, so the circle reaches the top and bottom
+        // long before the sides, and for the rest of the run what is left of the surface is
+        // two slivers hugging the left and right edges. Every decelerating curve spent its
+        // slow tail on exactly those slivers: (0.05, 0.8, 0.06, 1) left a full second of
+        // edges retreating round a picture already on screen, and (0.45, 0, 0.25, 1) still
+        // took 628 ms over the last fifth of the radius, which on the box read as two dim
+        // bars along the sides that hung about and then vanished. This curve covers that
+        // last fifth in 176 ms, so the slivers sweep off instead of lingering.
         //
-        // (0, 0, 0.2, 1) reached 160px of radius in a single frame and 473px by 200ms,
-        // and the readout it opens through sits within ~250px of centre, so the numbers
-        // and spinner were gone almost before the animation started. Filmed off the box on
-        // a film that opens on black, the whole reveal read as a hard cut: the only thing
-        // with any contrast was eaten in the first frames, and a black circle growing
-        // across a black picture is nothing to look at.
-        //
-        // This holds the first 300ms under 130px, so the hole is seen opening through the
-        // figures, and still decelerates into the corners rather than starving the tail.
-        animator.interpolator = android.view.animation.PathInterpolator(0.45f, 0f, 0.25f, 1f)
+        // The front stays slow, which is what the reveal is for: 74 px of radius at 300 ms,
+        // so the small circle is seen opening in the middle of the screen.
+        animator.interpolator = android.view.animation.PathInterpolator(0.42f, 0f, 1f, 1f)
         animator.addUpdateListener { overlay.cutoutRadius = it.animatedValue as Float }
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
+                revealRunning = false
                 dismissTorrentOverlayNow()
             }
         })
+        revealRunning = true
         animator.start()
+    }
+
+    /**
+     * How far the circle has to grow: to the far corner of the picture, not the screen.
+     *
+     * A letterboxed film has black bars above and below, the same black as the surface, so
+     * once the hole has passed the picture's corners nothing visible is left to reveal.
+     * Running on to the screen's corners only added time at the end with nothing changing.
+     */
+    private fun revealRadiusFor(overlay: View): Float {
+        val full = kotlin.math.hypot(overlay.width / 2f, overlay.height / 2f)
+        val frame = binding.torrentPlayerView
+            .findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+            ?.takeIf { it.width > 0 && it.height > 0 }
+            ?: return full
+        val at = IntArray(2)
+        val overlayAt = IntArray(2)
+        frame.getLocationInWindow(at)
+        overlay.getLocationInWindow(overlayAt)
+        val cx = overlayAt[0] + overlay.width / 2f
+        val cy = overlayAt[1] + overlay.height / 2f
+        val dx = maxOf(kotlin.math.abs(at[0] - cx), kotlin.math.abs(at[0] + frame.width - cx))
+        val dy = maxOf(kotlin.math.abs(at[1] - cy), kotlin.math.abs(at[1] + frame.height - cy))
+        return kotlin.math.hypot(dx, dy).coerceAtMost(full)
     }
 
     /**
@@ -5808,6 +6150,7 @@ class KeenActivity : AppCompatActivity() {
         )
     }
 
+    @androidx.annotation.OptIn(UnstableApi::class)
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // Native torrent playback: PlayerView owns DPAD/media keys — checked BEFORE
         // the URL bar so a stale EditText/IME focus can never eat OK into a keyboard.
@@ -5887,6 +6230,17 @@ class KeenActivity : AppCompatActivity() {
             if (event.keyCode == KeyEvent.KEYCODE_BACK) {
                 return super.dispatchKeyEvent(event)
             }
+            // Controls up with nothing in them focused. Media3 shows them by itself when
+            // playback starts and focuses nothing, so the first Up, Down or OK found no
+            // control: nothing highlighted and no focus disc. That press puts focus on
+            // play/pause and does nothing else. Left/right carry on to the scrub below.
+            if (event.keyCode in CONTROL_ENTRY_KEYS &&
+                binding.torrentPlayerView.isControllerFullyVisible &&
+                (currentFocus == null || currentFocus === binding.torrentPlayerView)
+            ) {
+                if (event.action == KeyEvent.ACTION_DOWN) focusPlayPauseOnShow(0)
+                return true
+            }
             // Timeline seeking is Keen-owned: short taps step gently, holding
             // accelerates with hold time, and the single seek commits on release
             // (one piece-deadline reset instead of one per repeat).
@@ -5926,56 +6280,66 @@ class KeenActivity : AppCompatActivity() {
     }
 
     /**
-     * Hold-to-seek for the native torrent player.
+     * Left/right in the native torrent player: scrub Media3's own time bar.
      *
-     * A tap moves ±10 s. Holding accumulates a pending target whose rate grows
-     * with hold time (up to ~4 min of media per held second), with live feedback
-     * in [showTorrentSeekPreview]; the player only seeks once, on key release —
-     * far kinder to the torrent bridge than a seek per key repeat.
+     * Each press is handed to the time bar itself, so the controls stay up, the circle
+     * grows to its dragged size and travels along the real bar, and the elapsed time
+     * beside it follows. While scrubbing, Media3 draws the scrub position rather than the
+     * playhead, so its progress loop cannot pull the circle back. (Keen used to hide the
+     * controller and draw a second bar of its own, because it drove the circle with
+     * setPosition, which that loop does overwrite.)
+     *
+     * Two things Media3 does not do are kept. The step accelerates with hold time: a tap
+     * moves 10 s and a long hold up to 8 min of media per held second, set as the bar's
+     * key increment before each press reaches it. And a hold commits the moment it is
+     * released, where Media3 waits a second. Taps keep that second, so a run of taps is
+     * one seek, and one piece-deadline reset on the torrent bridge, instead of one each.
      */
+    @androidx.annotation.OptIn(UnstableApi::class)
     private fun handleTorrentSeekKey(event: KeyEvent): Boolean {
         val player = torrentPlayer ?: return false
-        val forward = when (event.keyCode) {
-            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> true
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> false
+        val timeBar = torrentTimeBar ?: return false
+        val direction = when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> KeyEvent.KEYCODE_DPAD_RIGHT
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> KeyEvent.KEYCODE_DPAD_LEFT
             else -> return false
         }
-        // Key-up ALWAYS finishes an in-progress gesture: commit the target and clear
-        // the on-screen preview. This must run before any focus check, because
-        // showController() (below) moves focus to the scrubber during the hold — a
-        // focus-gated bail here was what left "7:15 (−0:19)" stuck on screen.
+        // Key-up always ends a gesture this handler started, whatever holds focus now.
         if (event.action == KeyEvent.ACTION_UP) {
             if (!torrentSeekActive) return false
             torrentSeekActive = false
-            commitTorrentSeek()
+            if (torrentSeekHeld && torrentSeekScrubbed) {
+                // OK on a scrubbing time bar is Media3's own "seek now".
+                timeBar.onKeyDown(
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER),
+                )
+            }
             return true
         }
+        if (event.action != KeyEvent.ACTION_DOWN) return false
         val durationMs = player.duration
         if (durationMs == C.TIME_UNSET || durationMs <= 0) return false
         if (!torrentSeekActive) {
-            // Start gate — only decided on the first press. Defer to Media3 solely when
-            // the controls are up and a control *button* (not the scrubber) is focused,
-            // so left/right still moves between subtitle/settings buttons. In every other
-            // case (controls hidden, or the scrubber focused) Keen owns the accelerating
-            // hold-seek so hold behaves consistently instead of falling back to a flat
-            // one-minute native step.
+            // Start gate, decided on the first press only. With the controls up and a
+            // button focused, left/right moves between the buttons as before. In every
+            // other case (controls hidden, or the time bar focused) the press scrubs.
             val focused = binding.torrentPlayerView.findFocus()
             val onControlButton = focused != null && focused !is androidx.media3.ui.DefaultTimeBar
             if (binding.torrentPlayerView.isControllerFullyVisible && onControlButton) return false
             torrentSeekActive = true
-            if (torrentSeekTargetMs < 0) torrentSeekTargetMs = player.currentPosition
-            // Media3's controller has to go: while it is up it rewrites its own scrubber
-            // from the live playback position, which is the wrong story during a hold
-            // (the playhead has not moved yet) and produced the jitter this bar replaces.
-            binding.torrentPlayerView.hideController()
-            binding.torrentScrubTrack.visibility = View.VISIBLE
-            binding.root.removeCallbacks(torrentScrubTick)
-            binding.root.post(torrentScrubTick)
+            torrentSeekHeld = false
+            torrentSeekScrubbed = false
+            if (!binding.torrentPlayerView.isControllerFullyVisible) {
+                binding.torrentPlayerView.showController()
+            }
+            timeBar.requestFocus()
         }
         val now = event.eventTime
         val stepMs = if (event.repeatCount == 0) {
             TORRENT_SEEK_TAP_MS
         } else {
+            torrentSeekHeld = true
             // Steady base rate for the first few seconds (fine control), then rate
             // (media-seconds per held second) keeps climbing with hold time; each repeat
             // advances by rate × time since the last repeat.
@@ -5987,46 +6351,11 @@ class KeenActivity : AppCompatActivity() {
             (rate * dtMs).toLong()
         }
         torrentSeekLastEventMs = now
-        torrentSeekTargetMs = (torrentSeekTargetMs + if (forward) stepMs else -stepMs)
-            .coerceIn(0L, durationMs)
-        showTorrentSeekPreview(forward)
+        timeBar.setKeyTimeIncrement(stepMs.coerceAtLeast(1L))
+        // False only at either end of the film. Consumed anyway, so a press past the end
+        // does not fall through to a focus search and walk off the bar.
+        if (timeBar.onKeyDown(direction, event)) torrentSeekScrubbed = true
         return true
-    }
-
-    private fun showTorrentSeekPreview(forward: Boolean) {
-        val player = torrentPlayer ?: return
-        val deltaMs = torrentSeekTargetMs - player.currentPosition
-        val sign = if (deltaMs >= 0) "+" else "−"
-        binding.torrentSeekPreview.text = String.format(
-            java.util.Locale.US,
-            "%s  %s   (%s%s)",
-            if (forward) "»" else "«",
-            formatClock(torrentSeekTargetMs / 1000),
-            sign,
-            formatClock(kotlin.math.abs(deltaMs) / 1000),
-        )
-        binding.torrentSeekPreview.visibility = View.VISIBLE
-    }
-
-    private fun commitTorrentSeek() {
-        torrentSeekActive = false
-        // Stop driving the scrubber; from here Media3's own progress loop owns it again.
-        binding.root.removeCallbacks(torrentScrubTick)
-        binding.torrentSeekPreview.visibility = View.GONE
-        binding.torrentScrubTrack.visibility = View.GONE
-        val target = torrentSeekTargetMs
-        torrentSeekTargetMs = -1L
-        val player = torrentPlayer ?: return
-        if (target >= 0 && kotlin.math.abs(target - player.currentPosition) > 250L) {
-            recordEvent(
-                NavigationEvent(
-                    System.currentTimeMillis(),
-                    "torrent_seek_commit",
-                    detail = "from=${player.currentPosition} to=$target",
-                ),
-            )
-            player.seekTo(target)
-        }
     }
 
     /**
@@ -6145,8 +6474,15 @@ class KeenActivity : AppCompatActivity() {
      */
     private fun focusHomeDefault() {
         binding.homeShell.post {
+            // A Continue row child is the card's column (art above title); the focusable,
+            // clickable card is the art inside it. Taking the column made the column
+            // focusable, which put focus where there is no border and no click listener:
+            // nothing looked selected and OK did nothing. A favourite tile is the row child.
+            val continueCard = binding.continueRow.takeIf { it.childCount > 0 && it.isShown }
+                ?.getChildAt(0)
+                ?.let { column -> (column as? android.view.ViewGroup)?.getChildAt(0) ?: column }
             val target = binding.favsRow.takeIf { it.childCount > 0 && it.isShown }?.getChildAt(0)
-                ?: binding.continueRow.takeIf { it.childCount > 0 && it.isShown }?.getChildAt(0)
+                ?: continueCard
                 ?: binding.homeUrlInput
             target.isFocusable = true
             target.isFocusableInTouchMode = true
@@ -6629,10 +6965,6 @@ class KeenActivity : AppCompatActivity() {
          */
         private const val TORRENT_HTTP_TIMEOUT_MS = 120_000
 
-        /** Per-key step for the focused scrubber circle's native left/right scrub:
-         * one minute of media, so pressing/holding walks it by the minute. */
-        private const val TORRENT_TIMEBAR_KEY_INCREMENT_MS = 60_000L
-
         /** Shown where a stat has no measurement yet — never a bare, dead-looking 0. */
         private const val STAT_PENDING = "—"
 
@@ -6685,8 +7017,6 @@ class KeenActivity : AppCompatActivity() {
         private const val LIBRARY_POSTER_MIN_MS = 30_000L
         private const val LIBRARY_POSTER_MAX_MS = 300_000L
 
-        /** ~60fps re-assert of the scrubber position during a hold-seek. */
-        private const val TORRENT_SCRUB_FRAME_MS = 16L
 
         /** How often the Downloaded row re-reads the library index while downloading. */
         private const val DOWNLOAD_TICK_MS = 1_000L
@@ -6746,6 +7076,34 @@ class KeenActivity : AppCompatActivity() {
         private const val CENTER_PLAY_SIZE_DP = 64
         private const val CENTER_SKIP_SIZE_DP = 54
         private const val CENTER_STEP_SIZE_DP = 46
+        /** The centre row, in order. The focus disc serves exactly these. */
+        private val CENTER_CONTROL_IDS = intArrayOf(
+            androidx.media3.ui.R.id.exo_prev,
+            androidx.media3.ui.R.id.exo_rew_with_amount,
+            androidx.media3.ui.R.id.exo_play_pause,
+            androidx.media3.ui.R.id.exo_ffwd_with_amount,
+            androidx.media3.ui.R.id.exo_next,
+        )
+        /** How far the focus disc reaches past the button it sits behind, all round. */
+        private const val FOCUS_LENS_HALO_DP = 14
+        /** The disc's laid-out size, for the largest button; smaller ones scale it down. */
+        private const val FOCUS_LENS_MAX_DP = CENTER_PLAY_SIZE_DP + 2 * FOCUS_LENS_HALO_DP
+        private const val FOCUS_LENS_MOVE_MS = 170L
+        private const val FOCUS_LENS_FADE_MS = 140L
+        /** Read-back interval while a centre control holds focus: about 12 a second. */
+        private const val FOCUS_LENS_SAMPLE_MS = 80L
+        private const val FOCUS_LENS_SAMPLE_PX = 24
+        private const val FOCUS_LENS_BLUR_PASSES = 3
+        /** Presses that land on play/pause when the controls are up with nothing focused. */
+        private val CONTROL_ENTRY_KEYS = intArrayOf(
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+        )
+        /** Up to half a second for the centre row to become focusable as the controls show. */
+        private const val FOCUS_ON_SHOW_ATTEMPTS = 10
+        private const val FOCUS_ON_SHOW_RETRY_MS = 50L
         private const val CENTER_GAP_DP = 10
 
         private const val TORRENT_MIN_BUFFER_MS = 60_000
@@ -6799,6 +7157,11 @@ class KeenActivity : AppCompatActivity() {
         private const val REVEAL_MOTION_SAMPLE_MS = 250L
         private const val REVEAL_MOTION_MIN_MS = 100L
         private const val REVEAL_MOTION_RETRY_MS = 400L
+        /** Mean brightness (0..1) that counts as a picture worth opening the circle on. */
+        private const val REVEAL_MIN_LUMA = 0.06f
+        /** Longest the circle waits for light, from the moment the film is running. */
+        private const val REVEAL_LIGHT_WAIT_MAX_MS = 4_000L
+        private const val REVEAL_LIGHT_RETRY_MS = 120L
 
         /** The four directions that mean "off the next-episode offer, back to the film". */
         private val DPAD_DIRECTIONS = setOf(

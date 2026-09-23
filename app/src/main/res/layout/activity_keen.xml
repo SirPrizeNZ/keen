@@ -173,32 +173,8 @@
             app:show_subtitle_button="true"
             app:surface_type="surface_view" />
 
-        <!-- Hold-to-seek timeline, owned by Keen.
-             Media3's own scrubber cannot be used for this: its controller writes the
-             real playback position back into the bar several times a second, which
-             fought our target and made the thumb jitter left and right instead of
-             skimming. This one has a single writer. -->
-        <FrameLayout
-            android:id="@+id/torrentScrubTrack"
-            android:layout_width="match_parent"
-            android:layout_height="6dp"
-            android:layout_gravity="bottom"
-            android:layout_marginHorizontal="64dp"
-            android:layout_marginBottom="150dp"
-            android:background="#40FFFFFF"
-            android:visibility="gone">
-
-            <View
-                android:id="@+id/torrentScrubFill"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="#FFFFFFFF"
-                android:scaleX="0"
-                android:transformPivotX="0dp" />
-        </FrameLayout>
-
         <!-- End of an episode in a season pack: offer the next one, filling as it
-             counts down. Sits opposite the seek preview so the two never collide. -->
+             counts down. -->
         <com.keenzero.app.home.CountdownButtonView
             android:id="@+id/torrentNextEpisode"
             android:layout_width="190dp"
@@ -206,21 +182,6 @@
             android:layout_gravity="bottom|end"
             android:layout_marginEnd="56dp"
             android:layout_marginBottom="56dp"
-            android:visibility="gone" />
-
-        <!-- Hold-to-seek feedback: target time + delta while DPAD left/right is held. -->
-        <TextView
-            android:id="@+id/torrentSeekPreview"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal|bottom"
-            android:layout_marginBottom="96dp"
-            android:background="@drawable/seek_preview_bg"
-            android:fontFamily="@font/google_sans_medium"
-            android:paddingHorizontal="20dp"
-            android:paddingVertical="10dp"
-            android:textColor="#FFF2F4F8"
-            android:textSize="22sp"
             android:visibility="gone" />
     </FrameLayout>
 
@@ -258,10 +219,15 @@
             android:orientation="vertical"
             android:translationY="54dp">
 
+            <!-- The row of bars is the 220dp between the paddings. The padding is room
+                 for the last bar, which falls to the right across its own height (18dp)
+                 plus its glow, and matched on the left so the row stays centred. -->
             <com.keenzero.app.home.SpinnerBarsView
                 android:id="@+id/torrentLoadingSpinner"
-                android:layout_width="220dp"
-                android:layout_height="44dp" />
+                android:layout_width="276dp"
+                android:layout_height="44dp"
+                android:paddingStart="28dp"
+                android:paddingEnd="28dp" />
 
             <TextView
                 android:id="@+id/torrentLoadingTitle"
@@ -589,7 +555,7 @@
                         android:contentDescription="@string/app_name"
                         android:scaleType="fitCenter"
                         android:src="@drawable/keen_mark"
-                        android:tint="@color/keen_muted" />
+                        app:tint="@color/keen_muted" />
                 </FrameLayout>
 
                 <EditText

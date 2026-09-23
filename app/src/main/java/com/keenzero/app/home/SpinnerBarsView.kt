@@ -51,7 +51,12 @@ class SpinnerBarsView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (!running || collapseAlpha <= 0f) return
-        val w = width.toFloat()
+        // The row is laid out inside the padding, not across the whole view. A bar falls
+        // clockwise about its own base, so the last one lands a full bar-height to the
+        // right of the row, and its glow spreads past every edge; with the row running to
+        // the view's edges both were cut off by the software layer's bounds. The layout
+        // sets the padding wide enough to hold them.
+        val w = (width - paddingLeft - paddingRight).toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
@@ -68,7 +73,7 @@ class SpinnerBarsView @JvmOverloads constructor(
             val state = barState(phase)
             if (state.alpha <= 0f) continue
 
-            val cx = i * (barW + gap) + barW / 2f
+            val cx = paddingLeft + i * (barW + gap) + barW / 2f
             rect.set(cx - barW / 2f, baseY - barH, cx + barW / 2f, baseY)
 
             hsv[0] = (BASE_HUE + state.hueRotate).let { if (it >= 360f) it - 360f else it }

@@ -8,13 +8,15 @@
     <!-- Starred background downloads. Required from Android 14 for a dataSync service. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
-    <!-- TV-first: touch not required. -->
+    <!-- TV-only: touch not required, leanback required. Play filters on the latter, so
+         the listing reaches TVs and not phones, which keeps Keen under the TV target-API
+         rule (34+) instead of the phone one (36+). Sideloading ignores both. -->
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
     <uses-feature
         android:name="android.software.leanback"
-        android:required="false" />
+        android:required="true" />
 
     <application
         android:name=".KeenApplication"

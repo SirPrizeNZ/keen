@@ -91,6 +91,8 @@ object ExperimentFlags {
     }
 
     fun isOn(flag: String): Boolean {
+        // The Play build behaves the same whatever is left in /data/local/tmp.
+        if (!com.keenzero.app.BuildConfig.LAB_HARNESS) return false
         if (!loaded) refresh()
         return flag in snapshot
     }

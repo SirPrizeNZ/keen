@@ -34,6 +34,11 @@ android {
         buildConfigField("String", "GIT_SHA", "\"${gitSha()}\"")
         buildConfigField("String", "CORPUS_VERSION", "\"0.1.0\"")
         buildConfigField("boolean", "PHASE0_LAB", "true")
+        // Whether KeenActivity honours the adb harness extras (LAB_URL, LAB_FAVS_*, ...).
+        // On for every sideload build, so the box can still be driven from the laptop.
+        // Off for the Play build: KeenActivity is exported, so any installed app could
+        // send the same extras and edit favourites or clear Continue watching.
+        buildConfigField("boolean", "LAB_HARNESS", "true")
 
         // First-class 32-bit Android TV target. No native libs yet; when JNI
         // arrives it must ship armeabi-v7a (and optional arm64-v8a later).
@@ -136,12 +141,36 @@ android {
             }
             signingConfig = releaseStable
         }
+        // Google Play build: release with the lab harness switched off and the lab
+        // fixtures left out. Only the universal flavour gets one (see androidComponents
+        // below); Play splits the bundle per ABI itself. Build with:
+        //   ./gradlew :app:bundleUniversalPlay
+        create("play") {
+            initWith(getByName("release"))
+            matchingFallbacks += listOf("release")
+            buildConfigField("boolean", "LAB_HARNESS", "false")
+        }
+    }
+
+    // Lab fixtures and the corpus manifest are harness-only. They live outside main so
+    // the Play build does not ship them; debug and the sideload release keep them.
+    sourceSets {
+        getByName("debug").assets.srcDir("src/lab/assets")
+        getByName("release").assets.srcDir("src/lab/assets")
     }
 
     lint {
         abortOnError = true
         warningsAsErrors = false
         checkReleaseBuilds = true
+    }
+}
+
+// The Play listing is com.keenzero.app, the universal flavour. A play variant of the
+// single-ABI flavours would carry the .v7a / .v8a sideload package names into Play.
+androidComponents {
+    beforeVariants(selector().withBuildType("play")) { variant ->
+        if (variant.productFlavors.any { it.second != "universal" }) variant.enable = false
     }
 }
 
