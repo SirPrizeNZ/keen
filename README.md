@@ -20,13 +20,13 @@
 
 <br>
 
-### [Download Keen v0.2.25](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.25/keen-0.2.25-32bit-armeabi-v7a.apk)
+### [Download Keen v0.2.26](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.26/keen-0.2.26-32bit-armeabi-v7a.apk)
 
 18.5 MiB · Android TV 10+ · 32-bit ARM (`armeabi-v7a`)
 
-[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.25/keen-0.2.25-64bit-arm64-v8a.apk) ·
-[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.25) ·
-[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.25/SHA256SUMS) ·
+[64-bit build](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.26/keen-0.2.26-64bit-arm64-v8a.apk) ·
+[Release notes](https://github.com/SirPrizeNZ/keen/releases/tag/v0.2.26) ·
+[SHA256SUMS](https://github.com/SirPrizeNZ/keen/releases/download/v0.2.26/SHA256SUMS) ·
 [Installation](#installation)
 
 <br>
@@ -109,7 +109,7 @@ adb install -r <keen-apk-filename>
 For example:
 
 ```bash
-adb install -r keen-0.2.25-32bit-armeabi-v7a.apk
+adb install -r keen-0.2.26-32bit-armeabi-v7a.apk
 ```
 
 Use the exact IP address and port displayed by the television. Wireless debugging may use a port other than `5555`.
