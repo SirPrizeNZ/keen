@@ -412,6 +412,31 @@ class LibraryDownloadService : Service() {
         targetDir = null
     }
 
+    /**
+     * Android 15 caps a dataSync foreground service at six hours a day, and a slow swarm
+     * can take longer than that. Past the cap the system calls this and expects the
+     * service to stop within seconds, or it crashes the process.
+     *
+     * Park the download as QUEUED rather than FAILED: the pieces already on disk are kept,
+     * and resumeInterruptedDownloads() starts it again the next time Keen opens, which is
+     * also when the system lets a dataSync service start again. onDestroy tears the
+     * session down.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        val key = activeKey
+        Log.w(TAG, "dataSync time limit reached; parking download as queued: $key")
+        // Stop the ticker first: its next tick would re-post the progress notification
+        // after stopForeground, leaving an ongoing one behind the dead service.
+        progressTask?.cancel(false)
+        progressTask = null
+        if (key != null) {
+            store.update(key, state = StarredLibraryStore.State.QUEUED, speedBps = 0L)
+            notifyChanged(key)
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     override fun onDestroy() {
         runCatching { unregisterReceiver(streamModeReceiver) }
         stopForeground(STOP_FOREGROUND_REMOVE)
