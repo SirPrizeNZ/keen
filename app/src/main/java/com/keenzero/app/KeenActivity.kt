@@ -137,6 +137,23 @@ class KeenActivity : AppCompatActivity() {
     /** True once the next-episode button is up and its countdown is running. */
     private var nextEpisodeArmed = false
 
+    /** Set once a held Back has taken us home, so its release is not also a Back. */
+    private var backHoldFired = false
+
+    private val backHoldHome = Runnable {
+        // The torrent player is excluded: stopping a film mid-watch is too much for a
+        // press that can happen by accident. Home already is home.
+        if (uiState == AppUiState.HOME || nativeTorrentPlayerActive) return@Runnable
+        backHoldFired = true
+        android.util.Log.i("KeenBack", "hold_home state=$uiState")
+        recordEvent(NavigationEvent(System.currentTimeMillis(), "back_hold_home", url = currentUrl))
+        if (binding.browseUrlEdit.hasFocus()) {
+            hideKeyboard(binding.browseUrlEdit)
+            binding.browseUrlEdit.clearFocus()
+        }
+        returnHomeFromChrome()
+    }
+
     /**
      * The user pressed Back on the offer for this episode, so it stays gone.
      *
@@ -6159,6 +6176,27 @@ class KeenActivity : AppCompatActivity() {
 
     @androidx.annotation.OptIn(UnstableApi::class)
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Holding Back goes straight to Keen home. A timer from the first key-down
+        // rather than the key's own repeats, since not every remote sends them; a
+        // short press is untouched and still acts on release as before.
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) {
+                    backHoldFired = false
+                    binding.root.removeCallbacks(backHoldHome)
+                    binding.root.postDelayed(backHoldHome, BACK_HOLD_HOME_MS)
+                } else if (backHoldFired) {
+                    return true
+                }
+                KeyEvent.ACTION_UP -> {
+                    binding.root.removeCallbacks(backHoldHome)
+                    if (backHoldFired) {
+                        backHoldFired = false
+                        return true
+                    }
+                }
+            }
+        }
         // Native torrent playback: PlayerView owns DPAD/media keys — checked BEFORE
         // the URL bar so a stale EditText/IME focus can never eat OK into a keyboard.
         if (nativeTorrentPlayerActive) {
@@ -6827,6 +6865,9 @@ class KeenActivity : AppCompatActivity() {
         private const val MOCK_TICK_MS = 500L
         private const val MOCK_CONNECT_SEC = 6f
         private const val MOCK_BUFFER_SEC = 14f
+
+        /** How long Back must be held to jump to Keen home. */
+        private const val BACK_HOLD_HOME_MS = 700L
 
         const val EXTRA_LAB_URL = "com.keenzero.app.extra.LAB_URL"
         const val EXTRA_EXPORT_EVIDENCE = "com.keenzero.app.extra.EXPORT_EVIDENCE"
