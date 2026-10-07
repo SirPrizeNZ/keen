@@ -3,6 +3,9 @@ package com.keenzero.app.compat
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -13,6 +16,7 @@ import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
@@ -20,7 +24,9 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.keenzero.app.blocking.BlockingRuntime
 import com.keenzero.app.input.CursorOverlay
+import com.keenzero.app.playback.PopupQuarantine
 import com.keenzero.app.torrent.TorrentDownloadIntercept
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -36,7 +42,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - the WebView's own user-agent string, including the `wv` token — no Chrome cosplay;
  *  - no user-agent metadata / Sec-CH-UA override;
  *  - no `addDocumentStartJavaScript`, no JS bridge;
- *  - no request interception, so no blocking and no header rewriting;
+ *  - no header rewriting, and no request interception beyond dropping subresources
+ *    whose host is on Keen's ad/tracker list (see [client]'s shouldInterceptRequest);
  *  - hardware accelerated, real Mali rendering.
  *
  * The remote is served by [CompatibilityRemoteController], which works entirely through
@@ -48,6 +55,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * explicit user action, long after the challenge has been cleared, and installs nothing —
  * no document-start script, no bridge, no persistent object. The environment a challenge
  * inspects at load time is untouched, which is the property this class exists to protect.
+ * Auto-fullscreen on Play ([FULLSCREEN_JS]) is the same kind of exception: one call,
+ * after a deliberate Play, installing nothing.
  */
 class CompatibilitySession(
     private val context: Context,
@@ -76,6 +85,8 @@ class CompatibilitySession(
     private val chromeHeightPx: () -> Int = { 0 },
     /** Pointer OK in the chrome band but off the logo/star: focus the address bar. */
     private val onUrlBarActivate: () -> Unit = {},
+    /** Playback took the screen (true) or gave it back (false): hide/show Keen's chrome. */
+    private val onPlaybackMode: (Boolean) -> Unit = {},
 ) {
 
     val instanceId: Int = NEXT_ID.incrementAndGet()
@@ -86,8 +97,23 @@ class CompatibilitySession(
     private val handler = Handler(Looper.getMainLooper())
 
     /** The approved registrable host this session is bound to. */
+    @Volatile
     var boundHost: String? = null
         private set
+
+    /** Chromium's HTML-fullscreen view while the page is in fullscreen, else null. */
+    private var customView: View? = null
+    private var customCallback: WebChromeClient.CustomViewCallback? = null
+
+    /** Keen chrome hidden for playback, by HTML fullscreen or the play fallback. */
+    private var playbackMode = false
+
+    /** One automatic fullscreen per page: a pause/resume must not re-trigger it. */
+    private var autoFullscreenDone = false
+
+    private val audioManager = context.getSystemService(AudioManager::class.java)
+
+    private val adQuarantine = PopupQuarantine()
 
     val isActive: Boolean get() = webView != null
 
@@ -200,6 +226,7 @@ class CompatibilitySession(
         )
         ctrl.attach()
         controller = ctrl
+        audioManager?.registerAudioPlaybackCallback(playbackWatcher, handler)
 
         wv.requestFocus()
 
@@ -287,7 +314,23 @@ class CompatibilitySession(
         return cleared
     }
 
+    /** Back while the page is fullscreen or in playback mode: leave that first. */
+    fun exitPlaybackIfNeeded(): Boolean {
+        if (customView != null) {
+            exitFullscreen()
+            return true
+        }
+        if (playbackMode) {
+            setPlaybackMode(false)
+            return true
+        }
+        return false
+    }
+
     fun destroy() {
+        audioManager?.unregisterAudioPlaybackCallback(playbackWatcher)
+        exitFullscreen()
+        setPlaybackMode(false)
         controller?.detach()
         controller = null
         cursor?.let { c ->
@@ -373,6 +416,13 @@ class CompatibilitySession(
             // Leaving the approved origin ends compatibility mode. The normal WebView
             // takes the navigation, with all protections back in force.
             if (request.isForMainFrame && CompatibilityOrigins.leavesOrigin(boundHost?.let { "https://$it" }, url)) {
+                // Except to an ad host: onLeaveOrigin opens the target as if the user had
+                // typed it, so a click handler sending the page to an ad network would
+                // otherwise become a full-page ad. The page simply stays where it is.
+                if (isAdDestination(url)) {
+                    CompatibilityDiag.event("leave_origin_blocked", instanceId, "reason" to "ad_host", "to" to hostOnly(url))
+                    return true
+                }
                 CompatibilityDiag.event("leave_origin", instanceId, "to" to hostOnly(url))
                 handler.post { onLeaveOrigin(url) }
                 return true
@@ -382,7 +432,38 @@ class CompatibilitySession(
             return false
         }
 
+        /**
+         * Ad blocking, by host only. Compatibility origins are exactly the streaming sites
+         * with the worst ads, and running them with no blocking at all put "missed video
+         * call" overlays over nepu.io's player. Dropping a third-party ad request changes
+         * nothing a challenge can inspect, provided the challenge's own hosts and the
+         * site's origin are never touched; the main frame never is.
+         */
+        override fun shouldInterceptRequest(
+            view: WebView?,
+            request: WebResourceRequest?,
+        ): WebResourceResponse? {
+            if (request == null || request.isForMainFrame) return null
+            val host = request.url?.host?.lowercase() ?: return null
+            if (host == "challenges.cloudflare.com" || host.endsWith(".challenges.cloudflare.com")) {
+                return null
+            }
+            val bound = boundHost
+            if (bound != null && (host == bound || host.endsWith(".$bound"))) return null
+            if (!BlockingRuntime.isHostBlocked(host)) return null
+            android.util.Log.i("KZ_NETDIAG", "blk=true mode=compat host=$host")
+            return WebResourceResponse(
+                "text/plain",
+                "utf-8",
+                204,
+                "Blocked by Keen Zero",
+                mapOf("Cache-Control" to "no-store"),
+                java.io.ByteArrayInputStream(ByteArray(0)),
+            )
+        }
+
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            autoFullscreenDone = false
             CompatibilityDiag.event(
                 "page_started",
                 instanceId,
@@ -462,10 +543,45 @@ class CompatibilitySession(
     private val chrome = object : WebChromeClient() {
 
         /**
+         * HTML fullscreen. Without this override WebView tells the page fullscreen is
+         * unsupported, so players fell back to filling the viewport under Keen's chrome.
+         */
+        override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+            if (view == null || customView != null) {
+                callback?.onCustomViewHidden()
+                return
+            }
+            customView = view
+            customCallback = callback
+            container.addView(
+                view,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            controller?.tapTarget = view
+            setPlaybackMode(true)
+            CompatibilityDiag.event("fullscreen_enter", instanceId)
+        }
+
+        override fun onHideCustomView() {
+            exitFullscreen()
+        }
+
+        /**
          * Hidden provisional popup, allowed to survive only if its first real destination
          * is the challenge platform. Everything else — ads, trackers, unrelated hosts,
          * file:/data:/intent:/javascript:, and anything unclassified — is destroyed.
          * No visible popup is ever created, and the normal WebView is never replaced.
+         *
+         * The one other way out is a `target="_blank"` link the user actually pressed.
+         * fmhy.net, promoted here by a Cloudflare loop, marks every link that way, so
+         * every OK on it was destroyed as "not_challenge". With no script in this
+         * WebView, the proof is the hit test: the anchor under the native tap. When the
+         * popup's first destination is that href, it is followed as an ordinary link
+         * (out of the origin to the normal WebView, otherwise in place). A click-hijack
+         * opening anything else still misses the href and is destroyed as before.
          */
         override fun onCreateWindow(
             view: WebView?,
@@ -482,6 +598,8 @@ class CompatibilitySession(
             probe.settings.allowFileAccess = false
             probe.settings.allowContentAccess = false
             probe.visibility = View.GONE
+
+            val tappedHref = if (isUserGesture) tappedAnchorHref(parent) else null
 
             var settled = false
             fun finish(reason: String, url: String?) {
@@ -508,6 +626,10 @@ class CompatibilitySession(
                 ): Boolean {
                     val url = request?.url?.toString() ?: return true
                     if (isBlankish(url)) return false // still waiting for a real target
+                    if (followTappedLink(parent, tappedHref, url)) {
+                        finish("user_link", url)
+                        return true
+                    }
                     if (!isChallengeDestination(url)) {
                         finish("not_challenge", url)
                         return true
@@ -518,6 +640,10 @@ class CompatibilitySession(
 
                 override fun onPageStarted(v: WebView?, url: String?, f: Bitmap?) {
                     if (url == null || isBlankish(url)) return
+                    if (followTappedLink(parent, tappedHref, url)) {
+                        finish("user_link", url)
+                        return
+                    }
                     if (!isChallengeDestination(url)) finish("not_challenge", url)
                 }
             }
@@ -535,7 +661,108 @@ class CompatibilitySession(
         }
     }
 
+    // ------------------------------------------------------------- playback
+
+    private fun setPlaybackMode(enter: Boolean) {
+        if (playbackMode == enter) return
+        playbackMode = enter
+        onPlaybackMode(enter)
+    }
+
+    private fun exitFullscreen() {
+        val view = customView ?: return
+        customView = null
+        controller?.tapTarget = null
+        container.removeView(view)
+        try {
+            customCallback?.onCustomViewHidden()
+        } catch (_: Throwable) {
+        }
+        customCallback = null
+        setPlaybackMode(false)
+        CompatibilityDiag.event("fullscreen_exit", instanceId)
+    }
+
+    /**
+     * Play detection with no script in the page: the platform reports this app opening
+     * a media audio stream. Only counted within [PLAY_TAP_WINDOW_MS] of an OK into the
+     * page, so a muted autoplay trailer or an ad that starts by itself never takes the
+     * screen.
+     */
+    private val playbackWatcher = object : AudioManager.AudioPlaybackCallback() {
+        override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+            if (configs.isNullOrEmpty() || autoFullscreenDone || customView != null) return
+            val media = configs.any {
+                val usage = it.audioAttributes.usage
+                usage == AudioAttributes.USAGE_MEDIA || usage == AudioAttributes.USAGE_UNKNOWN
+            }
+            if (!media) return
+            val tapAt = controller?.lastTapAt ?: return
+            if (tapAt == 0L || android.os.SystemClock.elapsedRealtime() - tapAt > PLAY_TAP_WINDOW_MS) return
+            autoFullscreenDone = true
+            requestAutoFullscreen()
+        }
+    }
+
+    private fun requestAutoFullscreen() {
+        val wv = webView ?: return
+        wv.evaluateJavascript(FULLSCREEN_JS) { result ->
+            CompatibilityDiag.event("auto_fullscreen", instanceId, "result" to result)
+            // HTML fullscreen arrives through onShowCustomView a moment later. If the page
+            // refused it (activation expired, or the player is not reachable), still give
+            // the player the whole screen by dropping Keen's chrome.
+            handler.postDelayed({
+                if (customView == null && webView != null) setPlaybackMode(true)
+            }, FULLSCREEN_FALLBACK_MS)
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /** href of the link under the last tap, or null when the tap was not on a link. */
+    private fun tappedAnchorHref(view: WebView): String? {
+        val hit = view.hitTestResult
+        if (hit.type != WebView.HitTestResult.SRC_ANCHOR_TYPE) return null
+        return hit.extra?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
+    }
+
+    /**
+     * Follows [url] as an ordinary link press when it is the [tappedHref] the user OK'd.
+     * Leaving the origin goes through [onLeaveOrigin], exactly like a same-tab link, so
+     * the normal WebView takes it with every protection back in force.
+     */
+    private fun followTappedLink(parent: WebView, tappedHref: String?, url: String): Boolean {
+        if (tappedHref == null || !sameLink(tappedHref, url)) return false
+        // A real anchor can still be an ad: ext.to's movie pages carry <a target=_blank>
+        // links to affiliate trackers (gotrackier.com), and following one loaded a
+        // full-page ad. Falling through destroys the popup as not_challenge.
+        if (isAdDestination(url)) return false
+        handler.post {
+            if (CompatibilityOrigins.leavesOrigin(boundHost?.let { "https://$it" }, url)) {
+                CompatibilityDiag.event("leave_origin", instanceId, "to" to hostOnly(url))
+                onLeaveOrigin(url)
+            } else {
+                parent.loadUrl(url)
+            }
+        }
+        return true
+    }
+
+    /** Ad network by Keen's host list or the quarantine's ad / throwaway-host check. */
+    private fun isAdDestination(url: String): Boolean {
+        val host = try {
+            android.net.Uri.parse(url).host?.lowercase()
+        } catch (_: Throwable) {
+            null
+        } ?: return false
+        return BlockingRuntime.isHostBlocked(host) ||
+            adQuarantine.decide(url, null, false, null) == PopupQuarantine.Verdict.DESTROY_ADVERTISING
+    }
+
+    private fun sameLink(a: String, b: String): Boolean {
+        fun norm(u: String) = u.trim().substringBefore('#').trimEnd('/').lowercase()
+        return norm(a) == norm(b)
+    }
 
     private fun isBlankish(url: String): Boolean {
         val u = url.trim().lowercase()
@@ -575,5 +802,49 @@ class CompatibilitySession(
     private companion object {
         val NEXT_ID = AtomicInteger(0)
         const val POPUP_TIMEOUT_MS = 4_000L
+
+        /** How long after an OK a starting audio stream still counts as that Play. */
+        const val PLAY_TAP_WINDOW_MS = 8_000L
+
+        /** Grace for onShowCustomView to arrive before falling back to chrome-hide. */
+        const val FULLSCREEN_FALLBACK_MS = 600L
+
+        /**
+         * Fullscreen the player that is playing. A video in this document goes fullscreen
+         * through its player box (the largest ancestor still hugging the video), so the
+         * site's own controls come with it. A video in a cross-origin iframe cannot be
+         * seen from here, so the largest visible iframe goes instead. Relies on the Play
+         * tap's user activation, which Chromium keeps for a few seconds.
+         */
+        const val FULLSCREEN_JS = """(function(){
+  if(document.fullscreenElement) return 'already';
+  var vw=innerWidth, vh=innerHeight, target=null, kind='none';
+  var vids=document.querySelectorAll('video');
+  for(var i=0;i<vids.length;i++){
+    var v=vids[i];
+    if(v.paused||v.ended||v.readyState<2) continue;
+    var r=v.getBoundingClientRect();
+    if(r.width<vw*0.3) continue;
+    target=v; kind='video';
+    var a=v.parentElement;
+    while(a&&a!==document.body&&a!==document.documentElement){
+      var ar=a.getBoundingClientRect();
+      if(ar.width>r.width*1.15+40||ar.height>r.height*1.35+120) break;
+      target=a; kind='player'; a=a.parentElement;
+    }
+    break;
+  }
+  if(!target){
+    var best=0, fr=document.querySelectorAll('iframe');
+    for(var j=0;j<fr.length;j++){
+      var q=fr[j].getBoundingClientRect();
+      var area=Math.max(0,Math.min(q.right,vw)-Math.max(q.left,0))*Math.max(0,Math.min(q.bottom,vh)-Math.max(q.top,0));
+      if(area>best&&area>vw*vh*0.2){best=area; target=fr[j]; kind='iframe';}
+    }
+  }
+  if(!target||typeof target.requestFullscreen!=='function') return 'no_target';
+  try{ var p=target.requestFullscreen(); if(p&&p.catch) p.catch(function(){}); }catch(e){ return 'threw'; }
+  return kind;
+})()"""
     }
 }

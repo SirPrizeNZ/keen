@@ -5098,6 +5098,7 @@ class KeenActivity : AppCompatActivity() {
                     ?: binding.chromeBar.measuredHeight.coerceAtLeast(0)
             },
             onUrlBarActivate = { runOnUiThread { focusBrowseUrlBar() } },
+            onPlaybackMode = { enter -> applyKeenPlaybackMode(enter) },
         )
         compatSession = session
         session.start(url)
@@ -6020,6 +6021,7 @@ class KeenActivity : AppCompatActivity() {
         // from.
         compatSession?.let { session ->
             if (session.isActive) {
+                if (session.exitPlaybackIfNeeded()) return
                 if (session.canGoBack()) {
                     session.goBack()
                 } else {

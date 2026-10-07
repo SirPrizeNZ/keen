@@ -3630,3 +3630,9 @@
 # so the window.open quarantine remains the primary defence — these are belt-and-braces.
 .unhappyweakness.com
 .ikeanangelsaidthe.com
+
+# --- project: ext.to click-through ads ---
+# Captured on the Mi TV 2026-10-07 (KZ_COMPAT): an OK on an ext.to movie page landed on
+# a real <a target=_blank> pointing at sbm49.gotrackier.com, an affiliate click tracker,
+# which loaded as a full-page ad. adexchangerapid.com / usrpubtrk.com were already listed.
+.gotrackier.com

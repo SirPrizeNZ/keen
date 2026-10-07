@@ -56,6 +56,17 @@ class CompatibilityRemoteController(
     /** True once a tap is in flight, so a key repeat cannot open a second one. */
     private var tapInFlight = false
 
+    /**
+     * Where taps land. The WebView, except while the page is in HTML fullscreen: the
+     * player then lives in the custom view Chromium hands out, and taps sent to the
+     * WebView underneath would never reach its controls.
+     */
+    var tapTarget: android.view.View? = null
+
+    /** elapsedRealtime of the last tap into the page, or 0 before the first. */
+    var lastTapAt = 0L
+        private set
+
     var attached = false
         private set
 
@@ -240,6 +251,7 @@ class CompatibilityRemoteController(
             return
         }
         tapInFlight = true
+        lastTapAt = SystemClock.elapsedRealtime()
         cursor.wake()
 
         // The cursor overlay and the WebView are siblings in different containers, so
@@ -255,11 +267,12 @@ class CompatibilityRemoteController(
             // the same footprint it would in normal mode.
             webView.evaluateJavascript(com.keenzero.app.input.InteractionIndex.COLLECT_JS, null)
         }
-        val (x, y) = cursorInWebViewSpace()
+        val target = tapTarget ?: webView
+        val (x, y) = cursorInViewSpace(target)
         val downTime = SystemClock.uptimeMillis()
 
         val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
-        webView.dispatchTouchEvent(down)
+        target.dispatchTouchEvent(down)
         down.recycle()
 
         handler.postDelayed({
@@ -271,7 +284,7 @@ class CompatibilityRemoteController(
                 y,
                 0,
             )
-            webView.dispatchTouchEvent(up)
+            target.dispatchTouchEvent(up)
             up.recycle()
             tapInFlight = false
             CompatibilityDiag.event(
@@ -288,15 +301,15 @@ class CompatibilityRemoteController(
             cursor.cursorY >= rect.top - BUTTON_HIT_PAD_PX &&
             cursor.cursorY <= rect.bottom + BUTTON_HIT_PAD_PX
 
-    /** Cursor position expressed in the WebView's own coordinate space. */
-    private fun cursorInWebViewSpace(): Pair<Float, Float> {
+    /** Cursor position expressed in [view]'s own coordinate space. */
+    private fun cursorInViewSpace(view: android.view.View): Pair<Float, Float> {
         val cursorLoc = IntArray(2)
-        val webLoc = IntArray(2)
+        val viewLoc = IntArray(2)
         cursor.getLocationOnScreen(cursorLoc)
-        webView.getLocationOnScreen(webLoc)
-        val x = cursor.cursorX + (cursorLoc[0] - webLoc[0])
-        val y = cursor.cursorY + (cursorLoc[1] - webLoc[1])
-        return x.coerceIn(0f, webView.width.toFloat()) to y.coerceIn(0f, webView.height.toFloat())
+        view.getLocationOnScreen(viewLoc)
+        val x = cursor.cursorX + (cursorLoc[0] - viewLoc[0])
+        val y = cursor.cursorY + (cursorLoc[1] - viewLoc[1])
+        return x.coerceIn(0f, view.width.toFloat()) to y.coerceIn(0f, view.height.toFloat())
     }
 
     private fun smoothstep(t: Float): Float = t * t * (3f - 2f * t)
