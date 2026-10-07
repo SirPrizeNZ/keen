@@ -4755,6 +4755,11 @@ class KeenActivity : AppCompatActivity() {
         uploadBps: Long = -1,
     ) {
         if (!torrentOverlayVisible) return
+        // The surface stays VISIBLE until the circle finishes, and the service keeps
+        // ticking every 750 ms through it. The watermark was hidden when the circle
+        // started, so the first tick found it not VISIBLE and faded it back in: a "99"
+        // growing round the hole, filmed off the box. The read-out is finished here.
+        if (revealRunning) return
         var stageText = when (stage) {
             TorrentStreamingService.STAGE_FETCHING_TORRENT -> getString(R.string.torrent_stage_fetching)
             // Said by the service now, rather than guessed at from a gap in the ticks: the
@@ -6230,6 +6235,11 @@ class KeenActivity : AppCompatActivity() {
                 return super.dispatchKeyEvent(event)
             }
             if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                // Controls up: the first Back only hides them; the next one leaves.
+                if (binding.torrentPlayerView.isControllerFullyVisible) {
+                    if (event.action == KeyEvent.ACTION_UP) binding.torrentPlayerView.hideController()
+                    return true
+                }
                 return super.dispatchKeyEvent(event)
             }
             // Controls up with nothing in them focused. Media3 shows them by itself when

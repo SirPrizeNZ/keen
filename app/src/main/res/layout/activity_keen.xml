@@ -170,6 +170,7 @@
             android:focusable="true"
             app:resize_mode="fit"
             app:show_buffering="never"
+            app:show_timeout="2500"
             app:show_subtitle_button="true"
             app:surface_type="surface_view" />
 

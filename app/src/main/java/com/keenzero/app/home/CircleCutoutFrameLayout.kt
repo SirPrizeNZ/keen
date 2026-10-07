@@ -32,6 +32,17 @@ class CircleCutoutFrameLayout @JvmOverloads constructor(
 
     private val cutout = Path()
 
+    // No outline, so no shadow. The elevation is only there to stack this layer above the
+    // player, but with the opaque black background as its outline it also cast one, and
+    // the renderer skips the part of a shadow an opaque caster sits on, drawing only a
+    // ring round the edge whose inside it expects the caster to cover. The hole uncovers
+    // it: filmed off the box on a 2:1 film, a flat dark band ran across the top ~64 px of
+    // the picture and down both sides for the whole reveal, hard-edged on the inside, and
+    // went the instant the layer did. Nothing else about the shadow was ever visible.
+    init {
+        outlineProvider = null
+    }
+
     /** Radius of the hole in pixels. Zero (or less) draws the layer whole. */
     var cutoutRadius: Float = 0f
         set(value) {
