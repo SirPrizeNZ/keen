@@ -53,7 +53,7 @@ We didn't just adapt a cursor for a remote control; we reimagined spatial naviga
 
 Standard TV browsers choke on high-bitrate video and modern web codecs. Keen intercepts media streams and hands them directly to your television's native hardware decoders via Media3. The result? Buttery-smooth playback, support for premium audio formats like E-AC-3 and DTS, and flawless full-screen immersion. When the video starts, the browser disappears.
 
-Films that carry more than one audio track let you choose between them from the player controls, so a dual-audio release plays in the language you want.
+Films that carry more than one audio track start in English when there is an English track, and the player controls switch to any other, so a dual-audio release plays in the language you want.
 
 ## A digital sanctuary
 
@@ -69,7 +69,7 @@ In an era of bloated applications, Keen is an exercise in restraint. By leveragi
 - **Smart History:** Address completion driven by your actual browsing habits.
 - **One Live View:** A single, optimized WebView environment. No messy stacks of forgotten tabs.
 - **Season packs:** Files are offered in episode order, and the next episode is offered as the
-  current one ends.
+  current one ends and starts on its own when it does.
 
 ## Our commitment to the open web
 

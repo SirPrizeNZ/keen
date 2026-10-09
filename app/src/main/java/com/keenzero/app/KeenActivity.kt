@@ -2696,7 +2696,11 @@ class KeenActivity : AppCompatActivity() {
         // Turn on English subtitles by default whenever the media carries them —
         // preferring an "en"-tagged text track, and falling back to an untagged
         // one (common in torrent MKVs where the English subs have no language tag).
+        // English audio too, when the file has it. Multi-language releases often list a
+        // dub first (Below S01E04: Russian, Ukrainian, then English), and with no
+        // preference the first track wins.
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setPreferredAudioLanguage("en")
             .setPreferredTextLanguage("en")
             .setSelectUndeterminedTextLanguage(true)
             .build()
