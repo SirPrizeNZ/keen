@@ -2676,7 +2676,10 @@ class KeenActivity : AppCompatActivity() {
         // starred title is finished and playing off local storage.
         val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, httpFactory)
         val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            // AVI AC-3 has to reach the TV as whole syncframes; see AviAc3ExtractorsFactory.
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(dataSourceFactory, com.keenzero.app.torrent.AviAc3ExtractorsFactory()),
+            )
             .setLoadControl(loadControl)
             // Both skip buttons are drawn with a 5 on them, so both move five seconds.
             // media3's own default is five back and fifteen forward, which would make
