@@ -189,6 +189,10 @@ class TorrentStreamingService : Service() {
             val live = liveMedia
             if (live == null || chosen < 0 || !live.handle.isValid) {
                 Log.w(TAG, "play_file ignored index=$chosen live=${live != null}")
+                // The UI has already put its loader up for this switch. Silence here kept
+                // it up for ever; an error takes it down and says why.
+                val id = intent.getStringExtra(EXTRA_REQUEST_ID) ?: live?.id
+                if (id != null) sendFailure(id, "Couldn't start the next episode. Open it from the list.")
                 return START_NOT_STICKY
             }
             startedAtMs = System.currentTimeMillis()
@@ -345,21 +349,30 @@ class TorrentStreamingService : Service() {
             override fun alert(alert: Alert<*>) {
                 // Download complete: leave the swarm outright, keeping the files.
                 //
-                // Deliberately a removal, not an upload-rate limit of zero. A throttled
+                // Deliberately a pause, not an upload-rate limit of zero. A throttled
                 // seed is still a seed — still announcing to the tracker, still holding
-                // peer connections, still able to serve pieces. Removing the handle takes
-                // this box out of the swarm entirely, so nothing can be uploaded from it
-                // after the download finishes. Re-adding (a repair, or a re-star) rechecks
-                // the pieces already on disk, so nothing is re-downloaded needlessly.
+                // peer connections, still able to serve pieces. A paused handle sends the
+                // tracker "stopped" and drops every peer, so nothing can be uploaded from
+                // this box after the download finishes.
+                //
+                // Paused, not removed. "Finished" means every *wanted* file is on disk, and
+                // only the playing episode is wanted — it finishes long before it has been
+                // watched. Removing the handle left the next-episode switch holding a dead
+                // handle, so ACTION_PLAY_FILE was ignored and the player sat on its loader
+                // for ever (2026-10-10, end of S01E01). configureMedia re-prioritises and
+                // resumes the handle for the next file.
+                //
+                // Off auto-management first: the session's queue restarts paused
+                // auto-managed torrents, and a finished one would come back as a seed.
                 if (alert.type() == AlertType.TORRENT_FINISHED) {
                     val finishedHash =
                         (alert as org.libtorrent4j.alerts.TorrentAlert<*>).handle().infoHash()
                     worker.execute {
                         val handle = session.find(finishedHash) ?: return@execute
                         if (handle.isValid) {
-                            // false: keep the downloaded files, drop only the swarm membership.
-                            session.remove(handle)
-                            Log.i(TAG, "Download finished; left the swarm (no seeding): $finishedHash")
+                            handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                            handle.pause()
+                            Log.i(TAG, "Download finished; paused, left the swarm (no seeding): $finishedHash")
                         }
                         sendBroadcast(
                             Intent(ACTION_DOWNLOAD_COMPLETE)
